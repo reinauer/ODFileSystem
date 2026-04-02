@@ -1,0 +1,7 @@
+build/
+*.o
+*.a
+*.d
+.DS_Store
+
+PLAN.md
