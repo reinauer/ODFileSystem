@@ -134,6 +134,7 @@ static odfs_err_t cdda_probe(odfs_cache_t *cache,
  */
 odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
                                  int has_data_session,
+                                 odfs_media_t *media,
                                  odfs_node_t *root_out,
                                  void **backend_ctx)
 {
@@ -145,6 +146,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
         return ODFS_ERR_NOMEM;
 
     ctx->is_mixed_mode = has_data_session;
+    ctx->media = media;
 
     /* identify audio tracks from TOC */
     for (int i = 0; i < toc->session_count && i + 1 < toc->session_count; i++) {
@@ -317,19 +319,37 @@ static odfs_err_t cdda_read(void *backend_ctx,
     }
 
     /*
-     * Audio data beyond the header would be read via SCSI Read CD.
-     * On host (no SCSI), we return zeros as placeholder.
-     *
-     * TODO: on Amiga, issue SCSI Read CD (0xBE) to read raw audio
-     * frames from the disc. The frame offset is:
-     *   audio_offset = (offset - CDDA_WAV_HEADER_SIZE)
-     *   frame_num = audio_offset / CDDA_FRAME_SIZE
-     *   start_frame = trk->start_lba + frame_num
+     * Audio data: read via SCSI Read CD (0xBE) if available,
+     * otherwise return silence (host placeholder).
      */
-    if (done < want) {
-        /* fill remaining with silence (host placeholder) */
-        memset(out + done, 0, want - done);
-        done = want;
+    while (done < want) {
+        uint64_t audio_pos = (offset + done) - CDDA_WAV_HEADER_SIZE;
+        uint32_t frame_num = (uint32_t)(audio_pos / CDDA_FRAME_SIZE);
+        uint32_t frame_off = (uint32_t)(audio_pos % CDDA_FRAME_SIZE);
+        uint32_t start_frame = trk->start_lba + frame_num;
+
+        if (ctx->media && ctx->media->ops->read_audio) {
+            /* read one frame at a time for simplicity */
+            uint8_t frame_buf[CDDA_FRAME_SIZE];
+            odfs_err_t err = odfs_media_read_audio(ctx->media,
+                                                      start_frame, 1,
+                                                      frame_buf);
+            if (err != ODFS_OK) {
+                /* read failed — fill with silence */
+                memset(out + done, 0, want - done);
+                done = want;
+                break;
+            }
+
+            size_t avail = CDDA_FRAME_SIZE - frame_off;
+            size_t chunk = (avail < want - done) ? avail : want - done;
+            memcpy(out + done, frame_buf + frame_off, chunk);
+            done += chunk;
+        } else {
+            /* no audio read support — fill with silence */
+            memset(out + done, 0, want - done);
+            done = want;
+        }
     }
 
     *len = done;

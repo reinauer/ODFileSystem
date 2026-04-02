@@ -38,6 +38,7 @@ typedef struct cdda_context {
     int          track_count;
     cdda_track_t tracks[CDDA_MAX_TRACKS];
     int          is_mixed_mode;   /* has both data and audio tracks */
+    odfs_media_t *media;         /* for read_audio calls */
 } cdda_context_t;
 
 extern const odfs_backend_ops_t cdda_backend_ops;
@@ -45,6 +46,7 @@ extern const odfs_backend_ops_t cdda_backend_ops;
 /* mount directly from a TOC (not through standard probe path) */
 odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
                                  int has_data_session,
+                                 odfs_media_t *media,
                                  odfs_node_t *root_out,
                                  void **backend_ctx);
 

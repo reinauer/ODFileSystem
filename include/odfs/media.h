@@ -52,6 +52,15 @@ typedef struct odfs_media_ops {
     odfs_err_t (*read_toc)(void *ctx, odfs_toc_t *toc);
 
     /*
+     * Read raw audio CD frames (2352 bytes each).
+     * Returns ODFS_ERR_UNSUPPORTED if not available (host images).
+     *   lba    — starting frame LBA
+     *   count  — number of frames to read
+     *   buf    — output buffer (must hold count * 2352 bytes)
+     */
+    odfs_err_t (*read_audio)(void *ctx, uint32_t lba, uint32_t count, void *buf);
+
+    /*
      * Close / release media.  May be NULL.
      */
     void (*close)(void *ctx);
@@ -87,6 +96,16 @@ static inline odfs_err_t odfs_media_read_toc(odfs_media_t *m, odfs_toc_t *toc)
     if (!m->ops->read_toc)
         return ODFS_ERR_UNSUPPORTED;
     return m->ops->read_toc(m->ctx, toc);
+}
+
+static inline odfs_err_t odfs_media_read_audio(odfs_media_t *m,
+                                                  uint32_t lba,
+                                                  uint32_t count,
+                                                  void *buf)
+{
+    if (!m->ops->read_audio)
+        return ODFS_ERR_UNSUPPORTED;
+    return m->ops->read_audio(m->ctx, lba, count, buf);
 }
 
 static inline void odfs_media_close(odfs_media_t *m)

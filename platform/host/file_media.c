@@ -63,6 +63,7 @@ static const odfs_media_ops_t file_media_ops = {
     .sector_size  = file_sector_size,
     .sector_count = file_sector_count,
     .read_toc     = NULL,
+    .read_audio   = NULL,
     .close        = file_close,
 };
 

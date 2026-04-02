@@ -132,6 +132,56 @@ static uint32_t amiga_sector_count(void *ctx)
     return 0; /* unknown — CD media doesn't reliably report size */
 }
 
+/*
+ * Read raw audio CD frames via SCSI Read CD (0xBE).
+ *
+ * Each audio frame is 2352 bytes of 16-bit stereo PCM at 44100Hz.
+ * The Read CD command reads raw sectors without error correction
+ * headers, giving us the audio data directly.
+ */
+static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
+                                     uint32_t count, void *buf)
+{
+    amiga_media_ctx_t *am = ctx;
+    handler_global_t *g = am->g;
+    uint8_t cmd[12];
+    struct SCSICmd scsi;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(&scsi, 0, sizeof(scsi));
+
+    /* READ CD (0xBE) CDB */
+    cmd[0] = 0xBE;
+    cmd[1] = 0x04 << 2;  /* expected sector type: CD-DA (audio) */
+    /* starting LBA (big-endian) */
+    cmd[2] = (uint8_t)(lba >> 24);
+    cmd[3] = (uint8_t)(lba >> 16);
+    cmd[4] = (uint8_t)(lba >> 8);
+    cmd[5] = (uint8_t)(lba);
+    /* transfer length in frames (big-endian, 3 bytes) */
+    cmd[6] = (uint8_t)(count >> 16);
+    cmd[7] = (uint8_t)(count >> 8);
+    cmd[8] = (uint8_t)(count);
+    cmd[9] = 0x10;  /* flags: read user data (2352 bytes per frame) */
+
+    scsi.scsi_Data      = (UWORD *)buf;
+    scsi.scsi_Length     = count * 2352;
+    scsi.scsi_CmdLength  = 12;
+    scsi.scsi_Command    = cmd;
+    scsi.scsi_Flags      = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData  = NULL;
+    scsi.scsi_SenseLength = 0;
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    if (DoIO((struct IORequest *)g->devreq) != 0)
+        return ODFS_ERR_IO;
+
+    return ODFS_OK;
+}
+
 static void amiga_close(void *ctx)
 {
     (void)ctx; /* device closed in handler shutdown */
@@ -306,6 +356,7 @@ static const odfs_media_ops_t amiga_media_ops = {
     .sector_size  = amiga_sector_size,
     .sector_count = amiga_sector_count,
     .read_toc     = amiga_read_toc,
+    .read_audio   = amiga_read_audio,
     .close        = amiga_close,
 };
 
@@ -1106,7 +1157,7 @@ static void mount_volume(handler_global_t *g)
         /* no data filesystem — try pure audio CD */
         odfs_toc_t toc;
         if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-            cdda_mount_from_toc(&toc, 0, &g->cdda_root,
+            cdda_mount_from_toc(&toc, 0, &g->media, &g->cdda_root,
                                 &g->cdda_ctx) == ODFS_OK) {
             g->has_cdda = 1;
             g->mounted = 1;
@@ -1131,7 +1182,7 @@ static void mount_volume(handler_global_t *g)
         {
             odfs_toc_t toc;
             if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-                cdda_mount_from_toc(&toc, 1, &g->cdda_root,
+                cdda_mount_from_toc(&toc, 1, &g->media, &g->cdda_root,
                                     &g->cdda_ctx) == ODFS_OK) {
                 g->has_cdda = 1;
             }
