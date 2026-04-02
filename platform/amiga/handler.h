@@ -39,6 +39,7 @@ typedef struct handler_global {
     char                 devname[128];  /* device name */
     ULONG                devunit;       /* device unit */
     ULONG                devflags;      /* device open flags */
+    struct DosEnvec     *envec;         /* for control string parsing */
 
     /* filesystem state */
     odfs_mount_t        mount;

@@ -59,14 +59,6 @@ static void cleanup_appicon(handler_global_t *g);
  *   we can test on real hardware with DMA-sensitive controllers.
  *
  *
- * TODO: DosEnvec control string parsing
- *   CDVDFS parses mount options (LOWERCASE, ROCKRIDGE, JOLIET,
- *   HFSFIRST, SCANINTERVAL, etc.) from the de_Control field in
- *   the DosEnvec. Not needed for ROM-based operation where the
- *   storage driver loads the handler directly. Add if mountlist-
- *   based configuration becomes necessary.
- *
- *
  * TODO: AROS integration
  *   AROS may need different endianness handling for HFS structures,
  *   and DirectSCSI may not be available. CDVDFS notes HFS is
@@ -1144,6 +1136,116 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
     return dl;
 }
 
+/* ------------------------------------------------------------------ */
+/* DosEnvec control string parsing                                     */
+/* ------------------------------------------------------------------ */
+
+#if !defined(ODFS_PROFILE_ROM) || !ODFS_PROFILE_ROM
+/*
+ * Parse mount options from the DosEnvec de_Control BSTR field.
+ * Uses ReadArgs with a template compatible with CDVDFS.
+ *
+ * Supported options:
+ *   L=LOWERCASE/S       — force lowercase ISO names
+ *   NORR=NOROCKRIDGE/S  — disable Rock Ridge
+ *   NOJ=NOJOLIET/S      — disable Joliet
+ *   HF=HFSFIRST/S       — prefer HFS over ISO on hybrid discs
+ *   UDF/S               — prefer UDF on bridge discs
+ *   FB=FILEBUFFERS/K/N  — block cache size
+ */
+
+#include <dos/rdargs.h>
+
+enum {
+    CTRL_LOWERCASE,
+    CTRL_NOROCKRIDGE,
+    CTRL_NOJOLIET,
+    CTRL_HFSFIRST,
+    CTRL_UDF,
+    CTRL_FILEBUFFERS,
+    CTRL__COUNT
+};
+
+static void parse_control_string(handler_global_t *g __attribute__((unused)),
+                                  struct DosEnvec *de,
+                                  odfs_mount_opts_t *opts)
+{
+    STRPTR args[CTRL__COUNT];
+    char buf[250];
+    struct RDArgs *rdargs;
+    int len, i;
+
+    if (!de->de_Control)
+        return;
+
+    /* extract BCPL string */
+    {
+        const UBYTE *bstr = (const UBYTE *)BADDR(de->de_Control);
+        len = bstr[0];
+        if (len <= 0 || (size_t)len >= sizeof(buf) - 1)
+            return;
+        memcpy(buf, bstr + 1, len);
+        buf[len] = '\n'; /* ReadArgs needs newline terminator */
+        buf[len + 1] = '\0';
+    }
+
+    /* replace '+' with space (CDVDFS convention for spaces in control field) */
+    for (i = 0; i < len; i++) {
+        if (buf[i] == '+') {
+            if (i + 1 < len && buf[i + 1] == '+') {
+                /* ++ → literal + */
+                memmove(buf + i, buf + i + 1, len - i);
+                len--;
+            } else {
+                buf[i] = ' ';
+            }
+        }
+    }
+
+    /* strip leading/trailing quotes */
+    if (len > 0 && buf[0] == '"') buf[0] = ' ';
+    if (len > 1 && buf[len - 1] == '"') buf[len - 1] = ' ';
+
+    memset(args, 0, sizeof(args));
+
+    rdargs = (struct RDArgs *)AllocDosObject(DOS_RDARGS, NULL);
+    if (!rdargs)
+        return;
+
+    rdargs->RDA_Flags |= RDAF_NOPROMPT;
+    rdargs->RDA_Source.CS_Buffer = (UBYTE *)buf;
+    rdargs->RDA_Source.CS_Length = len + 1;
+    rdargs->RDA_Source.CS_CurChr = 0;
+
+    if (ReadArgs((CONST_STRPTR)
+                  "L=LOWERCASE/S,"
+                  "NORR=NOROCKRIDGE/S,"
+                  "NOJ=NOJOLIET/S,"
+                  "HF=HFSFIRST/S,"
+                  "UDF/S,"
+                  "FB=FILEBUFFERS/K/N",
+                  (LONG *)args, rdargs)) {
+
+        if (args[CTRL_LOWERCASE])
+            opts->lowercase_iso = 1;
+        if (args[CTRL_NOROCKRIDGE])
+            opts->disable_rr = 1;
+        if (args[CTRL_NOJOLIET])
+            opts->disable_joliet = 1;
+        if (args[CTRL_HFSFIRST])
+            opts->prefer_hfs = 1;
+        if (args[CTRL_UDF])
+            opts->prefer_udf = 1;
+        if (args[CTRL_FILEBUFFERS])
+            opts->cache_blocks = *(LONG *)args[CTRL_FILEBUFFERS];
+
+        FreeArgs(rdargs);
+    }
+
+    FreeDosObject(DOS_RDARGS, rdargs);
+}
+#endif /* !ODFS_PROFILE_ROM */
+
 static void mount_volume(handler_global_t *g)
 {
     odfs_mount_opts_t opts;
@@ -1153,6 +1255,12 @@ static void mount_volume(handler_global_t *g)
         return;
 
     odfs_mount_opts_default(&opts);
+
+#if !defined(ODFS_PROFILE_ROM) || !ODFS_PROFILE_ROM
+    if (g->envec)
+        parse_control_string(g, g->envec, &opts);
+#endif
+
     err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
     if (err != ODFS_OK) {
 #if ODFS_FEATURE_CDDA
@@ -1481,6 +1589,7 @@ void handler_main(void)
     g->devflags = fssm->fssm_Flags;
 
     de = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+    g->envec = de;
     g->sector_size = de->de_SizeBlock << 2;
 
     /* open device */
