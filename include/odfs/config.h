@@ -20,27 +20,59 @@
 #endif
 
 /* ---------- backend feature flags ---------- */
+/* All flags can be overridden from command line (-DODFS_FEATURE_xxx=0) */
 
-#ifdef ODFS_PROFILE_ROM
+#ifndef ODFS_FEATURE_ISO9660
   #define ODFS_FEATURE_ISO9660      1
-  #define ODFS_FEATURE_ROCK_RIDGE   1
-  #define ODFS_FEATURE_JOLIET       1
-  #define ODFS_FEATURE_MULTISESSION 1
-  #define ODFS_FEATURE_UDF          0
-  #define ODFS_FEATURE_HFS          0
-  #define ODFS_FEATURE_HFSPLUS      0
-  #define ODFS_FEATURE_CDDA         0
 #endif
-
-#ifdef ODFS_PROFILE_FULL
-  #define ODFS_FEATURE_ISO9660      1
-  #define ODFS_FEATURE_ROCK_RIDGE   1
-  #define ODFS_FEATURE_JOLIET       1
-  #define ODFS_FEATURE_MULTISESSION 1
-  #define ODFS_FEATURE_UDF          1
-  #define ODFS_FEATURE_HFS          1
-  #define ODFS_FEATURE_HFSPLUS      1
-  #define ODFS_FEATURE_CDDA         1
+#ifndef ODFS_FEATURE_ROCK_RIDGE
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_ROCK_RIDGE 1
+  #else
+    #define ODFS_FEATURE_ROCK_RIDGE 1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_JOLIET
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_JOLIET     1
+  #else
+    #define ODFS_FEATURE_JOLIET     1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_MULTISESSION
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_MULTISESSION 1
+  #else
+    #define ODFS_FEATURE_MULTISESSION 1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_UDF
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_UDF        0
+  #else
+    #define ODFS_FEATURE_UDF        1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_HFS
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_HFS        0
+  #else
+    #define ODFS_FEATURE_HFS        1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_HFSPLUS
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_HFSPLUS    0
+  #else
+    #define ODFS_FEATURE_HFSPLUS    1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_CDDA
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_CDDA       0
+  #else
+    #define ODFS_FEATURE_CDDA       1
+  #endif
 #endif
 
 /* ---------- cache feature flags ---------- */
@@ -57,14 +89,21 @@
 
 /* ---------- logging feature flags ---------- */
 
+/* ODFS_FEATURE_LOG can be overridden from command line (-DODFS_FEATURE_LOG=0) */
+#ifndef ODFS_FEATURE_LOG
 #ifdef ODFS_PROFILE_ROM
   #define ODFS_FEATURE_LOG            1
+#else
+  #define ODFS_FEATURE_LOG            1
+#endif
+#endif
+
+#ifdef ODFS_PROFILE_ROM
   #define ODFS_FEATURE_LOG_SERIAL     1
   #define ODFS_FEATURE_LOG_KPRINTF    0
   #define ODFS_FEATURE_LOG_RINGBUF    0
   #define ODFS_LOG_MAX_LEVEL          ODFS_LOG_WARN
 #else
-  #define ODFS_FEATURE_LOG            1
   #define ODFS_FEATURE_LOG_SERIAL     1
   #define ODFS_FEATURE_LOG_KPRINTF    1
   #define ODFS_FEATURE_LOG_RINGBUF    1

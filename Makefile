@@ -27,12 +27,36 @@ HOSTCFLAGS  = -std=c11 -O2 -g \
               -Wno-unused-parameter
 HOSTLDFLAGS =
 
+# ---- Amiga build options ----
+
+# Serial debug output (override with: make SERIAL_DEBUG=0)
+SERIAL_DEBUG ?= 1
+
+# Backend selection (override to disable: make FEATURE_UDF=0)
+FEATURE_ISO9660      ?= 1
+FEATURE_ROCK_RIDGE   ?= 1
+FEATURE_JOLIET       ?= 1
+FEATURE_MULTISESSION ?= 1
+FEATURE_UDF          ?= 1
+FEATURE_HFS          ?= 1
+FEATURE_HFSPLUS      ?= 1
+FEATURE_CDDA         ?= 1
+
 # ---- Amiga build flags (following xsysinfo conventions) ----
 
-CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul \
+CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
           -Wall -Wextra \
           -Wstrict-prototypes -Wmissing-prototypes \
-          -DAMIGA
+          -DAMIGA -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
+          -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \
+          -DODFS_FEATURE_ISO9660=$(FEATURE_ISO9660) \
+          -DODFS_FEATURE_ROCK_RIDGE=$(FEATURE_ROCK_RIDGE) \
+          -DODFS_FEATURE_JOLIET=$(FEATURE_JOLIET) \
+          -DODFS_FEATURE_MULTISESSION=$(FEATURE_MULTISESSION) \
+          -DODFS_FEATURE_UDF=$(FEATURE_UDF) \
+          -DODFS_FEATURE_HFS=$(FEATURE_HFS) \
+          -DODFS_FEATURE_HFSPLUS=$(FEATURE_HFSPLUS) \
+          -DODFS_FEATURE_CDDA=$(FEATURE_CDDA)
 LDFLAGS = -noixemul
 LIBS    = -lamiga -lgcc
 
@@ -56,8 +80,13 @@ CORE_SRCS = \
 # Host-only sources
 HOST_SRCS = platform/host/file_media.c
 
-# Amiga-only sources (handler frontend, device I/O — stubs for now)
-AMIGA_SRCS = platform/amiga/dos_glue.c
+# Amiga handler sources
+AMIGA_SRCS = platform/amiga/handler_main.c \
+    platform/amiga/libc_stubs.c
+
+# Amiga assembly
+AMIGA_ASM_SRCS = platform/amiga/startup.S
+AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
 HOST_LIB_SRCS  = $(CORE_SRCS) $(HOST_SRCS)
 HOST_LIB_OBJS  = $(patsubst %.c,$(HOST_BUILD)/%.o,$(HOST_LIB_SRCS))
@@ -180,13 +209,21 @@ $(AMIGA_BUILD)/%.o: %.c
 	@echo "  CC    $<"
 	@$(CC) $(INCLUDES) $(CFLAGS) -c -o $@ $<
 
+# ---- Amiga assembly ----
+
+$(AMIGA_BUILD)/%.o: %.S
+	@mkdir -p $(@D)
+	@echo "  AS    $<"
+	@$(CC) $(CFLAGS) -c -o $@ $<
+
 # ---- Amiga handler ----
 
-$(HANDLER): $(AMIGA_BUILD)/libodfs.a
+$(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@echo "  (handler frontend not yet implemented — producing stub)"
-	@touch $@
+	@$(CC) $(LDFLAGS) -nostartfiles -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs -nostdlib -lamiga -lgcc -lnix13 -lnix
+	@echo "  STRIP $@"
+	@$(STRIP) $@
 
 # ---- clean ----
 

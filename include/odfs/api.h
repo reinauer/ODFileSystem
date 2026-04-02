@@ -54,11 +54,12 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 /* unmount */
 void odfs_unmount(odfs_mount_t *mnt);
 
-/* directory listing */
+/* directory listing (resume_offset: NULL = from start, else resume point) */
 odfs_err_t odfs_readdir(odfs_mount_t *mnt,
                           const odfs_node_t *dir,
                           odfs_dir_iter_fn callback,
-                          void *ctx);
+                          void *ctx,
+                          uint32_t *resume_offset);
 
 /* file read */
 odfs_err_t odfs_read(odfs_mount_t *mnt,

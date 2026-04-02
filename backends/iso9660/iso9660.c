@@ -244,12 +244,13 @@ static odfs_err_t iso_readdir(void *backend_ctx,
                                odfs_log_state_t *log,
                                const odfs_node_t *dir,
                                odfs_dir_iter_fn callback,
-                               void *cb_ctx)
+                               void *cb_ctx,
+                               uint32_t *resume_offset)
 {
     iso_context_t *ctx = backend_ctx;
     uint32_t dir_lba = dir->extent.lba;
     uint32_t dir_size = dir->extent.length;
-    uint32_t offset = 0;
+    uint32_t offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
     int lowercase = ctx->lowercase;
 
     ODFS_TRACE(log, ODFS_SUB_ISO,
@@ -278,7 +279,6 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
                                             &ctx->next_node_id, lowercase, &node);
         if (consumed == 0) {
-            /* skip to next sector on parse failure */
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
@@ -289,16 +289,24 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         if ((node.name[0] == '.' && node.name[1] == '\0') ||
             (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
             offset += consumed;
-                continue;
+            continue;
         }
 
-        err = callback(&node, cb_ctx);
-        if (err != ODFS_OK)
-            return err;
-
+        /* advance offset BEFORE callback so resume_offset points
+           to the entry AFTER the one we're about to deliver */
         offset += consumed;
+
+        err = callback(&node, cb_ctx);
+        if (err != ODFS_OK) {
+            /* callback stopped iteration — save resume point */
+            if (resume_offset)
+                *resume_offset = offset;
+            return err;
+        }
     }
 
+    if (resume_offset)
+        *resume_offset = dir_size; /* exhausted */
     return ODFS_OK;
 }
 
@@ -391,7 +399,7 @@ static odfs_err_t iso_lookup(void *backend_ctx,
     lctx.result = out;
     lctx.found = 0;
 
-    err = iso_readdir(backend_ctx, cache, log, dir, lookup_cb, &lctx);
+    err = iso_readdir(backend_ctx, cache, log, dir, lookup_cb, &lctx, NULL);
     /* ODFS_ERR_EOF from callback means "found, stop early" */
     if (err == ODFS_ERR_EOF && lctx.found)
         return ODFS_OK;

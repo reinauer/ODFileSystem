@@ -57,7 +57,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    err = odfs_readdir(&mnt, &dir, print_entry, NULL);
+    err = odfs_readdir(&mnt, &dir, print_entry, NULL, NULL);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: readdir: %s\n", odfs_err_str(err));
         odfs_unmount(&mnt);

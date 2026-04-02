@@ -1,0 +1,48 @@
+/* Sample mountlist entry for ODFileSystem
+ *
+ * Copy ODFileSystem to L: then add this entry to DEVS:Mountlist
+ * (or use Mount from CLI with this file).
+ *
+ * Usage:
+ *   Mount CD0: FROM DEVS:Mountlist
+ *
+ * For emulators (WinUAE/FS-UAE):
+ *   Configure a CD drive under Settings > CD & Hard Drives,
+ *   then add this mountlist entry using the SCSI device and
+ *   unit that the emulator assigned.
+ */
+
+CD0:
+    Handler   = L:ODFileSystem
+    Stacksize = 8192
+    Priority  = 5
+    GlobVec   = -1
+    /* Device and unit — adjust for your hardware:
+     *
+     * Real Amiga SCSI:
+     *   Device = scsi.device      (or 2ndscsi.device, gvpscsi.device, etc.)
+     *   Unit   = 2                (your CD-ROM's SCSI ID)
+     *
+     * WinUAE/FS-UAE:
+     *   Device = uaescsi.device   (or scsi.device)
+     *   Unit   = 0                (first CD drive in emulator)
+     *
+     * A1200 IDE:
+     *   Device = scsi.device
+     *   Unit   = 1                (slave on IDE bus)
+     */
+    Device    = scsi.device
+    Unit      = 2
+    Flags     = 0
+    Surfaces  = 1
+    BlocksPerTrack = 1
+    BlockSize = 2048
+    /* SizeBlock = 512 means 512 longwords = 2048 bytes */
+    Reserved  = 0
+    LowCyl    = 0
+    HighCyl   = 0
+    Buffers   = 20
+    BufMemType = 0
+    Mount     = 1
+    Activate  = 1
+#

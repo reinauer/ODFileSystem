@@ -50,13 +50,17 @@ typedef struct odfs_backend_ops {
 
     /*
      * List directory entries.
+     *   resume_offset — if non-NULL, on input: byte offset to start from;
+     *                   on output: byte offset of the next unvisited entry.
+     *                   Pass NULL to iterate from the beginning.
      */
     odfs_err_t (*readdir)(void *backend_ctx,
                            odfs_cache_t *cache,
                            odfs_log_state_t *log,
                            const odfs_node_t *dir,
                            odfs_dir_iter_fn callback,
-                           void *cb_ctx);
+                           void *cb_ctx,
+                           uint32_t *resume_offset);
 
     /*
      * Read file data.

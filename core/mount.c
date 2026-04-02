@@ -144,7 +144,8 @@ void odfs_unmount(odfs_mount_t *mnt)
 odfs_err_t odfs_readdir(odfs_mount_t *mnt,
                           const odfs_node_t *dir,
                           odfs_dir_iter_fn callback,
-                          void *ctx)
+                          void *ctx,
+                          uint32_t *resume_offset)
 {
     if (!mnt || !mnt->backend_ops || !mnt->backend_ops->readdir)
         return ODFS_ERR_UNSUPPORTED;
@@ -153,7 +154,8 @@ odfs_err_t odfs_readdir(odfs_mount_t *mnt,
         return ODFS_ERR_NOT_DIR;
 
     return mnt->backend_ops->readdir(mnt->backend_ctx, &mnt->cache,
-                                     &mnt->log, dir, callback, ctx);
+                                     &mnt->log, dir, callback, ctx,
+                                     resume_offset);
 }
 
 odfs_err_t odfs_read(odfs_mount_t *mnt,
