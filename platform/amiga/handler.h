@@ -41,6 +41,11 @@ typedef struct handler_global {
     ULONG                devflags;      /* device open flags */
     struct DosEnvec     *envec;         /* for control string parsing */
 
+    /* DMA-safe bounce buffer */
+    uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
+    uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
+    ULONG                dma_buf_size;  /* usable size in bytes */
+
     /* filesystem state */
     odfs_mount_t        mount;
     odfs_media_t        media;

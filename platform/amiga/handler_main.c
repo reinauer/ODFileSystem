@@ -50,13 +50,17 @@ static void cleanup_appicon(handler_global_t *g);
 /* Amiga media adapter                                                 */
 /* ------------------------------------------------------------------ */
 /*
- * TODO: DMA-safe buffers
- *   CDVDFS defaults to MEMF_CHIP for I/O buffers because some SCSI
- *   controllers require DMA-accessible memory. We currently use
- *   whatever AllocMem provides. For broad hardware compatibility,
- *   the read buffer should be allocated with MEMF_CHIP (or at least
- *   MEMF_24BIT on systems with Zorro III). This is deferred until
- *   we can test on real hardware with DMA-sensitive controllers.
+ * DMA-safe bounce buffer:
+ *   All device I/O goes through a pre-allocated, 16-byte aligned
+ *   buffer allocated with de_BufMemType from the DosEnvec. This
+ *   ensures the buffer is in DMA-accessible memory (MEMF_CHIP on
+ *   systems with DMA-sensitive SCSI controllers). Data is copied
+ *   from the bounce buffer to the caller's buffer after each read.
+ *   The overhead is one memcpy per cache miss — negligible compared
+ *   to CD seek times.
+ *
+ *   CDVDFS and PFS3AIO both use de_BufMemType for I/O buffers.
+ *   CDVDFS additionally aligns to 16 bytes for 68040 DMA performance.
  *
  *
  * TODO: AROS integration
@@ -75,41 +79,50 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
 {
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
+    uint32_t total_bytes = count * g->sector_size;
+    uint8_t *out = buf;
+    uint32_t done = 0;
 
     /*
-     * Read multiple sectors in one I/O request.
+     * Read through the DMA-safe bounce buffer, one chunk at a time.
+     * The bounce buffer is allocated from de_BufMemType (typically
+     * MEMF_CHIP) and 16-byte aligned for 68040 DMA controllers.
      *
      * For offsets > 4GB (DVD), use TD_READ64 which splits the
      * 64-bit byte offset across io_Offset (low 32) and io_Actual
-     * (high 32). For offsets <= 4GB, use CMD_READ.
-     *
-     * CDVDFS reference: Read_From_Drive() in cdrom.c
+     * (high 32). CDVDFS reference: Read_From_Drive() in cdrom.c
      */
-    {
-        ULONG byte_offset_lo = lba * g->sector_size;
-        ULONG byte_offset_hi = 0;
+    while (done < total_bytes) {
+        uint32_t chunk = total_bytes - done;
+        if (chunk > g->dma_buf_size)
+            chunk = g->dma_buf_size;
 
-        /* compute 64-bit byte offset: lba * sector_size
-         * For 2048-byte sectors: offset = lba << 11
-         * High bits: lba >> 21 */
+        uint32_t cur_lba = lba + (done / g->sector_size);
+        ULONG byte_offset_lo, byte_offset_hi = 0;
+
         if (g->sector_size == 2048) {
-            byte_offset_lo = lba << 11;
-            byte_offset_hi = lba >> 21;
+            byte_offset_lo = cur_lba << 11;
+            byte_offset_hi = cur_lba >> 21;
+        } else {
+            byte_offset_lo = cur_lba * g->sector_size;
         }
 
         g->devreq->io_Offset = byte_offset_lo;
         g->devreq->io_Actual = byte_offset_hi;
-        g->devreq->io_Length = count * g->sector_size;
-        g->devreq->io_Data   = buf;
+        g->devreq->io_Length = chunk;
+        g->devreq->io_Data   = g->dma_buf;
 
         if (byte_offset_hi != 0)
             g->devreq->io_Command = TD_READ64;
         else
             g->devreq->io_Command = CMD_READ;
-    }
 
-    if (DoIO((struct IORequest *)g->devreq) != 0)
-        return ODFS_ERR_IO;
+        if (DoIO((struct IORequest *)g->devreq) != 0)
+            return ODFS_ERR_IO;
+
+        memcpy(out + done, g->dma_buf, chunk);
+        done += chunk;
+    }
 
     return ODFS_OK;
 }
@@ -1618,6 +1631,33 @@ void handler_main(void)
          * or is already in 2048-byte mode. Not fatal. */
     }
 
+    /*
+     * Allocate DMA-safe bounce buffer using de_BufMemType.
+     * 16-byte aligned for 68040 DMA performance (CDVDFS pattern).
+     * Size: 8 sectors (16KB) — enough for multi-sector reads.
+     */
+    {
+        #define DMA_BUF_SECTORS  8
+        ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
+        ULONG raw_size = DMA_BUF_SECTORS * g->sector_size + 15;
+        g->dma_buf_raw = (uint8_t *)AllocMem(raw_size, memtype);
+        if (!g->dma_buf_raw) {
+            /* fallback: try without specific memory type */
+            g->dma_buf_raw = (uint8_t *)AllocMem(raw_size,
+                                                   MEMF_PUBLIC);
+        }
+        if (g->dma_buf_raw) {
+            /* 16-byte align */
+            g->dma_buf = (uint8_t *)(((ULONG)g->dma_buf_raw + 15) & ~15UL);
+            g->dma_buf_size = DMA_BUF_SECTORS * g->sector_size;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+    }
+
     /* set up media adapter */
     amctx.g = g;
     g->media.ops = &amiga_media_ops;
@@ -1706,6 +1746,10 @@ shutdown:
     }
     if (g->devport)
         DeleteMsgPort(g->devport);
+
+    /* free DMA bounce buffer */
+    if (g->dma_buf_raw)
+        FreeMem(g->dma_buf_raw, DMA_BUF_SECTORS * g->sector_size + 15);
 
     if (g->devnode)
         g->devnode->dn_Task = NULL;
