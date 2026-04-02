@@ -78,7 +78,8 @@ CORE_SRCS = \
     core/session.c \
     backends/iso9660/iso9660.c \
     backends/rock_ridge/rock_ridge.c \
-    backends/joliet/joliet.c
+    backends/joliet/joliet.c \
+    backends/udf/udf.c
 
 # Host-only sources
 HOST_SRCS = platform/host/file_media.c

@@ -110,6 +110,32 @@ assert_contains "multisession: session 1 merged" "FILE1.TXT" "$ROOT"
 CONTENT=$("$TOOLS/imgcat" "$IMAGES/test_multisession.iso" /updated.txt 2>/dev/null)
 assert_eq "multisession: read session 2 file" "Updated" "$CONTENT"
 
+# ---- UDF-only ----
+INFO=$("$TOOLS/imginfo" "$IMAGES/test_udf_only.img" 2>/dev/null)
+assert_contains "udf-only: backend" "udf" "$INFO"
+assert_contains "udf-only: volume" "UDF_TEST" "$INFO"
+
+# ---- ISO/UDF bridge (ISO+RR should win by default) ----
+INFO=$("$TOOLS/imginfo" "$IMAGES/test_udf_bridge.iso" 2>/dev/null)
+ROOT=$("$TOOLS/imgls" "$IMAGES/test_udf_bridge.iso" 2>/dev/null)
+assert_contains "bridge: backend is RR (not UDF)" "rock_ridge" "$INFO"
+assert_contains "bridge: has files" "SHORT.TXT" "$ROOT"
+
+# ---- UDF forced on bridge disc (-u flag) ----
+ROOT=$("$TOOLS/imgls" -u "$IMAGES/test_udf_bridge.iso" 2>/dev/null)
+assert_contains "udf-forced: dir listing" "SHORT.TXT" "$ROOT"
+assert_contains "udf-forced: long name" "long filename with spaces.txt" "$ROOT"
+assert_contains "udf-forced: deep dir" "deep" "$ROOT"
+
+CONTENT=$("$TOOLS/imgcat" -u "$IMAGES/test_udf_bridge.iso" /SHORT.TXT 2>/dev/null)
+assert_eq "udf-forced: file content" "Short" "$CONTENT"
+
+DEEP=$("$TOOLS/imgls" -u "$IMAGES/test_udf_bridge.iso" /deep/subdir 2>/dev/null)
+assert_contains "udf-forced: nested file" "nested.txt" "$DEEP"
+
+CONTENT=$("$TOOLS/imgcat" -u "$IMAGES/test_udf_bridge.iso" /deep/subdir/nested.txt 2>/dev/null)
+assert_eq "udf-forced: nested read" "Deep file" "$CONTENT"
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"

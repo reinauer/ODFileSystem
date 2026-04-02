@@ -16,21 +16,35 @@ int main(int argc, char **argv)
     odfs_mount_opts_t opts;
     odfs_log_state_t log;
     odfs_err_t err;
+    const char *image = NULL;
+    const char *path = NULL;
+    int force_udf = 0;
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: imgcat <image.iso> <path>\n");
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--udf") == 0)
+            force_udf = 1;
+        else if (!image)
+            image = argv[i];
+        else
+            path = argv[i];
+    }
+
+    if (!image || !path) {
+        fprintf(stderr, "usage: imgcat [-u] <image> <path>\n");
         return 1;
     }
 
-    err = odfs_media_open_image(argv[1], &media);
+    err = odfs_media_open_image(image, &media);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: cannot open '%s': %s\n",
-                argv[1], odfs_err_str(err));
+                image, odfs_err_str(err));
         return 1;
     }
 
     odfs_log_init(&log);
     odfs_mount_opts_default(&opts);
+    if (force_udf)
+        opts.prefer_udf = 1;
 
     err = odfs_mount(&media, &opts, &log, &mnt);
     if (err != ODFS_OK) {
@@ -40,9 +54,9 @@ int main(int argc, char **argv)
     }
 
     odfs_node_t node;
-    err = odfs_resolve_path(&mnt, argv[2], &node);
+    err = odfs_resolve_path(&mnt, path, &node);
     if (err != ODFS_OK) {
-        fprintf(stderr, "error: path '%s': %s\n", argv[2], odfs_err_str(err));
+        fprintf(stderr, "error: path '%s': %s\n", path, odfs_err_str(err));
         odfs_unmount(&mnt);
         return 1;
     }

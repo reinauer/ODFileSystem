@@ -15,19 +15,20 @@ extern const odfs_backend_ops_t iso9660_backend_ops;
 #if ODFS_FEATURE_JOLIET
 extern const odfs_backend_ops_t joliet_backend_ops;
 #endif
+#if ODFS_FEATURE_UDF
+extern const odfs_backend_ops_t udf_backend_ops;
+#endif
 
 /*
  * Backend probe table — order defines precedence.
  *
  * ISO9660 is probed first because Rock Ridge detection happens
- * inside the ISO9660 mount (it augments plain ISO). If RR is
- * found, the backend reports ODFS_BACKEND_ROCK_RIDGE.
+ * inside the ISO9660 mount. Joliet is probed second for its
+ * Unicode names. UDF is probed independently — UDF-only images
+ * have no ISO 9660 PVD, so UDF must not depend on ISO probing.
  *
- * Joliet is probed second — it has its own directory tree from
- * the SVD and provides Unicode names. If both RR and Joliet are
- * present, RR wins (per PLAN.md precedence: RR > Joliet > ISO).
- *
- * When force_backend is set, only the matching backend is tried.
+ * For ISO/UDF bridge discs, the mount logic selects ISO+RR or
+ * Joliet by default (per PLAN.md), unless prefer_udf is set.
  */
 static const odfs_backend_ops_t *backend_table[] = {
 #if ODFS_FEATURE_ISO9660
@@ -35,6 +36,9 @@ static const odfs_backend_ops_t *backend_table[] = {
 #endif
 #if ODFS_FEATURE_JOLIET
     &joliet_backend_ops,
+#endif
+#if ODFS_FEATURE_UDF
+    &udf_backend_ops,
 #endif
     NULL
 };
@@ -119,6 +123,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     const odfs_backend_ops_t *chosen = NULL;
     const odfs_backend_ops_t *iso_candidate = NULL;
     const odfs_backend_ops_t *joliet_candidate = NULL;
+    const odfs_backend_ops_t *udf_candidate = NULL;
 
     for (int i = 0; backend_table[i] != NULL; i++) {
         const odfs_backend_ops_t *be = backend_table[i];
@@ -138,23 +143,33 @@ odfs_err_t odfs_mount(odfs_media_t *media,
                 iso_candidate = be;
             else if (be->backend_type == ODFS_BACKEND_JOLIET)
                 joliet_candidate = be;
+            else if (be->backend_type == ODFS_BACKEND_UDF)
+                udf_candidate = be;
             else
-                { chosen = be; break; } /* UDF/HFS/etc — use directly */
+                { chosen = be; break; } /* HFS/etc — use directly */
         }
+    }
+
+    /*
+     * If user wants UDF and UDF was found, use it directly.
+     * This is important for UDF-only images that have no ISO PVD.
+     */
+    if (!chosen && udf_candidate && mnt->opts.prefer_udf) {
+        err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = udf_candidate;
     }
 
     /* select best ISO-family candidate */
     if (!chosen && iso_candidate) {
-        /* try ISO mount — if it detects RR, we use it */
         err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
                                    &mnt->root, &mnt->backend_ctx);
         if (err == ODFS_OK) {
             if (mnt->root.backend == ODFS_BACKEND_ROCK_RIDGE ||
                 mnt->opts.disable_joliet || !joliet_candidate) {
-                /* RR found, or Joliet disabled/absent — keep ISO+RR */
                 chosen = iso_candidate;
             } else {
-                /* no RR, Joliet available — switch to Joliet */
                 iso_candidate->unmount(mnt->backend_ctx);
                 mnt->backend_ctx = NULL;
             }
@@ -168,7 +183,15 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             chosen = joliet_candidate;
     }
 
-    /* last resort: plain ISO (if Joliet mount failed but ISO was detected) */
+    /* UDF fallback: if no ISO-family worked, try UDF */
+    if (!chosen && udf_candidate) {
+        err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = udf_candidate;
+    }
+
+    /* last resort: plain ISO */
     if (!chosen && iso_candidate && !mnt->backend_ctx) {
         err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
                                    &mnt->root, &mnt->backend_ctx);
