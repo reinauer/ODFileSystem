@@ -11,6 +11,10 @@
 #include "odfs/node.h"
 #include "odfs/error.h"
 
+#if ODFS_FEATURE_ROCK_RIDGE
+#include "rock_ridge/rock_ridge.h"
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
@@ -33,34 +37,29 @@ static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
     ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
 }
 
-/*
- * Copy a fixed-length string field, trimming trailing spaces and NUL.
- */
-static void iso_copy_strfield(const uint8_t *src, size_t src_len,
-                              char *dst, size_t dst_size)
-{
-    size_t len = src_len;
-    while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == '\0'))
-        len--;
-    if (len >= dst_size)
-        len = dst_size - 1;
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-}
+/* iso_copy_strfield is now in iso9660.h as static inline */
 
 /*
  * Parse a directory record at the given pointer into an odfs_node_t.
  * Returns the total record length consumed, or 0 on error / end of records.
+ * If sua_out/sua_len_out are non-NULL, returns a pointer to and length of
+ * the System Use Area (for Rock Ridge parsing).
  */
 static int iso_parse_dir_record(const uint8_t *data, size_t avail,
                                 uint32_t session_start,
                                 uint32_t *next_id,
                                 int lowercase,
-                                odfs_node_t *node)
+                                odfs_node_t *node,
+                                const uint8_t **sua_out,
+                                size_t *sua_len_out)
 {
     uint8_t rec_len;
     uint8_t name_len;
     uint8_t flags;
+    size_t name_end;
+
+    if (sua_out) *sua_out = NULL;
+    if (sua_len_out) *sua_len_out = 0;
 
     if (avail < 1)
         return 0;
@@ -95,11 +94,9 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
 
     /* name */
     if (name_len == 1 && data[ISO_DR_NAME] == 0x00) {
-        /* "." entry */
         node->name[0] = '.';
         node->name[1] = '\0';
     } else if (name_len == 1 && data[ISO_DR_NAME] == 0x01) {
-        /* ".." entry */
         node->name[0] = '.';
         node->name[1] = '.';
         node->name[2] = '\0';
@@ -107,6 +104,16 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
         odfs_iso_name_to_display((const char *)&data[ISO_DR_NAME], name_len,
                                   node->name, sizeof(node->name),
                                   lowercase);
+    }
+
+    /* System Use Area starts after filename, padded to even offset.
+     * ECMA-119: if name_len is even, a pad byte follows the name. */
+    name_end = 33 + name_len;
+    if ((name_len & 1) == 0)
+        name_end++; /* pad byte after even-length filename */
+    if (name_end < rec_len && sua_out && sua_len_out) {
+        *sua_out = &data[name_end];
+        *sua_len_out = rec_len - name_end;
     }
 
     return (int)rec_len;
@@ -222,6 +229,35 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE], &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
+#if ODFS_FEATURE_ROCK_RIDGE
+    /* detect Rock Ridge by reading the root directory's "." entry */
+    {
+        const uint8_t *root_sector;
+        err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
+        if (err == ODFS_OK) {
+            /* the "." entry is the first record in the root directory */
+            uint8_t dot_rec_len = root_sector[ISO_DR_LENGTH];
+            uint8_t dot_name_len = root_sector[ISO_DR_NAME_LEN];
+            if (dot_rec_len >= 34 && dot_name_len == 1) {
+                size_t sua_start = 34; /* 33 + 1 byte name, already even */
+                if (sua_start < dot_rec_len) {
+                    const uint8_t *sua = root_sector + sua_start;
+                    size_t sua_len = dot_rec_len - sua_start;
+                    int rr_skip = 0;
+                    if (rr_detect(sua, sua_len, &rr_skip)) {
+                        ctx->has_rock_ridge = 1;
+                        ctx->rr_skip = rr_skip;
+                        root_out->backend = ODFS_BACKEND_ROCK_RIDGE;
+                        ODFS_INFO(log, ODFS_SUB_RR,
+                                   "Rock Ridge extensions detected (skip=%d)",
+                                   rr_skip);
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     *backend_ctx = ctx;
     return ODFS_OK;
 }
@@ -276,14 +312,65 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         }
 
         odfs_node_t node;
+        const uint8_t *sua = NULL;
+        size_t sua_len = 0;
         int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
-                                            &ctx->next_node_id, lowercase, &node);
+                                            &ctx->next_node_id, lowercase,
+                                            &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
 
         node.parent_id = dir->id;
+
+#if ODFS_FEATURE_ROCK_RIDGE
+        /* apply Rock Ridge overrides */
+        if (ctx->has_rock_ridge && sua && sua_len > 0) {
+            rr_info_t rr;
+            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+
+            /* skip relocated entries (RE) */
+            if (rr.is_relocated) {
+                offset += consumed;
+                continue;
+            }
+
+            /* use RR name if available */
+            if (rr.has_name && rr.name[0] != '\0') {
+                size_t nlen = strlen(rr.name);
+                if (nlen >= sizeof(node.name))
+                    nlen = sizeof(node.name) - 1;
+                memcpy(node.name, rr.name, nlen);
+                node.name[nlen] = '\0';
+            }
+
+            /* use RR POSIX attributes */
+            if (rr.has_posix) {
+                node.mode = rr.mode;
+                /* update kind from POSIX mode */
+                if ((rr.mode & 0170000) == 0120000)
+                    node.kind = ODFS_NODE_SYMLINK;
+                else if ((rr.mode & 0170000) == 0040000)
+                    node.kind = ODFS_NODE_DIR;
+                else
+                    node.kind = ODFS_NODE_FILE;
+            }
+
+            /* use RR timestamps */
+            if (rr.has_timestamps) {
+                node.mtime = rr.mtime;
+                node.ctime = rr.ctime;
+            }
+
+            /* follow child links (CL) for relocated directories */
+            if (rr.has_child_link) {
+                node.extent.lba = rr.child_link_lba + ctx->session_start;
+            }
+
+            node.backend = ODFS_BACKEND_ROCK_RIDGE;
+        }
+#endif
 
         /* skip . and .. entries */
         if ((node.name[0] == '.' && node.name[1] == '\0') ||

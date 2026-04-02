@@ -12,11 +12,29 @@
 #if ODFS_FEATURE_ISO9660
 extern const odfs_backend_ops_t iso9660_backend_ops;
 #endif
+#if ODFS_FEATURE_JOLIET
+extern const odfs_backend_ops_t joliet_backend_ops;
+#endif
 
-/* ordered backend probe table (highest priority first) */
+/*
+ * Backend probe table — order defines precedence.
+ *
+ * ISO9660 is probed first because Rock Ridge detection happens
+ * inside the ISO9660 mount (it augments plain ISO). If RR is
+ * found, the backend reports ODFS_BACKEND_ROCK_RIDGE.
+ *
+ * Joliet is probed second — it has its own directory tree from
+ * the SVD and provides Unicode names. If both RR and Joliet are
+ * present, RR wins (per PLAN.md precedence: RR > Joliet > ISO).
+ *
+ * When force_backend is set, only the matching backend is tried.
+ */
 static const odfs_backend_ops_t *backend_table[] = {
 #if ODFS_FEATURE_ISO9660
     &iso9660_backend_ops,
+#endif
+#if ODFS_FEATURE_JOLIET
+    &joliet_backend_ops,
 #endif
     NULL
 };
@@ -74,29 +92,73 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     uint32_t session_start = 0;
     /* TODO: session discovery from TOC when force_session != -1 */
 
-    /* probe backends in priority order */
+    /*
+     * Probe backends and select best match.
+     *
+     * Precedence (highest first): Rock Ridge > Joliet > plain ISO.
+     * ISO9660 is always probed first because RR detection happens
+     * inside its mount. If RR is found, we're done. If not, and
+     * Joliet is available, prefer Joliet over plain ISO for its
+     * Unicode names. User can force a specific backend.
+     */
     const odfs_backend_ops_t *chosen = NULL;
+    const odfs_backend_ops_t *iso_candidate = NULL;
+    const odfs_backend_ops_t *joliet_candidate = NULL;
+
     for (int i = 0; backend_table[i] != NULL; i++) {
         const odfs_backend_ops_t *be = backend_table[i];
 
-        /* skip if user forced a different backend */
-        if (mnt->opts.force_backend != 0) {
-            /* match by type enum — for now just ISO9660 */
-            if (mnt->opts.force_backend == ODFS_BACKEND_ISO9660 &&
-                be != &iso9660_backend_ops)
-                continue;
-        }
+        if (mnt->opts.force_backend != 0 &&
+            (odfs_backend_type_t)mnt->opts.force_backend != be->backend_type)
+            continue;
 
         ODFS_DEBUG(&mnt->log, ODFS_SUB_MOUNT,
                     "probing backend: %s", be->name);
 
         err = be->probe(&mnt->cache, &mnt->log, session_start);
         if (err == ODFS_OK) {
-            chosen = be;
             ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                        "detected format: %s", be->name);
-            break;
+            if (be->backend_type == ODFS_BACKEND_ISO9660)
+                iso_candidate = be;
+            else if (be->backend_type == ODFS_BACKEND_JOLIET)
+                joliet_candidate = be;
+            else
+                { chosen = be; break; } /* UDF/HFS/etc — use directly */
         }
+    }
+
+    /* select best ISO-family candidate */
+    if (!chosen && iso_candidate) {
+        /* try ISO mount — if it detects RR, we use it */
+        err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK) {
+            if (mnt->root.backend == ODFS_BACKEND_ROCK_RIDGE ||
+                mnt->opts.disable_joliet || !joliet_candidate) {
+                /* RR found, or Joliet disabled/absent — keep ISO+RR */
+                chosen = iso_candidate;
+            } else {
+                /* no RR, Joliet available — switch to Joliet */
+                iso_candidate->unmount(mnt->backend_ctx);
+                mnt->backend_ctx = NULL;
+            }
+        }
+    }
+
+    if (!chosen && joliet_candidate) {
+        err = joliet_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                      &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = joliet_candidate;
+    }
+
+    /* last resort: plain ISO (if Joliet mount failed but ISO was detected) */
+    if (!chosen && iso_candidate && !mnt->backend_ctx) {
+        err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = iso_candidate;
     }
 
     if (!chosen) {
@@ -106,18 +168,21 @@ odfs_err_t odfs_mount(odfs_media_t *media,
         return ODFS_ERR_BAD_FORMAT;
     }
 
-    /* mount with selected backend */
-    err = chosen->mount(&mnt->cache, &mnt->log, session_start,
-                        &mnt->root, &mnt->backend_ctx);
-    if (err != ODFS_OK) {
-        ODFS_ERROR(&mnt->log, ODFS_SUB_MOUNT,
-                    "backend %s mount failed: %s", chosen->name, odfs_err_str(err));
-        odfs_cache_destroy(&mnt->cache);
-        return err;
+    /* if we already mounted above, skip redundant mount */
+    if (!mnt->backend_ctx) {
+        err = chosen->mount(&mnt->cache, &mnt->log, session_start,
+                            &mnt->root, &mnt->backend_ctx);
+        if (err != ODFS_OK) {
+            ODFS_ERROR(&mnt->log, ODFS_SUB_MOUNT,
+                        "backend %s mount failed: %s", chosen->name,
+                        odfs_err_str(err));
+            odfs_cache_destroy(&mnt->cache);
+            return err;
+        }
     }
 
     mnt->backend_ops = chosen;
-    mnt->active_backend = chosen->backend_type;
+    mnt->active_backend = mnt->root.backend;
 
     /* retrieve volume name from backend */
     if (chosen->get_volume_name)

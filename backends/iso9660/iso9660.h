@@ -42,6 +42,20 @@ static inline uint16_t iso_read_le16(const uint8_t *p)
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
+/* copy a fixed-length string field, trimming trailing spaces and NUL */
+static inline void iso_copy_strfield(const uint8_t *src, size_t src_len,
+                                     char *dst, size_t dst_size)
+{
+    size_t len = src_len;
+    while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == '\0'))
+        len--;
+    if (len >= dst_size)
+        len = dst_size - 1;
+    for (size_t i = 0; i < len; i++)
+        dst[i] = (char)src[i];
+    dst[len] = '\0';
+}
+
 /* --- Primary Volume Descriptor (ECMA-119 8.4) --- */
 
 /*
@@ -115,6 +129,8 @@ typedef struct iso_context {
     uint32_t       session_start;
     uint32_t       next_node_id;
     int            lowercase;     /* lowercase ISO names for display */
+    int            has_rock_ridge; /* Rock Ridge extensions detected */
+    int            rr_skip;       /* SP skip bytes for RR entries */
 } iso_context_t;
 
 /* --- backend ops (exposed for registration) --- */
