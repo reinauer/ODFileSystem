@@ -83,16 +83,36 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
     handler_global_t *g = am->g;
 
     /*
-     * Read multiple sectors in one I/O request. CMD_READ uses a
-     * 32-bit offset which limits us to 4GB (sufficient for CD,
-     * but not DVD > 4GB).
+     * Read multiple sectors in one I/O request.
      *
-     * TODO: use TD_READ64 / NSCMD_TD_READ64 for >4GB media (DVD).
+     * For offsets > 4GB (DVD), use TD_READ64 which splits the
+     * 64-bit byte offset across io_Offset (low 32) and io_Actual
+     * (high 32). For offsets <= 4GB, use CMD_READ.
+     *
+     * CDVDFS reference: Read_From_Drive() in cdrom.c
      */
-    g->devreq->io_Command = CMD_READ;
-    g->devreq->io_Offset  = lba * g->sector_size;
-    g->devreq->io_Length  = count * g->sector_size;
-    g->devreq->io_Data    = buf;
+    {
+        ULONG byte_offset_lo = lba * g->sector_size;
+        ULONG byte_offset_hi = 0;
+
+        /* compute 64-bit byte offset: lba * sector_size
+         * For 2048-byte sectors: offset = lba << 11
+         * High bits: lba >> 21 */
+        if (g->sector_size == 2048) {
+            byte_offset_lo = lba << 11;
+            byte_offset_hi = lba >> 21;
+        }
+
+        g->devreq->io_Offset = byte_offset_lo;
+        g->devreq->io_Actual = byte_offset_hi;
+        g->devreq->io_Length = count * g->sector_size;
+        g->devreq->io_Data   = buf;
+
+        if (byte_offset_hi != 0)
+            g->devreq->io_Command = TD_READ64;
+        else
+            g->devreq->io_Command = CMD_READ;
+    }
 
     if (DoIO((struct IORequest *)g->devreq) != 0)
         return ODFS_ERR_IO;
