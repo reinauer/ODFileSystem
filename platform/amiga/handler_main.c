@@ -10,6 +10,10 @@
 
 #include "handler.h"
 
+#if ODFS_FEATURE_CDDA
+#include "cdda/cdda.h"
+#endif
+
 #include <exec/execbase.h>
 #include <exec/io.h>
 #include <devices/trackdisk.h>
@@ -384,6 +388,17 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
             return ODFS_ERR_NOT_DIR;
 
         parent = cur;
+
+#if ODFS_FEATURE_CDDA
+        /* intercept "CDDA" virtual directory on mixed-mode discs */
+        if (g->has_cdda && cur.extent.lba == g->mount.root.extent.lba &&
+            strcasecmp(comp, "CDDA") == 0) {
+            cur = g->cdda_root;
+            p = end;
+            continue;
+        }
+#endif
+
         err = odfs_lookup(&g->mount, &cur, comp, &cur);
         if (err != ODFS_OK)
             return err;
@@ -606,11 +621,47 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     ec.fib = fib;
     ec.found = 0;
 
+    /* check if CDDA virtual dir was already emitted (sentinel) */
+#if ODFS_FEATURE_CDDA
+#define CDDA_EXNEXT_SENTINEL 0x7FFFFFFE
+    if (resume == CDDA_EXNEXT_SENTINEL + 1) {
+        /* CDDA entry was the last thing we returned — done */
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
+        return;
+    }
+#endif
+
+    /* handle CDDA-rooted dir: delegate to CDDA backend */
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
+        (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
+                                       &g->log, dir, exnext_cb, &ec, &resume);
+        if (ec.found) {
+            fib->fib_DiskKey = (LONG)resume;
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
+        }
+        return;
+    }
+#endif
+
     (void)odfs_readdir(&g->mount, dir, exnext_cb, &ec, &resume);
     if (ec.found) {
-        fib->fib_DiskKey = (LONG)resume; /* save position for next call */
+        fib->fib_DiskKey = (LONG)resume;
         pkt->dp_Res1 = DOSTRUE;
     } else {
+#if ODFS_FEATURE_CDDA
+        /* data entries exhausted — inject CDDA virtual dir if at root */
+        if (g->has_cdda && dir->extent.lba == g->mount.root.extent.lba) {
+            fill_fib(fib, &g->cdda_root);
+            fib->fib_DiskKey = CDDA_EXNEXT_SENTINEL + 1;
+            pkt->dp_Res1 = DOSTRUE;
+            return;
+        }
+#endif
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
     }
@@ -951,14 +1002,43 @@ static void mount_volume(handler_global_t *g)
 
     odfs_mount_opts_default(&opts);
     err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
-    if (err != ODFS_OK)
-        return;
+    if (err != ODFS_OK) {
+#if ODFS_FEATURE_CDDA
+        /* no data filesystem — try pure audio CD */
+        odfs_toc_t toc;
+        if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
+            cdda_mount_from_toc(&toc, 0, &g->cdda_root,
+                                &g->cdda_ctx) == ODFS_OK) {
+            g->has_cdda = 1;
+            g->mounted = 1;
+            g->mount.root = g->cdda_root;
+            g->mount.backend_ops = &cdda_backend_ops;
+            g->mount.backend_ctx = g->cdda_ctx;
+            g->mount.active_backend = ODFS_BACKEND_CDDA;
+            memcpy(g->volname, "Audio CD", 9);
+        }
+#endif
+        if (!g->mounted)
+            return;
+    } else {
+        g->mounted = 1;
+        memcpy(g->volname, g->mount.volume_name, sizeof(g->volname) - 1);
+        g->volname[sizeof(g->volname) - 1] = '\0';
+        if (g->volname[0] == '\0')
+            memcpy(g->volname, "Unnamed", 8);
 
-    g->mounted = 1;
-    memcpy(g->volname, g->mount.volume_name, sizeof(g->volname) - 1);
-    g->volname[sizeof(g->volname) - 1] = '\0';
-    if (g->volname[0] == '\0')
-        memcpy(g->volname, "Unnamed", 8);
+#if ODFS_FEATURE_CDDA
+        /* check for audio tracks on mixed-mode disc */
+        {
+            odfs_toc_t toc;
+            if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
+                cdda_mount_from_toc(&toc, 1, &g->cdda_root,
+                                    &g->cdda_ctx) == ODFS_OK) {
+                g->has_cdda = 1;
+            }
+        }
+#endif
+    }
 
     g->volnode = create_volume_node(g);
     if (g->volnode) {
@@ -980,6 +1060,16 @@ static void unmount_volume(handler_global_t *g)
         while ((node = RemHead((struct List *)&g->locklist)) != NULL)
             FreeMem(node, sizeof(odfs_lock_t));
     }
+
+#if ODFS_FEATURE_CDDA
+    /* free CDDA context if separate from main mount */
+    if (g->has_cdda && g->cdda_ctx &&
+        g->cdda_ctx != g->mount.backend_ctx) {
+        cdda_backend_ops.unmount(g->cdda_ctx);
+    }
+    g->cdda_ctx = NULL;
+    g->has_cdda = 0;
+#endif
 
     odfs_unmount(&g->mount);
     g->mounted = 0;

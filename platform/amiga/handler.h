@@ -54,6 +54,11 @@ typedef struct handler_global {
     /* volume info */
     char                 volname[128];  /* volume name */
 
+    /* CDDA */
+    void                *cdda_ctx;      /* cdda_context_t* if audio tracks present */
+    odfs_node_t         cdda_root;     /* CDDA virtual dir node */
+    int                  has_cdda;      /* audio tracks detected */
+
     /* lock list */
     struct MinList       locklist;      /* active locks */
     ULONG                next_key;      /* next unique lock key */
