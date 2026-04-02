@@ -81,6 +81,7 @@ CORE_SRCS = \
     backends/joliet/joliet.c \
     backends/udf/udf.c \
     backends/hfs/hfs.c \
+    backends/hfsplus/hfsplus.c \
     backends/cdda/cdda.c
 
 # Host-only sources

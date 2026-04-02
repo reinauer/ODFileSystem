@@ -150,6 +150,26 @@ assert_contains "hfs: nested file" "NESTED.TXT" "$DEEP"
 CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR/NESTED.TXT 2>/dev/null)
 assert_eq "hfs: nested read" "Deep file" "$CONTENT"
 
+# ---- HFS+ ----
+if [ -f "$IMAGES/test_hfsplus.iso" ]; then
+    INFO=$("$TOOLS/imginfo" "$IMAGES/test_hfsplus.iso" 2>/dev/null)
+    ROOT=$("$TOOLS/imgls" "$IMAGES/test_hfsplus.iso" 2>/dev/null)
+    assert_contains "hfsplus: backend" "hfsplus" "$INFO"
+    assert_contains "hfsplus: volume" "HFSPLUS_TEST" "$INFO"
+    assert_contains "hfsplus: long name" "long filename with spaces.txt" "$ROOT"
+    assert_contains "hfsplus: mixed case" "MixedCase.Txt" "$ROOT"
+    assert_contains "hfsplus: deep dir" "deep" "$ROOT"
+
+    CONTENT=$("$TOOLS/imgcat" "$IMAGES/test_hfsplus.iso" /SHORT.TXT 2>/dev/null)
+    assert_eq "hfsplus: file content" "Short" "$CONTENT"
+
+    DEEP=$("$TOOLS/imgls" "$IMAGES/test_hfsplus.iso" /deep/subdir 2>/dev/null)
+    assert_contains "hfsplus: nested file" "nested.txt" "$DEEP"
+
+    CONTENT=$("$TOOLS/imgcat" "$IMAGES/test_hfsplus.iso" /deep/subdir/nested.txt 2>/dev/null)
+    assert_eq "hfsplus: nested read" "Deep file" "$CONTENT"
+fi
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"

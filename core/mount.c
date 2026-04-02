@@ -21,6 +21,9 @@ extern const odfs_backend_ops_t udf_backend_ops;
 #if ODFS_FEATURE_HFS
 extern const odfs_backend_ops_t hfs_backend_ops;
 #endif
+#if ODFS_FEATURE_HFSPLUS
+extern const odfs_backend_ops_t hfsplus_backend_ops;
+#endif
 
 /*
  * Backend probe table — order defines precedence.
@@ -41,6 +44,9 @@ static const odfs_backend_ops_t *backend_table[] = {
 #endif
 #if ODFS_FEATURE_HFS
     &hfs_backend_ops,
+#endif
+#if ODFS_FEATURE_HFSPLUS
+    &hfsplus_backend_ops,
 #endif
     NULL
 };

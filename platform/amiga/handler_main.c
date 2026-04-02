@@ -70,6 +70,12 @@ static void unmount_volume(handler_global_t *g);
  *   CD is inserted and can trigger audio playback on double-click.
  *   This is a cosmetic/convenience feature, not required for
  *   filesystem operation.
+ *
+ * TODO: AROS integration
+ *   AROS may need different endianness handling for HFS structures,
+ *   and DirectSCSI may not be available. CDVDFS notes HFS is
+ *   "probably broken" on AROS/x86 due to Motorola alignment
+ *   assumptions. Test and adapt when AROS target is available.
  */
 
 typedef struct amiga_media_ctx {
