@@ -17,6 +17,7 @@
 #include <workbench/startup.h>
 #include <workbench/workbench.h>
 
+#include "aros_compat.h"
 #include "odfs/api.h"
 
 #define ODFS_HANDLER_VERSION  "0.1"
@@ -108,15 +109,15 @@ typedef struct odfs_fh {
 #define LOCK_TO_BPTR(ol) \
     ((ol) ? MKBADDR(&(ol)->lock) : 0)
 
-/* BCPL string to C string */
+/* BCPL string to C string (AROS-compatible) */
 static inline void bstr_to_cstr(BSTR bstr, char *buf, int bufsize)
 {
-    const UBYTE *bs = (const UBYTE *)BADDR(bstr);
-    int len = bs[0];
+    int len = AROS_BSTR_strlen(bstr);
+    const char *addr = (const char *)AROS_BSTR_ADDR(bstr);
     if (len >= bufsize)
         len = bufsize - 1;
     for (int i = 0; i < len; i++)
-        buf[i] = bs[i + 1];
+        buf[i] = addr[i];
     buf[len] = '\0';
 }
 

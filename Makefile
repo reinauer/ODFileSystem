@@ -5,12 +5,16 @@
 
 # ---- toolchain selection ----
 
-# Amiga cross-compiler (m68k-amigaos)
+# Amiga cross-compiler (m68k-amigaos or m68k-aros-gcc)
 CC      = m68k-amigaos-gcc
 STRIP   = m68k-amigaos-strip
 
 # NDK include path (override with: make NDK_PATH=/your/path)
 NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../m68k-amigaos/ndk-include 2>/dev/null)
+
+# AROS cross-compiler (override: make CC=m68k-aros-gcc AROS=1)
+# When AROS=1, uses -static instead of -noixemul and defines __AROS__
+AROS ?= 0
 
 # Host compiler
 HOSTCC ?= cc
@@ -44,10 +48,8 @@ FEATURE_CDDA         ?= 1
 
 # ---- Amiga build flags (following xsysinfo conventions) ----
 
-CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
-          -Wall -Wextra \
-          -Wstrict-prototypes -Wmissing-prototypes \
-          -DAMIGA -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
+FEATURE_DEFS = \
+          -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
           -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \
           -DODFS_FEATURE_ISO9660=$(FEATURE_ISO9660) \
           -DODFS_FEATURE_ROCK_RIDGE=$(FEATURE_ROCK_RIDGE) \
@@ -57,8 +59,24 @@ CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
           -DODFS_FEATURE_HFS=$(FEATURE_HFS) \
           -DODFS_FEATURE_HFSPLUS=$(FEATURE_HFSPLUS) \
           -DODFS_FEATURE_CDDA=$(FEATURE_CDDA)
+
+ifeq ($(AROS),1)
+CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
+          -Wall -Wextra -Werror \
+          -Wstrict-prototypes -Wmissing-prototypes \
+          -Wno-array-bounds \
+          -DAMIGA -D__AROS__ $(FEATURE_DEFS)
+LDFLAGS = -static
+LIBS    = -lamiga -lgcc
+else
+CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
+          -Wall -Wextra -Werror \
+          -Wstrict-prototypes -Wmissing-prototypes \
+          -Wno-array-bounds \
+          -DAMIGA $(FEATURE_DEFS)
 LDFLAGS = -noixemul
 LIBS    = -lamiga -lgcc
+endif
 
 # ---- build directories ----
 

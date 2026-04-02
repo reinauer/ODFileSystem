@@ -323,7 +323,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
                         /* thread record: type(2) reserved(2) parentID(4) namelen(2) name(...) */
                         if (data_off + 8 + 2 < ctx->cat_node_size) {
                             uint16_t tnlen = hfsp_be16(&node[data_off + 8]);
-                            if (tnlen > 0 && data_off + 10 + tnlen * 2 <= ctx->cat_node_size) {
+                            if (tnlen > 0 && data_off + 10 + (uint32_t)tnlen * 2 <= ctx->cat_node_size) {
                                 hfsp_decode_name(&node[data_off + 10], tnlen,
                                                  ctx->volume_name, sizeof(ctx->volume_name));
                             }
@@ -471,7 +471,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             fnode.backend = ODFS_BACKEND_HFSPLUS;
 
             /* decode name from key */
-            if (key_namelen > 0 && roff + 8 + key_namelen * 2 <= ctx->cat_node_size) {
+            if (key_namelen > 0 && roff + 8 + (uint32_t)key_namelen * 2 <= ctx->cat_node_size) {
                 hfsp_decode_name(&node[roff + 8], key_namelen,
                                  fnode.name, sizeof(fnode.name));
             }

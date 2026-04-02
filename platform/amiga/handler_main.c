@@ -63,11 +63,13 @@ static void cleanup_appicon(handler_global_t *g);
  *   CDVDFS additionally aligns to 16 bytes for 68040 DMA performance.
  *
  *
- * TODO: AROS integration
- *   AROS may need different endianness handling for HFS structures,
- *   and DirectSCSI may not be available. CDVDFS notes HFS is
- *   "probably broken" on AROS/x86 due to Motorola alignment
- *   assumptions. Test and adapt when AROS target is available.
+ * AROS compatibility:
+ *   BSTR/BPTR access uses AROS_BSTR_ADDR/AROS_BSTR_strlen macros
+ *   from aros_compat.h, which resolve to AROS or classic AmigaOS
+ *   implementations depending on __AROS__. All on-disc structure
+ *   parsing uses explicit byte-level access, so endianness is
+ *   handled correctly on both big-endian (m68k) and little-endian
+ *   (x86 AROS) targets.
  */
 
 typedef struct amiga_media_ctx {
@@ -1136,6 +1138,9 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
         FreeMem(dl, sizeof(*dl));
         return NULL;
     }
+    /* BCPL string format: length byte + chars + NUL.
+     * This is used for dl_Name in the DOS volume list and is the
+     * same convention on both classic AmigaOS and AROS. */
     bname[0] = namelen;
     memcpy(bname + 1, g->volname, namelen);
     bname[namelen + 1] = '\0';
@@ -1191,13 +1196,12 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
     if (!de->de_Control)
         return;
 
-    /* extract BCPL string */
+    /* extract BCPL string (AROS-compatible) */
     {
-        const UBYTE *bstr = (const UBYTE *)BADDR(de->de_Control);
-        len = bstr[0];
+        len = AROS_BSTR_strlen(de->de_Control);
         if (len <= 0 || (size_t)len >= sizeof(buf) - 1)
             return;
-        memcpy(buf, bstr + 1, len);
+        memcpy(buf, AROS_BSTR_ADDR(de->de_Control), len);
         buf[len] = '\n'; /* ReadArgs needs newline terminator */
         buf[len + 1] = '\0';
     }
@@ -1591,11 +1595,10 @@ void handler_main(void)
 
     /* parse FSSM */
     {
-        const UBYTE *bdevname = (const UBYTE *)BADDR(fssm->fssm_Device);
-        int len = bdevname[0];
+        int len = AROS_BSTR_strlen(fssm->fssm_Device);
         if (len >= (int)sizeof(g->devname))
             len = sizeof(g->devname) - 1;
-        memcpy(g->devname, bdevname + 1, len);
+        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
         g->devname[len] = '\0';
     }
     g->devunit = fssm->fssm_Unit;
