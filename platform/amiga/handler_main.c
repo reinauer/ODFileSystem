@@ -51,12 +51,6 @@ static void unmount_volume(handler_global_t *g);
  *   MEMF_24BIT on systems with Zorro III). This is deferred until
  *   we can test on real hardware with DMA-sensitive controllers.
  *
- * TODO: SCSI block size negotiation
- *   CDVDFS issues SCSI Mode Select to set 2048-byte blocks. Most
- *   CD drives default to 2048 already (the exception being some
- *   early Sun drives). We rely on the drive/device driver using
- *   the standard 2048-byte CD sector size. If this causes problems
- *   on specific hardware, add Mode Select here.
  *
  * TODO: DosEnvec control string parsing
  *   CDVDFS parses mount options (LOWERCASE, ROCKRIDGE, JOLIET,
@@ -206,6 +200,85 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     toc->last_session = last_track;
 
     return (session_count > 0) ? ODFS_OK : ODFS_ERR_BAD_FORMAT;
+}
+
+/* ------------------------------------------------------------------ */
+/* SCSI helper commands                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Issue SCSI Test Unit Ready (0x00).
+ * Returns 1 if drive is ready, 0 otherwise.
+ */
+static int scsi_test_unit_ready(handler_global_t *g)
+{
+    uint8_t cmd[6];
+    struct SCSICmd scsi;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(&scsi, 0, sizeof(scsi));
+
+    cmd[0] = 0x00; /* TEST UNIT READY */
+
+    scsi.scsi_Data      = NULL;
+    scsi.scsi_Length     = 0;
+    scsi.scsi_CmdLength  = 6;
+    scsi.scsi_Command    = cmd;
+    scsi.scsi_Flags      = SCSIF_AUTOSENSE;
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    return (DoIO((struct IORequest *)g->devreq) == 0) ? 1 : 0;
+}
+
+/*
+ * Issue SCSI Mode Select (0x15) to set the block size.
+ *
+ * This ensures the drive uses 2048-byte blocks (standard for CD-ROM
+ * data). Some drives/controllers may default to 512-byte blocks or
+ * be left in an odd state after previous operations.
+ *
+ * CDVDFS reference: Mode_Select() in cdrom.c
+ *
+ * p_block_length: typically 2048 for CD-ROM data, 2352 for raw audio.
+ * Returns 1 on success, 0 on failure (non-fatal).
+ */
+static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
+{
+    uint8_t cmd[6];
+    uint8_t mode_data[12];
+    struct SCSICmd scsi;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(mode_data, 0, sizeof(mode_data));
+    memset(&scsi, 0, sizeof(scsi));
+
+    /* MODE SELECT(6) CDB */
+    cmd[0] = 0x15;  /* MODE SELECT */
+    cmd[1] = 0x10;  /* PF (Page Format) bit set */
+    cmd[4] = 12;    /* parameter list length */
+
+    /* Mode parameter header + block descriptor */
+    mode_data[3] = 8;  /* block descriptor length */
+    /* mode_data[4] = 0; density code (default) */
+    /* block length in bytes 9-11 (big-endian) */
+    mode_data[9]  = (uint8_t)(block_length >> 16);
+    mode_data[10] = (uint8_t)(block_length >> 8);
+    mode_data[11] = (uint8_t)(block_length);
+
+    scsi.scsi_Data      = (UWORD *)mode_data;
+    scsi.scsi_Length     = sizeof(mode_data);
+    scsi.scsi_CmdLength  = 6;
+    scsi.scsi_Command    = cmd;
+    scsi.scsi_Flags      = SCSIF_WRITE | SCSIF_AUTOSENSE;
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    return (DoIO((struct IORequest *)g->devreq) == 0) ? 1 : 0;
 }
 
 static const odfs_media_ops_t amiga_media_ops = {
@@ -1276,6 +1349,17 @@ void handler_main(void)
     }
 
     g->devnode->dn_Task = g->dosport;
+
+    /*
+     * SCSI drive setup: wait for unit ready and set 2048-byte blocks.
+     * Mode Select may fail on non-SCSI devices (e.g. IDE with
+     * trackdisk.device) — this is non-fatal.
+     */
+    scsi_test_unit_ready(g);
+    if (!scsi_mode_select(g, 2048)) {
+        /* Mode Select failed — drive probably doesn't support it
+         * or is already in 2048-byte mode. Not fatal. */
+    }
 
     /* set up media adapter */
     amctx.g = g;
