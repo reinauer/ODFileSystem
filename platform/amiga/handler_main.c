@@ -23,6 +23,8 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <proto/icon.h>
+#include <proto/wb.h>
 
 #include <string.h>
 
@@ -32,12 +34,17 @@ static const char version_string[] =
 /* library bases — set by handler_main() */
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
+struct Library *IconBase;
+struct Library *WorkbenchBase;
 
 /* forward declarations */
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
 static void mount_volume(handler_global_t *g);
 static void unmount_volume(handler_global_t *g);
+static void show_appicon(handler_global_t *g);
+static void hide_appicon(handler_global_t *g);
+static void cleanup_appicon(handler_global_t *g);
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
@@ -59,11 +66,6 @@ static void unmount_volume(handler_global_t *g);
  *   storage driver loads the handler directly. Add if mountlist-
  *   based configuration becomes necessary.
  *
- * TODO: AppIcon / Workbench integration
- *   CDVDFS displays a disc icon on the Workbench desktop when a
- *   CD is inserted and can trigger audio playback on double-click.
- *   This is a cosmetic/convenience feature, not required for
- *   filesystem operation.
  *
  * TODO: AROS integration
  *   AROS may need different endianness handling for HFS structures,
@@ -1197,12 +1199,16 @@ static void mount_volume(handler_global_t *g)
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
         }
     }
+
+    show_appicon(g);
 }
 
 static void unmount_volume(handler_global_t *g)
 {
     if (!g->mounted)
         return;
+
+    hide_appicon(g);
 
     /* free all locks (they become stale on media change) */
     {
@@ -1339,6 +1345,71 @@ static void handle_media_change(handler_global_t *g)
 }
 
 /* ------------------------------------------------------------------ */
+/* Workbench AppIcon                                                   */
+/* ------------------------------------------------------------------ */
+
+static void show_appicon(handler_global_t *g)
+{
+    if (!IconBase || !WorkbenchBase)
+        return;
+    if (g->appicon)
+        return; /* already shown */
+
+    if (!g->appport) {
+        g->appport = CreateMsgPort();
+        if (!g->appport)
+            return;
+    }
+
+    /* get a default disc icon if we don't have one yet */
+    if (!g->diskobj) {
+        g->diskobj = GetDefDiskObject(WBDISK);
+        if (!g->diskobj)
+            return;
+    }
+
+    g->appicon = AddAppIconA(0, 0,
+                              (UBYTE *)g->volname,
+                              g->appport,
+                              MKBADDR(NULL),
+                              g->diskobj,
+                              NULL);
+    /* AddAppIcon may fail if Workbench hasn't loaded yet — non-fatal */
+}
+
+static void hide_appicon(handler_global_t *g)
+{
+    struct Message *msg;
+
+    if (!IconBase || !WorkbenchBase)
+        return;
+
+    if (g->appicon) {
+        RemoveAppIcon(g->appicon);
+        g->appicon = NULL;
+    }
+
+    if (g->appport) {
+        while ((msg = GetMsg(g->appport)) != NULL)
+            ReplyMsg(msg);
+    }
+}
+
+static void cleanup_appicon(handler_global_t *g)
+{
+    hide_appicon(g);
+
+    if (g->appport) {
+        DeleteMsgPort(g->appport);
+        g->appport = NULL;
+    }
+    if (g->diskobj) {
+        FreeDiskObject(g->diskobj);
+        g->diskobj = NULL;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* handler main entry point                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1390,6 +1461,12 @@ void handler_main(void)
         return;
     }
     g->dosbase = DOSBase;
+
+    /* open optional libraries for Workbench integration */
+    IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 36);
+    WorkbenchBase = OpenLibrary((CONST_STRPTR)"workbench.library", 36);
+    g->iconbase = IconBase;
+    g->wbbase = WorkbenchBase;
 
     /* parse FSSM */
     {
@@ -1456,7 +1533,10 @@ void handler_main(void)
     /* ---- main packet loop ---- */
     dossig = 1UL << g->dosport->mp_SigBit;
     chgsig = (g->chgsigbit >= 0) ? (1UL << g->chgsigbit) : 0;
-    waitmask = dossig | chgsig;
+    {
+        ULONG appsig = g->appport ? (1UL << g->appport->mp_SigBit) : 0;
+        waitmask = dossig | chgsig | appsig;
+    }
 
     while (running) {
         ULONG sigs = Wait(waitmask);
@@ -1466,6 +1546,13 @@ void handler_main(void)
             handle_media_change(g);
             /* re-init media adapter after remount */
             amctx.g = g;
+        }
+
+        /* AppIcon double-click — drain messages */
+        if (g->appport) {
+            struct Message *appmsg;
+            while ((appmsg = GetMsg(g->appport)) != NULL)
+                ReplyMsg(appmsg);
         }
 
         /* DOS packets */
@@ -1513,6 +1600,12 @@ shutdown:
 
     if (g->devnode)
         g->devnode->dn_Task = NULL;
+
+    cleanup_appicon(g);
+    if (WorkbenchBase)
+        CloseLibrary(WorkbenchBase);
+    if (IconBase)
+        CloseLibrary(IconBase);
 
     CloseLibrary((struct Library *)DOSBase);
     FreeMem(g, sizeof(*g));
