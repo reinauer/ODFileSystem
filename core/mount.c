@@ -18,17 +18,16 @@ extern const odfs_backend_ops_t joliet_backend_ops;
 #if ODFS_FEATURE_UDF
 extern const odfs_backend_ops_t udf_backend_ops;
 #endif
+#if ODFS_FEATURE_HFS
+extern const odfs_backend_ops_t hfs_backend_ops;
+#endif
 
 /*
  * Backend probe table — order defines precedence.
  *
- * ISO9660 is probed first because Rock Ridge detection happens
- * inside the ISO9660 mount. Joliet is probed second for its
- * Unicode names. UDF is probed independently — UDF-only images
- * have no ISO 9660 PVD, so UDF must not depend on ISO probing.
- *
- * For ISO/UDF bridge discs, the mount logic selects ISO+RR or
- * Joliet by default (per PLAN.md), unless prefer_udf is set.
+ * ISO9660 first (RR detected inside mount). Joliet second.
+ * UDF and HFS probed independently for standalone media.
+ * For hybrid discs, ISO-family wins unless overridden.
  */
 static const odfs_backend_ops_t *backend_table[] = {
 #if ODFS_FEATURE_ISO9660
@@ -39,6 +38,9 @@ static const odfs_backend_ops_t *backend_table[] = {
 #endif
 #if ODFS_FEATURE_UDF
     &udf_backend_ops,
+#endif
+#if ODFS_FEATURE_HFS
+    &hfs_backend_ops,
 #endif
     NULL
 };
@@ -124,6 +126,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     const odfs_backend_ops_t *iso_candidate = NULL;
     const odfs_backend_ops_t *joliet_candidate = NULL;
     const odfs_backend_ops_t *udf_candidate = NULL;
+    const odfs_backend_ops_t *hfs_candidate = NULL;
 
     for (int i = 0; backend_table[i] != NULL; i++) {
         const odfs_backend_ops_t *be = backend_table[i];
@@ -145,20 +148,25 @@ odfs_err_t odfs_mount(odfs_media_t *media,
                 joliet_candidate = be;
             else if (be->backend_type == ODFS_BACKEND_UDF)
                 udf_candidate = be;
+            else if (be->backend_type == ODFS_BACKEND_HFS)
+                hfs_candidate = be;
             else
-                { chosen = be; break; } /* HFS/etc — use directly */
+                { chosen = be; break; }
         }
     }
 
-    /*
-     * If user wants UDF and UDF was found, use it directly.
-     * This is important for UDF-only images that have no ISO PVD.
-     */
+    /* if user prefers UDF or HFS, try those first */
     if (!chosen && udf_candidate && mnt->opts.prefer_udf) {
         err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
                                    &mnt->root, &mnt->backend_ctx);
         if (err == ODFS_OK)
             chosen = udf_candidate;
+    }
+    if (!chosen && hfs_candidate && mnt->opts.prefer_hfs) {
+        err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = hfs_candidate;
     }
 
     /* select best ISO-family candidate */
@@ -183,12 +191,20 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             chosen = joliet_candidate;
     }
 
-    /* UDF fallback: if no ISO-family worked, try UDF */
+    /* UDF fallback */
     if (!chosen && udf_candidate) {
         err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
                                    &mnt->root, &mnt->backend_ctx);
         if (err == ODFS_OK)
             chosen = udf_candidate;
+    }
+
+    /* HFS fallback (or if prefer_hfs is set) */
+    if (!chosen && hfs_candidate) {
+        err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                   &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = hfs_candidate;
     }
 
     /* last resort: plain ISO */

@@ -136,6 +136,20 @@ assert_contains "udf-forced: nested file" "nested.txt" "$DEEP"
 CONTENT=$("$TOOLS/imgcat" -u "$IMAGES/test_udf_bridge.iso" /deep/subdir/nested.txt 2>/dev/null)
 assert_eq "udf-forced: nested read" "Deep file" "$CONTENT"
 
+# ---- HFS (hybrid ISO/HFS disc) ----
+ROOT=$("$TOOLS/imgls" -h "$IMAGES/test_hfs.iso" 2>/dev/null)
+assert_contains "hfs: dir listing" "SHORT.TXT" "$ROOT"
+assert_contains "hfs: has subdir" "DEEP" "$ROOT"
+
+CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /SHORT.TXT 2>/dev/null)
+assert_eq "hfs: file content" "Short" "$CONTENT"
+
+DEEP=$("$TOOLS/imgls" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR 2>/dev/null)
+assert_contains "hfs: nested file" "NESTED.TXT" "$DEEP"
+
+CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR/NESTED.TXT 2>/dev/null)
+assert_eq "hfs: nested read" "Deep file" "$CONTENT"
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"

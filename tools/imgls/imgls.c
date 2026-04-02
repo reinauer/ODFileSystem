@@ -26,11 +26,13 @@ int main(int argc, char **argv)
     odfs_err_t err;
     const char *image = NULL;
     const char *path = "/";
-    int force_udf = 0;
+    int force_udf = 0, force_hfs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--udf") == 0)
             force_udf = 1;
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--hfs") == 0)
+            force_hfs = 1;
         else if (!image)
             image = argv[i];
         else
@@ -38,7 +40,7 @@ int main(int argc, char **argv)
     }
 
     if (!image) {
-        fprintf(stderr, "usage: imgls [-u] <image> [path]\n");
+        fprintf(stderr, "usage: imgls [-u|-h] <image> [path]\n");
         return 1;
     }
 
@@ -53,6 +55,8 @@ int main(int argc, char **argv)
     odfs_mount_opts_default(&opts);
     if (force_udf)
         opts.prefer_udf = 1;
+    if (force_hfs)
+        opts.prefer_hfs = 1;
 
     err = odfs_mount(&media, &opts, &log, &mnt);
     if (err != ODFS_OK) {
