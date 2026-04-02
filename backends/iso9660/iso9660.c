@@ -196,8 +196,21 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     ctx->pvd.root_dir_lba  = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_EXTENT_LBA]);
     ctx->pvd.root_dir_size = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_DATA_LENGTH]);
 
-    /* apply session offset to root LBA */
-    ctx->pvd.root_dir_lba += session_start;
+    /*
+     * Multisession: if the PVD's root LBA is already >= session_start,
+     * the mastering tool wrote absolute LBAs (e.g. mkisofs -C).
+     * Don't add session_start again. Only add it for session-relative LBAs.
+     */
+    if (ctx->pvd.root_dir_lba < session_start)
+        ctx->pvd.root_dir_lba += session_start;
+
+    /*
+     * If the on-disc LBAs are already absolute, set session_start to 0
+     * in the context so readdir doesn't double-offset file extents.
+     */
+    if (session_start > 0 && ctx->pvd.root_dir_lba >= session_start) {
+        ctx->session_start = 0;
+    }
 
     ODFS_INFO(log, ODFS_SUB_ISO,
                "volume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,

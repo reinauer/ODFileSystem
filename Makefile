@@ -75,6 +75,7 @@ CORE_SRCS = \
     core/cache_block.c \
     core/charset.c \
     core/mount.c \
+    core/session.c \
     backends/iso9660/iso9660.c \
     backends/rock_ridge/rock_ridge.c \
     backends/joliet/joliet.c

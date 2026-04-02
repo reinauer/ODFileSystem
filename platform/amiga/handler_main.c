@@ -13,6 +13,7 @@
 #include <exec/execbase.h>
 #include <exec/io.h>
 #include <devices/trackdisk.h>
+#include <devices/scsidisk.h>
 #include <devices/input.h>
 #include <dos/dostags.h>
 
@@ -112,11 +113,96 @@ static void amiga_close(void *ctx)
     (void)ctx; /* device closed in handler shutdown */
 }
 
+/*
+ * Read TOC via SCSI Read TOC command (0x43).
+ * Format 0x02 = full TOC / session info.
+ * Falls back to format 0x01 (multisession info) if available.
+ */
+static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
+{
+    amiga_media_ctx_t *am = ctx;
+    handler_global_t *g = am->g;
+    uint8_t cmd[10];
+    uint8_t buf[256];
+    struct SCSICmd scsi;
+
+    memset(toc, 0, sizeof(*toc));
+    memset(cmd, 0, sizeof(cmd));
+    memset(buf, 0, sizeof(buf));
+    memset(&scsi, 0, sizeof(scsi));
+
+    /* SCSI Read TOC, format 0x00 (TOC) */
+    cmd[0] = 0x43;              /* READ TOC/PMA/ATIP */
+    cmd[1] = 0x00;              /* MSF=0 (LBA format) */
+    cmd[2] = 0x00;              /* format: TOC */
+    cmd[6] = 0x01;              /* starting track */
+    cmd[7] = (sizeof(buf) >> 8) & 0xFF;
+    cmd[8] = sizeof(buf) & 0xFF;
+
+    scsi.scsi_Data = (UWORD *)buf;
+    scsi.scsi_Length = sizeof(buf);
+    scsi.scsi_CmdLength = 10;
+    scsi.scsi_Command = cmd;
+    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData = NULL;
+    scsi.scsi_SenseLength = 0;
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    if (DoIO((struct IORequest *)g->devreq) != 0)
+        return ODFS_ERR_UNSUPPORTED;
+
+    /* parse TOC response */
+    uint16_t toc_len = ((uint16_t)buf[0] << 8) | buf[1];
+    uint8_t first_track = buf[2];
+    uint8_t last_track = buf[3];
+    (void)first_track;
+
+    if (toc_len < 2)
+        return ODFS_ERR_BAD_FORMAT;
+
+    /* each TOC descriptor is 8 bytes starting at offset 4 */
+    int ndesc = (toc_len - 2) / 8;
+    uint8_t session_count = 0;
+
+    for (int i = 0; i < ndesc && i < 99; i++) {
+        const uint8_t *desc = &buf[4 + i * 8];
+        uint8_t session = desc[0];
+        uint8_t adr_ctrl = desc[1];
+        uint8_t track = desc[2];
+        uint32_t lba = ((uint32_t)desc[4] << 24) |
+                       ((uint32_t)desc[5] << 16) |
+                       ((uint32_t)desc[6] << 8)  |
+                        (uint32_t)desc[7];
+
+        (void)adr_ctrl;
+
+        if (track == 0xAA)
+            continue; /* lead-out, skip */
+
+        /* data track check: ctrl & 0x04 */
+        if (session_count < 99) {
+            toc->sessions[session_count].number = session;
+            toc->sessions[session_count].start_lba = lba;
+            toc->sessions[session_count].length = 0;
+            session_count++;
+        }
+    }
+
+    toc->session_count = session_count;
+    toc->first_session = 1;
+    toc->last_session = last_track;
+
+    return (session_count > 0) ? ODFS_OK : ODFS_ERR_BAD_FORMAT;
+}
+
 static const odfs_media_ops_t amiga_media_ops = {
     .read_sectors = amiga_read_sectors,
     .sector_size  = amiga_sector_size,
     .sector_count = amiga_sector_count,
-    .read_toc     = NULL,
+    .read_toc     = amiga_read_toc,
     .close        = amiga_close,
 };
 

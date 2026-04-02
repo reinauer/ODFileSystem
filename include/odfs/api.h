@@ -79,4 +79,9 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
                                const char *path,
                                odfs_node_t *out);
 
+/* multisession: find last session start LBA */
+odfs_err_t odfs_find_last_session(odfs_media_t *media,
+                                    odfs_log_state_t *log,
+                                    uint32_t *last_lba_out);
+
 #endif /* ODFS_API_H */

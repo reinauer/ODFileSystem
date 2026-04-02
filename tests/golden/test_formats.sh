@@ -99,6 +99,17 @@ assert_contains "hybrid: backend is RR" "rock_ridge" "$INFO"
 assert_contains "hybrid: RR long name" "long filename with spaces.txt" "$ROOT"
 assert_contains "hybrid: RR symlink" "symlink" "$ROOT"
 
+# ---- Multisession ----
+INFO=$("$TOOLS/imginfo" "$IMAGES/test_multisession.iso" 2>/dev/null)
+ROOT=$("$TOOLS/imgls" "$IMAGES/test_multisession.iso" 2>/dev/null)
+assert_contains "multisession: volume is SESSION2" "SESSION2" "$INFO"
+assert_contains "multisession: session 2 file" "file2.txt" "$ROOT"
+assert_contains "multisession: session 2 updated" "updated.txt" "$ROOT"
+assert_contains "multisession: session 1 merged" "FILE1.TXT" "$ROOT"
+
+CONTENT=$("$TOOLS/imgcat" "$IMAGES/test_multisession.iso" /updated.txt 2>/dev/null)
+assert_eq "multisession: read session 2 file" "Updated" "$CONTENT"
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"

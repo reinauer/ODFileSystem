@@ -88,9 +88,24 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                "cache initialized: %" PRIu32 " blocks", cache_size);
 
-    /* determine session start (default: 0) */
+    /* determine session start */
     uint32_t session_start = 0;
-    /* TODO: session discovery from TOC when force_session != -1 */
+#if ODFS_FEATURE_MULTISESSION
+    if (mnt->opts.force_session >= 0) {
+        /* user forced a specific session — read TOC to find it */
+        odfs_toc_t toc;
+        if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK &&
+            mnt->opts.force_session < toc.session_count) {
+            session_start = toc.sessions[mnt->opts.force_session].start_lba;
+            ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
+                       "forced session %d at LBA %" PRIu32,
+                       mnt->opts.force_session, session_start);
+        }
+    } else {
+        /* default: find and use last session */
+        odfs_find_last_session(&mnt->media, &mnt->log, &session_start);
+    }
+#endif
 
     /*
      * Probe backends and select best match.
