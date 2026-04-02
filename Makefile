@@ -118,7 +118,7 @@ HANDLER = $(AMIGA_BUILD)/ODFileSystem
 # targets
 # ==================================================================
 
-.PHONY: all host amiga lib tests tools check clean
+.PHONY: all host amiga rom lib tests tools check clean size
 
 all: host
 
@@ -127,6 +127,23 @@ host: lib tests tools
 amiga: $(HANDLER)
 	@echo "  $(HANDLER) built successfully"
 	@wc -c < "$(HANDLER)" | awk '{printf "  Handler size: %s bytes\n", $$1}'
+
+# ROM profile: minimal build for burning into ROM
+# ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
+rom:
+	@$(MAKE) --no-print-directory \
+		SERIAL_DEBUG=0 \
+		FEATURE_UDF=0 \
+		FEATURE_HFS=0 \
+		FEATURE_HFSPLUS=0 \
+		FEATURE_CDDA=0 \
+		amiga
+	@echo "  ROM profile build complete"
+
+# Print size breakdown of Amiga library objects
+size: $(AMIGA_BUILD)/libodfs.a
+	@echo "=== Amiga object sizes ==="
+	@m68k-amigaos-size $(AMIGA_BUILD)/libodfs.a
 
 # ---- host library ----
 
