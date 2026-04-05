@@ -34,6 +34,7 @@ ODFileSystem currently includes backends for:
 - Read-only AmigaDOS handler for optical media
 - Multisession support, with the last session selected by default
 - Hybrid-disc precedence rules
+- Deterministic duplicate-name handling after normalization or charset conversion
 - Rock Ridge, Joliet, UDF, HFS, and HFS+ probing
 - Path lookup, directory enumeration, and file reads
 - Block-cache based media access
@@ -54,6 +55,12 @@ For bridge and hybrid discs:
 - UDF can be preferred explicitly
 - HFS can be preferred explicitly
 - A specific session or backend can be forced by mount options
+
+### Name Collision Policy
+
+If multiple on-disc names normalize to the same visible AmigaDOS name, the first
+entry keeps the unsuffixed name and later entries are renamed deterministically
+in on-disc order using `~2`, `~3`, and so on.
 
 ### CDDA
 
