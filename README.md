@@ -48,7 +48,7 @@ ODFileSystem currently includes backends for:
 | Rock Ridge | Supported | Preferred over plain ISO when present |
 | Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
 | UDF | Supported | Bridge discs default to ISO-family content unless forced |
-| HFS | Supported with limitations | Data fork only; simplified Mac Roman name conversion |
+| HFS | Supported with limitations | Data fork only |
 | HFS+ | Supported with limitations | Data fork only; resource forks are not exposed |
 | CDDA | Supported | Exposed as virtual WAV files |
 
@@ -78,9 +78,6 @@ in on-disc order using `~2`, `~3`, and so on.
 
 - Only data forks are exposed. Resource forks and Finder metadata are not
   presented as separate files or alternate streams.
-- Classic HFS name decoding currently uses a simplified Mac Roman conversion.
-  ASCII names are preserved, but unsupported high-bit characters are shown as
-  `?`.
 - Because of those limits, some classic Mac software distributions may be
   incomplete when viewed through ODFileSystem even though their main data files
   remain readable.

@@ -27,6 +27,21 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
                                   size_t *out_len);
 
 /*
+ * Convert Mac Roman to UTF-8.
+ *   src      - Mac Roman input buffer
+ *   src_len  - input length in bytes
+ *   dst      - UTF-8 output buffer
+ *   dst_size - size of dst buffer
+ *   out_len  - receives number of bytes written (excluding NUL)
+ *
+ * Output is always NUL-terminated if dst_size > 0.
+ * Control characters are replaced with '?'.
+ */
+odfs_err_t odfs_mac_roman_to_utf8(const uint8_t *src, size_t src_len,
+                                  char *dst, size_t dst_size,
+                                  size_t *out_len);
+
+/*
  * Convert a raw ISO 9660 d-character / a-character name to a
  * display-friendly form (strip version number, lowercase optionally).
  *   src      — raw ISO name

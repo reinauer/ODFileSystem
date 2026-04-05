@@ -66,9 +66,8 @@ The ISO9660 backend is probed first because Rock Ridge detection happens during 
 ### HFS-Family Limits
 
 - HFS and HFS+ expose data forks only
-- Classic HFS names currently use a simplified Mac Roman to UTF-8 conversion
-- Some classic Mac media may therefore lose non-ASCII filename fidelity or
-  resource-fork content in the AmigaDOS view
+- Some classic Mac media may therefore lose resource-fork content in the
+  AmigaDOS view
 
 ### Mount Options That Affect Selection
 

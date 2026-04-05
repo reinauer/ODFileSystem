@@ -13,6 +13,7 @@
 #include "hfs.h"
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
+#include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/namefix.h"
 #include "odfs/error.h"
@@ -126,26 +127,24 @@ static uint16_t hfs_rec_offset(const uint8_t *node, uint32_t node_size,
     return hfs_be16(&node[pos]);
 }
 
-/* Mac Roman to UTF-8 (simplified: characters < 128 pass through,
-   >= 128 become '?', ':' → '.', '/' → '-') */
+/* Mac Roman to UTF-8, then normalize a few Amiga-problematic bytes. */
 static void hfs_name_to_utf8(const uint8_t *src, uint8_t src_len,
                               char *dst, size_t dst_size)
 {
-    size_t di = 0;
-    for (int i = 0; i < src_len && di + 1 < dst_size; i++) {
-        uint8_t c = src[i];
+    size_t out_len = 0;
+
+    odfs_mac_roman_to_utf8(src, src_len, dst, dst_size, &out_len);
+
+    for (size_t i = 0; i < out_len && dst[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)dst[i];
+
         if (c == ':')
-            dst[di++] = '.';
+            dst[i] = '.';
         else if (c == '/')
-            dst[di++] = '-';
-        else if (c < 0x20)
-            dst[di++] = '?';
-        else if (c >= 0x80)
-            dst[di++] = '?'; /* TODO: full Mac Roman → UTF-8 table */
-        else
-            dst[di++] = (char)c;
+            dst[i] = '-';
+        else if (c < 0x20 || c == 0x7F)
+            dst[i] = '?';
     }
-    dst[di] = '\0';
 }
 
 /* ------------------------------------------------------------------ */

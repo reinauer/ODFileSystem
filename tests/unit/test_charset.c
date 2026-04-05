@@ -57,6 +57,49 @@ TEST(ucs2be_odd_length)
                ODFS_ERR_INVAL);
 }
 
+TEST(mac_roman_ascii)
+{
+    const uint8_t src[] = { 'H', 'e', 'l', 'l', 'o' };
+    char dst[64];
+    size_t len;
+
+    ASSERT_OK(odfs_mac_roman_to_utf8(src, sizeof(src), dst, sizeof(dst), &len));
+    ASSERT_STR_EQ(dst, "Hello");
+    ASSERT_EQ(len, 5);
+}
+
+TEST(mac_roman_high_chars)
+{
+    const uint8_t src[] = { 0x80, 0x8E, 0xDB, 0xD0 };
+    char dst[64];
+    size_t len;
+
+    ASSERT_OK(odfs_mac_roman_to_utf8(src, sizeof(src), dst, sizeof(dst), &len));
+    ASSERT_EQ((unsigned char)dst[0], 0xC3);
+    ASSERT_EQ((unsigned char)dst[1], 0x84);
+    ASSERT_EQ((unsigned char)dst[2], 0xC3);
+    ASSERT_EQ((unsigned char)dst[3], 0xA9);
+    ASSERT_EQ((unsigned char)dst[4], 0xE2);
+    ASSERT_EQ((unsigned char)dst[5], 0x82);
+    ASSERT_EQ((unsigned char)dst[6], 0xAC);
+    ASSERT_EQ((unsigned char)dst[7], 0xE2);
+    ASSERT_EQ((unsigned char)dst[8], 0x80);
+    ASSERT_EQ((unsigned char)dst[9], 0x93);
+    ASSERT_EQ(dst[10], '\0');
+    ASSERT_EQ(len, 10);
+}
+
+TEST(mac_roman_controls)
+{
+    const uint8_t src[] = { 'A', 0x01, 'B' };
+    char dst[64];
+    size_t len;
+
+    ASSERT_OK(odfs_mac_roman_to_utf8(src, sizeof(src), dst, sizeof(dst), &len));
+    ASSERT_STR_EQ(dst, "A?B");
+    ASSERT_EQ(len, 3);
+}
+
 TEST(iso_name_basic)
 {
     char dst[64];
