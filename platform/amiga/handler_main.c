@@ -595,7 +595,8 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     fib->fib_EntryType    = fib->fib_DirEntryType;
     fib->fib_Size         = (LONG)fnode->size;
     fib->fib_NumBlocks    = (fnode->size + 511) / 512;
-    fib->fib_Protection   = FIBF_READ | FIBF_EXECUTE;
+    /* Amiga RWED protection bits are deny bits, not allow bits. */
+    fib->fib_Protection   = FIBF_WRITE | FIBF_DELETE;
 
     /* date stamp — Amiga epoch is 1978-01-01 */
     if (fnode->mtime.year >= 1978) {
