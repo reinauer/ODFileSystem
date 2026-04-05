@@ -112,6 +112,13 @@ typedef struct odfs_fh {
 /* BCPL string to C string (AROS-compatible) */
 static inline void bstr_to_cstr(BSTR bstr, char *buf, int bufsize)
 {
+    if (!buf || bufsize <= 0)
+        return;
+    if (!bstr) {
+        buf[0] = '\0';
+        return;
+    }
+
     int len = AROS_BSTR_strlen(bstr);
     const char *addr = (const char *)AROS_BSTR_ADDR(bstr);
     if (len >= bufsize)
