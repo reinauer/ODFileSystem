@@ -1,0 +1,42 @@
+name: ODFileSystem CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: stefanreinauer/amiga-gcc:gcc-v13.3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Build and run host unit tests
+        run: make check
+
+      - name: Run golden image tests
+        run: make golden-check
+
+      - name: Build Amiga handler
+        run: make amiga
+
+      - name: Build ROM profile
+        run: make rom
+
+      - name: Upload CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: odfilesystem-build
+          path: |
+            build/amiga/ODFileSystem
+            build/amiga-rom/ODFileSystem
+            build/host/tools/
+          if-no-files-found: error

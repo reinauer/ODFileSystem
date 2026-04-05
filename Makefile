@@ -143,7 +143,7 @@ HANDLER = $(AMIGA_BUILD)/ODFileSystem
 # targets
 # ==================================================================
 
-.PHONY: all host amiga rom lib tests tools check clean size
+.PHONY: all host amiga rom lib tests tools check golden-check clean size
 
 all: host
 
@@ -210,6 +210,10 @@ check: tests
 	    exit 1; \
 	fi; \
 	echo "All test suites passed"
+
+golden-check: tools
+	@echo "=== Running golden image tests ==="
+	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" tests/golden/test_formats.sh
 
 # ---- host tools ----
 

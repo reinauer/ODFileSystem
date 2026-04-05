@@ -30,7 +30,8 @@ Host-side fuzz targets for each parser backend.
 
 ```
 make check    # build and run all unit tests
+make golden-check  # run golden image tests with the host tools
 ```
 
 ## CI Requirements
-Per push: build, unit tests, golden image tests, malformed image tests, static checks, warnings-as-errors.
+Per push: build, unit tests, golden image tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
