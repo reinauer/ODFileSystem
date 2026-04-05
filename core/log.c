@@ -5,6 +5,7 @@
  */
 
 #include "odfs/log.h"
+#include "odfs/printf.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -73,36 +74,28 @@ void odfs_log_set_subsys_mask(odfs_log_state_t *state, unsigned int mask)
     state->subsys_mask = mask;
 }
 
-void odfs_logv(odfs_log_state_t *state,
-                odfs_log_level_t level,
-                odfs_log_subsys_t subsys,
-                const char *fmt,
-                va_list ap)
-{
-    char buf[512];
-
-    if (!odfs_log_enabled(state, level, subsys))
-        return;
-
-    /* format: "[LEVEL] subsys: message" */
-    int hdr = snprintf(buf, sizeof(buf), "[%s] %s: ",
-                       odfs_log_level_name(level),
-                       odfs_log_subsys_name(subsys));
-    if (hdr < 0)
-        hdr = 0;
-    if ((size_t)hdr < sizeof(buf))
-        vsnprintf(buf + hdr, sizeof(buf) - hdr, fmt, ap);
-
-    state->sink.write(level, subsys, buf, state->sink.ctx);
-}
-
 void odfs_log(odfs_log_state_t *state,
                odfs_log_level_t level,
                odfs_log_subsys_t subsys,
                const char *fmt, ...)
 {
+    char buf[512];
+    int hdr;
     va_list ap;
+
+    if (!odfs_log_enabled(state, level, subsys))
+        return;
+
+    hdr = odfs_snprintf(buf, sizeof(buf), "[%s] %s: ",
+                        odfs_log_level_name(level),
+                        odfs_log_subsys_name(subsys));
+    if (hdr < 0)
+        hdr = 0;
+
     va_start(ap, fmt);
-    odfs_logv(state, level, subsys, fmt, ap);
+    if ((size_t)hdr < sizeof(buf))
+        odfs_vsnprintf(buf + hdr, sizeof(buf) - hdr, fmt, ap);
     va_end(ap);
+
+    state->sink.write(level, subsys, buf, state->sink.ctx);
 }

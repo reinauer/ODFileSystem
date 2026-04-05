@@ -1,15 +1,14 @@
 /*
- * printf_local.c - small snprintf/vsnprintf for handler builds
+ * printf_local.c - small local snprintf/vsnprintf for handler builds
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The handler only needs bounded string formatting for logging. Keep a local
- * formatter here so linking against libc does not pull in the full stdio
- * formatting stack.
+ * Keep a compact bounded formatter here so the handler does not pull in the
+ * full libc stdio formatting stack.
  */
 
-#include <stdarg.h>
-#include <stddef.h>
+#include "odfs/printf.h"
+
 #include <stdint.h>
 
 enum {
@@ -24,6 +23,7 @@ enum {
 
 enum fmt_length {
     FMT_LEN_DEFAULT = 0,
+    FMT_LEN_SHORT,
     FMT_LEN_LONG,
     FMT_LEN_LLONG,
     FMT_LEN_SIZE,
@@ -35,28 +35,34 @@ typedef struct fmt_buf {
     char *end;
 } fmt_buf_t;
 
-__attribute__((format(printf, 3, 0)))
-int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
-
-__attribute__((format(printf, 3, 4)))
-int snprintf(char *buf, size_t size, const char *fmt, ...);
-
 static uint64_t udiv64_32(uint64_t value, uint32_t base, uint32_t *rem_out)
 {
-    uint64_t quotient = 0;
+    uint32_t high = (uint32_t)(value >> 32);
+    uint32_t low  = (uint32_t)value;
+    uint32_t q_high = 0, q_low = 0;
     uint32_t rem = 0;
-    int bit;
+    int i;
 
-    for (bit = 63; bit >= 0; --bit) {
-        rem = (uint32_t)((rem << 1) | ((value >> bit) & 1u));
+    for (i = 31; i >= 0; i--) {
+        rem = (rem << 1) | ((high >> i) & 1u);
         if (rem >= base) {
             rem -= base;
-            quotient |= 1ULL << bit;
+            q_high |= (1u << i);
         }
     }
 
-    *rem_out = rem;
-    return quotient;
+    for (i = 31; i >= 0; i--) {
+        rem = (rem << 1) | ((low >> i) & 1u);
+        if (rem >= base) {
+            rem -= base;
+            q_low |= (1u << i);
+        }
+    }
+
+    if (rem_out)
+        *rem_out = rem;
+
+    return ((uint64_t)q_high << 32) | (uint64_t)q_low;
 }
 
 static void fmt_putc(fmt_buf_t *buf, char ch, int *count)
@@ -264,7 +270,10 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
             }
         }
 
-        if (*fmt == 'l') {
+        if (*fmt == 'h') {
+            length = FMT_LEN_SHORT;
+            ++fmt;
+        } else if (*fmt == 'l') {
             ++fmt;
             if (*fmt == 'l') {
                 length = FMT_LEN_LLONG;
@@ -319,6 +328,9 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
                 else
                     fmt_signed(buf, (long)va_arg(ap, ptrdiff_t), flags, width, precision, &count);
                 break;
+            case FMT_LEN_SHORT:
+                fmt_signed(buf, (short)va_arg(ap, int), flags, width, precision, &count);
+                break;
             default:
                 fmt_signed(buf, va_arg(ap, int), flags, width, precision, &count);
                 break;
@@ -348,6 +360,9 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
             case FMT_LEN_PTRDIFF:
                 value = (uint64_t)va_arg(ap, ptrdiff_t);
                 break;
+            case FMT_LEN_SHORT:
+                value = (unsigned short)va_arg(ap, unsigned int);
+                break;
             default:
                 value = va_arg(ap, unsigned int);
                 break;
@@ -371,6 +386,7 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
             break;
         }
         default:
+            fmt_putc(buf, '%', &count);
             fmt_putc(buf, conv, &count);
             break;
         }
@@ -379,8 +395,7 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
     return count;
 }
 
-__attribute__((format(printf, 3, 0)))
-int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
+int odfs_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
     fmt_buf_t out;
     int count;
@@ -395,14 +410,13 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
     return count;
 }
 
-__attribute__((format(printf, 3, 4)))
-int snprintf(char *buf, size_t size, const char *fmt, ...)
+int odfs_snprintf(char *buf, size_t size, const char *fmt, ...)
 {
     va_list ap;
     int count;
 
     va_start(ap, fmt);
-    count = vsnprintf(buf, size, fmt, ap);
+    count = odfs_vsnprintf(buf, size, fmt, ap);
     va_end(ap);
 
     return count;

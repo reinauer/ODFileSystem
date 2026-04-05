@@ -78,12 +78,6 @@ void odfs_log(odfs_log_state_t *state,
 #endif
     ;
 
-void odfs_logv(odfs_log_state_t *state,
-                odfs_log_level_t level,
-                odfs_log_subsys_t subsys,
-                const char *fmt,
-                va_list ap);
-
 /* convenience: check if a message would be emitted */
 static inline int odfs_log_enabled(const odfs_log_state_t *state,
                                     odfs_log_level_t level,
