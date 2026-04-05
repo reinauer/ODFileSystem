@@ -14,6 +14,7 @@
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/log.h"
+#include "odfs/namefix.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
 
@@ -464,6 +465,7 @@ typedef struct hfs_readdir_ctx {
     uint32_t skip_to;
     uint32_t *resume_offset;
     odfs_err_t last_err;
+    odfs_namefix_state_t namefix;
 } hfs_readdir_ctx_t;
 
 static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
@@ -479,12 +481,6 @@ static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
     /* only interested in file and directory records, not threads */
     if (rec_type != HFS_CAT_FILE && rec_type != HFS_CAT_DIR)
         return ODFS_OK;
-
-    /* skip to resume point */
-    if (rc->entry_index < rc->skip_to) {
-        rc->entry_index++;
-        return ODFS_OK;
-    }
 
     odfs_node_t node;
     memset(&node, 0, sizeof(node));
@@ -518,6 +514,18 @@ static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
         hfs_parse_mac_date(hfs_be32(&data[48]), &node.mtime);
     }
     node.ctime = node.mtime;
+
+    odfs_err_t err = odfs_namefix_apply(&rc->namefix, node.name, sizeof(node.name));
+    if (err != ODFS_OK) {
+        rc->last_err = err;
+        return err;
+    }
+
+    /* skip to resume point */
+    if (rc->entry_index < rc->skip_to) {
+        rc->entry_index++;
+        return ODFS_OK;
+    }
 
     rc->entry_index++;
 
@@ -555,9 +563,11 @@ static odfs_err_t hfs_readdir(void *backend_ctx,
     rc.skip_to = (resume_offset && *resume_offset) ? *resume_offset : 0;
     rc.resume_offset = resume_offset;
     rc.last_err = ODFS_OK;
+    odfs_namefix_init(&rc.namefix);
 
     odfs_err_t err = hfs_walk_catalog(ctx, cache, parent_cnid,
                                         hfs_readdir_cb, &rc);
+    odfs_namefix_destroy(&rc.namefix);
     if (rc.last_err != ODFS_OK)
         return rc.last_err;
 

@@ -14,6 +14,7 @@
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
+#include "odfs/namefix.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
@@ -386,20 +387,25 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
     int entry_index = 0;
     int skip_to = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
     int found_parent = 0;
+    odfs_namefix_state_t namefix;
     (void)log;
+    odfs_namefix_init(&namefix);
 
     node = odfs_malloc(ctx->cat_node_size);
-    if (!node) return ODFS_ERR_NOMEM;
+    if (!node) {
+        odfs_namefix_destroy(&namefix);
+        return ODFS_ERR_NOMEM;
+    }
 
     /* descend B-Tree from root to find the right leaf */
     cur_node = ctx->cat_root_node;
     for (int depth = 0; depth < 20; depth++) {
         err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { odfs_free(node); return err; }
+        if (err != ODFS_OK) { odfs_namefix_destroy(&namefix); odfs_free(node); return err; }
 
         uint8_t ntype = node[8];
         if (ntype == 0xFF) break; /* leaf */
-        if (ntype != 0x00) { odfs_free(node); return ODFS_ERR_CORRUPT; } /* not index */
+        if (ntype != 0x00) { odfs_namefix_destroy(&namefix); odfs_free(node); return ODFS_ERR_CORRUPT; } /* not index */
 
         uint16_t nrecs = hfsp_be16(&node[10]);
         uint32_t child = 0;
@@ -416,14 +422,14 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             else
                 break;
         }
-        if (child == 0) { odfs_free(node); return ODFS_ERR_NOT_FOUND; }
+        if (child == 0) { odfs_namefix_destroy(&namefix); odfs_free(node); return ODFS_ERR_NOT_FOUND; }
         cur_node = child;
     }
 
     /* scan leaf nodes */
     while (cur_node != 0) {
         err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { odfs_free(node); return err; }
+        if (err != ODFS_OK) { odfs_namefix_destroy(&namefix); odfs_free(node); return err; }
         if (node[8] != 0xFF) break; /* not leaf */
 
         uint16_t nrecs = hfsp_be16(&node[10]);
@@ -438,6 +444,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
 
             if (key_parent < parent_cnid) continue;
             if (key_parent > parent_cnid) {
+                odfs_namefix_destroy(&namefix);
                 odfs_free(node);
                 if (resume_offset) *resume_offset = (uint32_t)entry_index;
                 return ODFS_OK;
@@ -460,11 +467,6 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             if (key_namelen >= 4 && node[roff + 8] == 0x00 && node[roff + 9] == 0x2E)
                 continue; /* name starts with "." — skip private dirs */
 
-            if (entry_index < skip_to) {
-                entry_index++;
-                continue;
-            }
-
             odfs_node_t fnode;
             memset(&fnode, 0, sizeof(fnode));
             fnode.id = ctx->next_node_id++;
@@ -480,6 +482,18 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             /* skip entries with empty or null decoded names */
             if (fnode.name[0] == '\0')
                 continue;
+
+            err = odfs_namefix_apply(&namefix, fnode.name, sizeof(fnode.name));
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                odfs_free(node);
+                return err;
+            }
+
+            if (entry_index < skip_to) {
+                entry_index++;
+                continue;
+            }
 
             if (rec_type == HFSPLUS_FOLDER_REC && data_len >= 24) {
                 fnode.kind = ODFS_NODE_DIR;
@@ -503,6 +517,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             entry_index++;
             err = callback(&fnode, cb_ctx);
             if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
                 odfs_free(node);
                 if (resume_offset) *resume_offset = (uint32_t)entry_index;
                 return err;
@@ -524,6 +539,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
         }
     }
 
+    odfs_namefix_destroy(&namefix);
     odfs_free(node);
     if (resume_offset) *resume_offset = (uint32_t)entry_index;
     return ODFS_OK;

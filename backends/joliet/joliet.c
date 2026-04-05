@@ -12,6 +12,7 @@
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
+#include "odfs/namefix.h"
 #include "odfs/log.h"
 #include "odfs/node.h"
 #include "odfs/error.h"
@@ -262,19 +263,25 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
     joliet_context_t *ctx = backend_ctx;
     uint32_t dir_lba = dir->extent.lba;
     uint32_t dir_size = dir->extent.length;
-    uint32_t offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
+    uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
+    uint32_t offset = 0;
+    odfs_namefix_state_t namefix;
 
     (void)log;
+    odfs_namefix_init(&namefix);
 
     while (offset < dir_size) {
+        uint32_t entry_start = offset;
         uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
         uint32_t sector_off = offset % ISO_SECTOR_SIZE;
         const uint8_t *sector;
         odfs_err_t err;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK)
+        if (err != ODFS_OK) {
+            odfs_namefix_destroy(&namefix);
             return err;
+        }
 
         const uint8_t *rec = sector + sector_off;
         size_t avail = ISO_SECTOR_SIZE - sector_off;
@@ -300,18 +307,29 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
             continue;
         }
 
+        err = odfs_namefix_apply(&namefix, node.name, sizeof(node.name));
+        if (err != ODFS_OK) {
+            odfs_namefix_destroy(&namefix);
+            return err;
+        }
+
         offset += consumed;
+
+        if (entry_start < target_offset)
+            continue;
 
         err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = offset;
+            odfs_namefix_destroy(&namefix);
             return err;
         }
     }
 
     if (resume_offset)
         *resume_offset = dir_size;
+    odfs_namefix_destroy(&namefix);
     return ODFS_OK;
 }
 

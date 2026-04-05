@@ -11,6 +11,7 @@
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
+#include "odfs/namefix.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
@@ -475,19 +476,25 @@ static odfs_err_t udf_readdir(void *backend_ctx,
     uint32_t dir_data_lba;
     uint8_t dir_ftype;
     odfs_err_t err;
+    odfs_namefix_state_t namefix;
 
     (void)log;
+    odfs_namefix_init(&namefix);
 
     /* read the directory's ICB to find its data extent */
     err = udf_read_icb(ctx, cache, dir->extent.lba,
                        &dir_size, &dir_data_lba, &dir_ftype, NULL);
-    if (err != ODFS_OK)
+    if (err != ODFS_OK) {
+        odfs_namefix_destroy(&namefix);
         return err;
+    }
 
-    uint32_t offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
+    uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
+    uint32_t offset = 0;
 
     /* walk File Identifier Descriptors */
     while (offset < dir_size) {
+        uint32_t entry_start = offset;
         uint8_t fid_hdr[38];
         const uint8_t *fid = fid_hdr;
         uint8_t *fid_alloc = NULL;
@@ -498,8 +505,10 @@ static odfs_err_t udf_readdir(void *backend_ctx,
 
         err = udf_read_bytes(cache, dir_data_lba, offset,
                              fid_hdr, sizeof(fid_hdr));
-        if (err != ODFS_OK)
+        if (err != ODFS_OK) {
+            odfs_namefix_destroy(&namefix);
             return err;
+        }
 
         udf_tag_t tag;
         if (!udf_read_tag(fid, &tag) || tag.id != UDF_TAG_FID)
@@ -517,18 +526,23 @@ static odfs_err_t udf_readdir(void *backend_ctx,
         /* FID total length: 38 + impl_len + name_len, padded to 4 bytes */
         uint32_t fid_len = (38 + impl_len + name_len + 3) & ~3u;
 
-        if (fid_len < sizeof(fid_hdr) || (uint64_t)fid_len > remaining)
+        if (fid_len < sizeof(fid_hdr) || (uint64_t)fid_len > remaining) {
+            odfs_namefix_destroy(&namefix);
             return ODFS_ERR_CORRUPT;
+        }
 
         if (fid_len > sizeof(fid_hdr)) {
             fid_alloc = odfs_malloc(fid_len);
-            if (!fid_alloc)
+            if (!fid_alloc) {
+                odfs_namefix_destroy(&namefix);
                 return ODFS_ERR_NOMEM;
+            }
 
             err = udf_read_bytes(cache, dir_data_lba, offset,
                                  fid_alloc, fid_len);
             if (err != ODFS_OK) {
                 odfs_free(fid_alloc);
+                odfs_namefix_destroy(&namefix);
                 return err;
             }
             fid = fid_alloc;
@@ -557,6 +571,13 @@ static odfs_err_t udf_readdir(void *backend_ctx,
             const uint8_t *name_data = fid + 38 + impl_len;
             udf_decode_cs0(name_data, name_len,
                            node.name, sizeof(node.name));
+        }
+
+        err = odfs_namefix_apply(&namefix, node.name, sizeof(node.name));
+        if (err != ODFS_OK) {
+            odfs_free(fid_alloc);
+            odfs_namefix_destroy(&namefix);
+            return err;
         }
 
         /* read the file's ICB for metadata */
@@ -590,17 +611,24 @@ static odfs_err_t udf_readdir(void *backend_ctx,
 
         offset += fid_len;
 
+        if (entry_start < target_offset) {
+            odfs_free(fid_alloc);
+            continue;
+        }
+
         err = callback(&node, cb_ctx);
         odfs_free(fid_alloc);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = offset;
+            odfs_namefix_destroy(&namefix);
             return err;
         }
     }
 
     if (resume_offset)
         *resume_offset = (uint32_t)dir_size;
+    odfs_namefix_destroy(&namefix);
     return ODFS_OK;
 }
 
