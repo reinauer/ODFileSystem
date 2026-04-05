@@ -95,6 +95,7 @@ CORE_SRCS = \
     core/error.c \
     core/log.c \
     core/node.c \
+    core/namefix.c \
     core/cache_block.c \
     core/charset.c \
     core/mount.c \
