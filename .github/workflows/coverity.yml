@@ -1,0 +1,38 @@
+name: Coverity Scan
+
+# We only want to test official release code, not every pull request.
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  coverity:
+    runs-on: ubuntu-latest
+    container: stefanreinauer/amiga-gcc:gcc-v13.3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Install file utility
+        run: |
+          apt-get update
+          apt-get install -y file
+
+      - name: Build Amiga handler
+        run: make amiga
+
+      - uses: reinauer/coverity-scan-action@v1
+        with:
+          # Rebuild from a clean tree so cov-build captures the full compile.
+          command: make clean amiga
+          configure: --compiler m68k-amigaos-gcc --comptype gcc --template
+          email: ${{ secrets.COVERITY_SCAN_EMAIL }}
+          token: ${{ secrets.COVERITY_SCAN_TOKEN }}

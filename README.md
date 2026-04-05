@@ -1,5 +1,7 @@
 # ODFileSystem
 
+[![Coverity](https://img.shields.io/coverity/scan/33023.svg)](https://scan.coverity.com/projects/33023)
+
 ODFileSystem is a read-only optical-disc filesystem driver for Amiga systems. It is implemented as an AmigaDOS handler frontend with clean backend plugins for the various optical-disc formats it supports, allowing it to mount and browse CD-ROM, DVD, Blu-ray, and image-based media.
 
 The project also includes host-side tools and tests so most parser and cache logic can be developed and validated outside an Amiga environment.
