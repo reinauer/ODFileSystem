@@ -38,6 +38,12 @@ serial output disabled.
 These targets do not reuse or clobber the normal Amiga build in `build/amiga/`.
 
 ## Size Budget
-The ROM-profile handler should stay small enough for ROM-oriented use, but the
-project does not currently enforce a hard size limit in CI. Track meaningful
-growth in commit messages and release notes.
+`make rom` enforces a default release size limit of `30000` bytes.
+
+If intentional growth needs a higher ceiling, override it with:
+
+```sh
+make rom ROM_SIZE_LIMIT=<bytes>
+```
+
+The normal release handler similarly enforces `AMIGA_SIZE_LIMIT=60000`.

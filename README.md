@@ -97,6 +97,9 @@ make amiga
 This builds the release handler with serial logging disabled. For a test build
 with serial output enabled, use `make amiga-test`.
 
+Release builds enforce a default size limit of `60000` bytes. If intentional
+growth needs a higher ceiling, override it with `AMIGA_SIZE_LIMIT=<bytes>`.
+
 Then copy `build/amiga/ODFileSystem` to `L:ODFileSystem` and add a mount entry such as:
 
 ```text

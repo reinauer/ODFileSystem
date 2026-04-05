@@ -39,6 +39,12 @@ SERIAL_DEBUG ?= 0
 # Packet trace instrumentation (override with: make PACKET_TRACE=1)
 PACKET_TRACE ?= 0
 
+# Release size limits (override when intentional growth is approved)
+AMIGA_SIZE_LIMIT ?= 60000
+ROM_SIZE_LIMIT   ?= 30000
+SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
+SIZE_LIMIT_DESC  ?= release Amiga handler
+
 # Backend selection (override to disable: make FEATURE_UDF=0)
 FEATURE_ISO9660      ?= 1
 FEATURE_ROCK_RIDGE   ?= 1
@@ -160,11 +166,18 @@ host: lib tests tools
 
 amiga: $(HANDLER)
 	@echo "  $(HANDLER) built successfully"
-	@wc -c < "$(HANDLER)" | awk '{printf "  Handler size: %s bytes\n", $$1}'
+	@size=$$(wc -c < "$(HANDLER)"); \
+	echo "  Handler size: $$size bytes"; \
+	if [ "$(ENFORCE_SIZE_LIMITS)" != "0" ] && [ "$$size" -gt "$(AMIGA_SIZE_LIMIT)" ]; then \
+		echo "  ERROR: $(SIZE_LIMIT_DESC) exceeds $(AMIGA_SIZE_LIMIT) bytes"; \
+		echo "  If this growth is intentional, rerun with $(SIZE_LIMIT_NAME)=<new-limit>"; \
+		exit 1; \
+	fi
 
 amiga-test:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(AMIGA_TEST_BUILD) \
+		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \
 		amiga
 
@@ -174,6 +187,9 @@ rom:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_BUILD) \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
+		AMIGA_SIZE_LIMIT=$(ROM_SIZE_LIMIT) \
+		SIZE_LIMIT_NAME=ROM_SIZE_LIMIT \
+		SIZE_LIMIT_DESC=ROM\ profile\ handler \
 		SERIAL_DEBUG=0 \
 		FEATURE_UDF=0 \
 		FEATURE_HFS=0 \
@@ -186,6 +202,7 @@ rom-test:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_TEST_BUILD) \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
+		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \
 		FEATURE_UDF=0 \
 		FEATURE_HFS=0 \
