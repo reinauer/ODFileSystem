@@ -15,6 +15,7 @@
 #include "odfs/cache.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
+#include "odfs/string.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -625,7 +626,7 @@ typedef struct hfs_lookup_ctx {
 static odfs_err_t hfs_lookup_iter(const odfs_node_t *entry, void *ctx)
 {
     hfs_lookup_ctx_t *lc = ctx;
-    if (strcasecmp(entry->name, lc->name) == 0) {
+    if (odfs_strcasecmp(entry->name, lc->name) == 0) {
         *lc->result = *entry;
         lc->found = 1;
         return ODFS_ERR_EOF;

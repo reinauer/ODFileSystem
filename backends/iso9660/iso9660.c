@@ -11,6 +11,7 @@
 #include "odfs/log.h"
 #include "odfs/node.h"
 #include "odfs/error.h"
+#include "odfs/string.h"
 
 #if ODFS_FEATURE_ROCK_RIDGE
 #include "rock_ridge/rock_ridge.h"
@@ -475,7 +476,7 @@ static odfs_err_t lookup_cb(const odfs_node_t *entry, void *cb_ctx)
     lookup_ctx_t *lctx = cb_ctx;
 
     /* case-insensitive comparison for ISO names */
-    if (strcasecmp(entry->name, lctx->name) == 0) {
+    if (odfs_strcasecmp(entry->name, lctx->name) == 0) {
         *lctx->result = *entry;
         lctx->found = 1;
         /* we could return an error to stop iteration early,

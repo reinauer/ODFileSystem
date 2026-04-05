@@ -15,6 +15,7 @@
 #include "odfs/log.h"
 #include "odfs/node.h"
 #include "odfs/error.h"
+#include "odfs/string.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -371,7 +372,7 @@ typedef struct joliet_lookup_ctx {
 static odfs_err_t joliet_lookup_cb(const odfs_node_t *entry, void *cb_ctx)
 {
     joliet_lookup_ctx_t *lctx = cb_ctx;
-    if (strcasecmp(entry->name, lctx->name) == 0) {
+    if (odfs_strcasecmp(entry->name, lctx->name) == 0) {
         *lctx->result = *entry;
         lctx->found = 1;
         return ODFS_ERR_EOF;

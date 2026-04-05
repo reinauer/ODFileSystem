@@ -16,6 +16,7 @@
 #include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
+#include "odfs/string.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -587,7 +588,7 @@ typedef struct hfsp_lookup_ctx {
 static odfs_err_t hfsp_lookup_cb(const odfs_node_t *entry, void *ctx)
 {
     hfsp_lookup_ctx_t *lc = ctx;
-    if (strcasecmp(entry->name, lc->name) == 0) {
+    if (odfs_strcasecmp(entry->name, lc->name) == 0) {
         *lc->result = *entry;
         lc->found = 1;
         return ODFS_ERR_EOF;

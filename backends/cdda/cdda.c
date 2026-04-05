@@ -20,6 +20,7 @@
 #include "odfs/cache.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
+#include "odfs/string.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -375,7 +376,7 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
     for (int i = 0; i < ctx->track_count; i++) {
         char tname[32];
         cdda_track_name(ctx->tracks[i].number, tname, sizeof(tname));
-        if (strcasecmp(name, tname) == 0) {
+        if (odfs_strcasecmp(name, tname) == 0) {
             memset(out, 0, sizeof(*out));
             out->id = ctx->tracks[i].number;
             out->parent_id = 0;

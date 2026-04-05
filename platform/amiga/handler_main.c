@@ -28,6 +28,8 @@
 
 #include <string.h>
 
+#include "odfs/string.h"
+
 static const char version_string[] =
     "$VER: ODFileSystem " ODFS_HANDLER_VERSION " (" __DATE__ ")";
 
@@ -551,7 +553,7 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 #if ODFS_FEATURE_CDDA
         /* intercept "CDDA" virtual directory on mixed-mode discs */
         if (g->has_cdda && cur.extent.lba == g->mount.root.extent.lba &&
-            strcasecmp(comp, "CDDA") == 0) {
+            odfs_strcasecmp(comp, "CDDA") == 0) {
             cur = g->cdda_root;
             p = end;
             continue;
