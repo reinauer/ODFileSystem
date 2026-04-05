@@ -1213,7 +1213,9 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
         if (buf[i] == '+') {
             if (i + 1 < len && buf[i + 1] == '+') {
                 /* ++ → literal + */
-                memmove(buf + i, buf + i + 1, len - i);
+                int j;
+                for (j = i; j < len; j++)
+                    buf[j] = buf[j + 1];
                 len--;
             } else {
                 buf[i] = ' ';

@@ -36,6 +36,9 @@ HOSTLDFLAGS =
 # Serial debug output (override with: make SERIAL_DEBUG=0)
 SERIAL_DEBUG ?= 1
 
+# Packet trace instrumentation (override with: make PACKET_TRACE=1)
+PACKET_TRACE ?= 0
+
 # Backend selection (override to disable: make FEATURE_UDF=0)
 FEATURE_ISO9660      ?= 1
 FEATURE_ROCK_RIDGE   ?= 1
@@ -50,6 +53,7 @@ FEATURE_CDDA         ?= 1
 
 FEATURE_DEFS = \
           -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
+          -DODFS_PACKET_TRACE=$(PACKET_TRACE) \
           -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \
           -DODFS_FEATURE_ISO9660=$(FEATURE_ISO9660) \
           -DODFS_FEATURE_ROCK_RIDGE=$(FEATURE_ROCK_RIDGE) \
@@ -108,7 +112,8 @@ HOST_SRCS = platform/host/file_media.c
 
 # Amiga handler sources
 AMIGA_SRCS = platform/amiga/handler_main.c \
-    platform/amiga/libc_stubs.c
+    platform/amiga/libc_stubs.c \
+    platform/amiga/printf_local.c
 
 # Amiga assembly
 AMIGA_ASM_SRCS = platform/amiga/startup.S
@@ -266,7 +271,7 @@ $(AMIGA_BUILD)/%.o: %.S
 $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@$(CC) $(LDFLAGS) -nostartfiles -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs -nostdlib -lamiga -lgcc -lnix13 -lnix
+	@$(CC) $(LDFLAGS) -nostartfiles -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 	@echo "  STRIP $@"
 	@$(STRIP) $@
 
