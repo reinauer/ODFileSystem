@@ -1671,16 +1671,16 @@ void handler_main(void)
     odfs_log_set_sink(&g->log, log_sink, NULL);
     odfs_log_set_level(&g->log, ODFS_LOG_INFO);
 
-    /* mount filesystem */
-    mount_volume(g);
-
-    /* install media change interrupt */
-    install_media_change(g);
-
     /* reply startup packet */
     pkt->dp_Res1 = DOSTRUE;
     pkt->dp_Res2 = 0;
     return_packet(g, pkt);
+
+    /* mount after replying so DOS has released the device list lock */
+    mount_volume(g);
+
+    /* install media change interrupt */
+    install_media_change(g);
 
     /* ---- main packet loop ---- */
     dossig = 1UL << g->dosport->mp_SigBit;
