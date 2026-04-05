@@ -11,11 +11,11 @@
  */
 
 #include "hfs.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -213,14 +213,14 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     odfs_err_t err;
     uint32_t vol_start_512 = 0;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx) return ODFS_ERR_NOMEM;
 
     ctx->next_node_id = 1;
 
     /* find MDB — try direct first, then APM */
     err = odfs_cache_read(cache, session_start, &sector);
-    if (err != ODFS_OK) { free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     if (hfs_be16(&sector[1024]) == HFS_MDB_SIG) {
         vol_start_512 = session_start * 4; /* 2048/512 = 4 */
@@ -228,7 +228,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     } else if (hfs_be16(&sector[512]) == HFS_APM_SIG) {
         const uint8_t *pm = &sector[512];
         if (memcmp(&pm[48], "Apple_HFS", 9) != 0) {
-            free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
         uint32_t pstart = hfs_be32(&pm[8]);
         vol_start_512 = session_start * 4 + pstart;
@@ -236,11 +236,11 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         uint32_t mdb_lba = (uint32_t)(mdb_byte / 2048);
         uint32_t mdb_off = (uint32_t)(mdb_byte % 2048);
         err = odfs_cache_read(cache, mdb_lba, &sector);
-        if (err != ODFS_OK) { free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(ctx); return err; }
         mdb = &sector[mdb_off];
-        if (hfs_be16(mdb) != HFS_MDB_SIG) { free(ctx); return ODFS_ERR_BAD_FORMAT; }
+        if (hfs_be16(mdb) != HFS_MDB_SIG) { odfs_free(ctx); return ODFS_ERR_BAD_FORMAT; }
     } else {
-        free(ctx); return ODFS_ERR_BAD_FORMAT;
+        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
     }
 
     ctx->vol_start_512 = vol_start_512;
@@ -269,11 +269,11 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     {
         uint8_t hdr_buf[512];
         err = hfs_read_node(ctx, cache, 0, hdr_buf);
-        if (err != ODFS_OK) { free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
         if (hdr_buf[8] != HFS_NODE_HEADER) {
             ODFS_ERROR(log, ODFS_SUB_HFS, "catalog header node type %u", hdr_buf[8]);
-            free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         ctx->cat_root_node = hfs_be32(&hdr_buf[16]);
@@ -281,7 +281,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         ctx->cat_node_size = hfs_be16(&hdr_buf[32]);
 
         if (ctx->cat_node_size == 0 || ctx->cat_node_size > 32768) {
-            free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         ODFS_INFO(log, ODFS_SUB_HFS,
@@ -311,7 +311,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
 
 static void hfs_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -339,7 +339,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
     uint32_t cur_node;
     int found_start = 0;
 
-    node_buf = malloc(ctx->cat_node_size);
+    node_buf = odfs_malloc(ctx->cat_node_size);
     if (!node_buf) return ODFS_ERR_NOMEM;
 
     /* start from root and descend to the right leaf */
@@ -348,7 +348,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
     /* descend index nodes (max depth ~10) */
     for (int depth = 0; depth < 20; depth++) {
         err = hfs_read_node(ctx, cache, cur_node, node_buf);
-        if (err != ODFS_OK) { free(node_buf); return err; }
+        if (err != ODFS_OK) { odfs_free(node_buf); return err; }
 
         uint8_t ntype = node_buf[8];
         uint16_t nrecs = hfs_be16(&node_buf[10]);
@@ -357,7 +357,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
             break; /* reached leaf level */
 
         if (ntype != HFS_NODE_INDEX) {
-            free(node_buf);
+            odfs_free(node_buf);
             return ODFS_ERR_CORRUPT;
         }
 
@@ -379,14 +379,14 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
                 break;
         }
 
-        if (child == 0) { free(node_buf); return ODFS_ERR_NOT_FOUND; }
+        if (child == 0) { odfs_free(node_buf); return ODFS_ERR_NOT_FOUND; }
         cur_node = child;
     }
 
     /* now scan leaf nodes for entries matching parent_cnid */
     while (cur_node != 0) {
         err = hfs_read_node(ctx, cache, cur_node, node_buf);
-        if (err != ODFS_OK) { free(node_buf); return err; }
+        if (err != ODFS_OK) { odfs_free(node_buf); return err; }
 
         if (node_buf[8] != HFS_NODE_LEAF) break;
 
@@ -406,7 +406,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
             if (key_parent < parent_cnid) continue;
             if (key_parent > parent_cnid) {
                 /* past our directory — done */
-                free(node_buf);
+                odfs_free(node_buf);
                 return ODFS_OK;
             }
 
@@ -421,7 +421,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
                 err = callback(&node_buf[off], klen + 1,
                                &node_buf[data_off], data_len, cb_ctx);
                 if (err != ODFS_OK) {
-                    free(node_buf);
+                    odfs_free(node_buf);
                     return err;
                 }
             }
@@ -432,7 +432,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
         if (found_start && cur_node != 0) {
             /* peek at next node's first key to see if we're done */
             err = hfs_read_node(ctx, cache, cur_node, node_buf);
-            if (err != ODFS_OK) { free(node_buf); return err; }
+            if (err != ODFS_OK) { odfs_free(node_buf); return err; }
             if (node_buf[8] != HFS_NODE_LEAF) break;
             uint32_t off = hfs_rec_offset(node_buf, ctx->cat_node_size, 0);
             if (off + 6 < ctx->cat_node_size) {
@@ -445,7 +445,7 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
         }
     }
 
-    free(node_buf);
+    odfs_free(node_buf);
     return ODFS_OK;
 }
 

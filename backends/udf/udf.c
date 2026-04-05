@@ -8,12 +8,12 @@
  */
 
 #include "udf.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -187,7 +187,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     udf_tag_t tag;
     odfs_err_t err;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
@@ -196,10 +196,10 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
 
     /* read AVDP */
     err = odfs_cache_read(cache, session_start + UDF_AVDP_LBA, &sector);
-    if (err != ODFS_OK) { free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     if (!udf_read_tag(sector, &tag) || tag.id != UDF_TAG_AVDP) {
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -279,19 +279,19 @@ vds_done:
     if (!found_pd || !found_lvd) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
                     "incomplete VDS: PD=%d LVD=%d", found_pd, found_lvd);
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
     /* read File Set Descriptor */
     uint32_t fsd_phys = udf_phys_lba(ctx, fsd_ad.lba);
     err = odfs_cache_read(cache, fsd_phys, &sector);
-    if (err != ODFS_OK) { free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     if (!udf_read_tag(sector, &tag) || tag.id != UDF_TAG_FSD) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
                     "FSD not found at LBA %" PRIu32, fsd_phys);
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -305,13 +305,13 @@ vds_done:
     /* read root ICB (File Entry or Extended File Entry) */
     uint32_t root_phys = udf_phys_lba(ctx, ctx->root_icb_lba);
     err = odfs_cache_read(cache, root_phys, &sector);
-    if (err != ODFS_OK) { free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     if (!udf_read_tag(sector, &tag) ||
         (tag.id != UDF_TAG_FE && tag.id != UDF_TAG_EFE)) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
                     "root ICB tag %" PRIu16 " (expected FE/EFE)", tag.id);
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -347,7 +347,7 @@ vds_done:
 
 static void udf_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */

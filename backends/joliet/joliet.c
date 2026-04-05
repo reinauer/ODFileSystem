@@ -9,13 +9,13 @@
  */
 
 #include "joliet.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/node.h"
 #include "odfs/error.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -159,7 +159,7 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     uint32_t lba;
     const uint8_t *svd_sector = NULL;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
@@ -170,7 +170,7 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     for (lba = session_start + ISO_VD_START_LBA; ; lba++) {
         const uint8_t *sector;
         odfs_err_t err = odfs_cache_read(cache, lba, &sector);
-        if (err != ODFS_OK) { free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
         if (sector[0] == ISO_VD_TYPE_TERM)
             break;
@@ -188,7 +188,7 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     }
 
     if (!svd_sector) {
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -243,7 +243,7 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
 
 static void joliet_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */

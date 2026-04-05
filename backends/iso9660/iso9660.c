@@ -5,6 +5,7 @@
  */
 
 #include "iso9660.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
@@ -15,7 +16,6 @@
 #include "rock_ridge/rock_ridge.h"
 #endif
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -166,7 +166,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     iso_context_t *ctx;
     odfs_err_t err;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
@@ -177,7 +177,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     /* read PVD */
     err = odfs_cache_read(cache, session_start + ISO_VD_START_LBA, &sector);
     if (err != ODFS_OK) {
-        free(ctx);
+        odfs_free(ctx);
         return err;
     }
 
@@ -281,7 +281,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
 
 static void iso_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */

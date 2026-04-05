@@ -16,11 +16,11 @@
  */
 
 #include "cdda.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -141,7 +141,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     cdda_context_t *ctx;
     int audio_count = 0;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
@@ -184,7 +184,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     ctx->track_count = audio_count;
 
     if (audio_count == 0) {
-        free(ctx);
+        odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -224,7 +224,7 @@ static odfs_err_t cdda_mount(odfs_cache_t *cache,
 
 static void cdda_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */

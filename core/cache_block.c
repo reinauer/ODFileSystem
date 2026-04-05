@@ -5,7 +5,7 @@
  */
 
 #include "odfs/cache.h"
-#include <stdlib.h>
+#include "odfs/alloc.h"
 #include <string.h>
 
 odfs_err_t odfs_cache_init(odfs_cache_t *cache,
@@ -22,18 +22,18 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     if (sector_size == 0)
         return ODFS_ERR_INVAL;
 
-    cache->entries = calloc(capacity, sizeof(odfs_cache_entry_t));
+    cache->entries = odfs_calloc(capacity, sizeof(odfs_cache_entry_t));
     if (!cache->entries)
         return ODFS_ERR_NOMEM;
 
     /* allocate data buffers for each entry */
     for (uint32_t i = 0; i < capacity; i++) {
-        cache->entries[i].data = malloc(sector_size);
+        cache->entries[i].data = odfs_malloc(sector_size);
         if (!cache->entries[i].data) {
             /* roll back */
             for (uint32_t j = 0; j < i; j++)
-                free(cache->entries[j].data);
-            free(cache->entries);
+                odfs_free(cache->entries[j].data);
+            odfs_free(cache->entries);
             cache->entries = NULL;
             return ODFS_ERR_NOMEM;
         }
@@ -54,8 +54,8 @@ void odfs_cache_destroy(odfs_cache_t *cache)
         return;
 
     for (uint32_t i = 0; i < cache->capacity; i++)
-        free(cache->entries[i].data);
-    free(cache->entries);
+        odfs_free(cache->entries[i].data);
+    odfs_free(cache->entries);
 
     memset(cache, 0, sizeof(*cache));
 }

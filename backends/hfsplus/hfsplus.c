@@ -11,12 +11,12 @@
  */
 
 #include "hfsplus.h"
+#include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -222,12 +222,12 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     uint64_t vh_offset;
     odfs_err_t err;
 
-    ctx = calloc(1, sizeof(*ctx));
+    ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx) return ODFS_ERR_NOMEM;
     ctx->next_node_id = 1;
 
     err = hfsp_find_vh(cache, session_start, &vh_offset);
-    if (err != ODFS_OK) { free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     /* volume start is 1024 bytes before VH */
     ctx->vol_offset = vh_offset - HFSPLUS_VH_OFFSET;
@@ -239,7 +239,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         uint32_t off = (uint32_t)(vh_offset % 2048);
         const uint8_t *sector;
         err = odfs_cache_read(cache, lba, &sector);
-        if (err != ODFS_OK) { free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(ctx); return err; }
         /* VH might span two sectors if misaligned */
         size_t avail = 2048 - off;
         if (avail >= 512) {
@@ -247,21 +247,21 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         } else {
             memcpy(vh, sector + off, avail);
             err = odfs_cache_read(cache, lba + 1, &sector);
-            if (err != ODFS_OK) { free(ctx); return err; }
+            if (err != ODFS_OK) { odfs_free(ctx); return err; }
             memcpy(vh + avail, sector, 512 - avail);
         }
     }
 
     uint16_t sig = hfsp_be16(&vh[0]);
     if (sig != HFSPLUS_SIG && sig != HFSX_SIG) {
-        free(ctx); return ODFS_ERR_BAD_FORMAT;
+        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
     }
 
     ctx->block_size   = hfsp_be32(&vh[40]);
     ctx->total_blocks = hfsp_be32(&vh[44]);
 
     if (ctx->block_size == 0 || ctx->block_size > 65536) {
-        free(ctx); return ODFS_ERR_BAD_FORMAT;
+        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
     }
 
     ODFS_INFO(log, ODFS_SUB_HFSPLUS,
@@ -277,12 +277,12 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         uint8_t hdr_buf[512];
         /* read first 512 bytes of catalog file */
         err = hfsp_read_fork(ctx, cache, &ctx->cat_fork, 0, hdr_buf, 512);
-        if (err != ODFS_OK) { free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
         if (hdr_buf[8] != 0x01) { /* node type: header */
             ODFS_ERROR(log, ODFS_SUB_HFSPLUS,
                         "catalog header node type %u", hdr_buf[8]);
-            free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         /* header record at offset 14 in the node */
@@ -293,7 +293,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         ctx->cat_node_size  = hfsp_be16(&hdr_buf[14 + 2 + 4 + 4 + 4 + 4]);
 
         if (ctx->cat_node_size == 0 || ctx->cat_node_size > 32768) {
-            free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         ODFS_INFO(log, ODFS_SUB_HFSPLUS,
@@ -303,7 +303,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
 
     /* try to get volume name from the catalog (root folder thread) */
     {
-        uint8_t *node = malloc(ctx->cat_node_size);
+        uint8_t *node = odfs_malloc(ctx->cat_node_size);
         if (node) {
             /* read root node and scan for folder thread of CNID 2 */
             err = hfsp_read_node(ctx, cache, ctx->cat_first_leaf, node);
@@ -332,7 +332,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
                     (void)namelen;
                 }
             }
-            free(node);
+            odfs_free(node);
         }
     }
 
@@ -362,7 +362,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
 
 static void hfsp_unmount(void *backend_ctx)
 {
-    free(backend_ctx);
+    odfs_free(backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -387,18 +387,18 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
     int found_parent = 0;
     (void)log;
 
-    node = malloc(ctx->cat_node_size);
+    node = odfs_malloc(ctx->cat_node_size);
     if (!node) return ODFS_ERR_NOMEM;
 
     /* descend B-Tree from root to find the right leaf */
     cur_node = ctx->cat_root_node;
     for (int depth = 0; depth < 20; depth++) {
         err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { free(node); return err; }
+        if (err != ODFS_OK) { odfs_free(node); return err; }
 
         uint8_t ntype = node[8];
         if (ntype == 0xFF) break; /* leaf */
-        if (ntype != 0x00) { free(node); return ODFS_ERR_CORRUPT; } /* not index */
+        if (ntype != 0x00) { odfs_free(node); return ODFS_ERR_CORRUPT; } /* not index */
 
         uint16_t nrecs = hfsp_be16(&node[10]);
         uint32_t child = 0;
@@ -415,14 +415,14 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             else
                 break;
         }
-        if (child == 0) { free(node); return ODFS_ERR_NOT_FOUND; }
+        if (child == 0) { odfs_free(node); return ODFS_ERR_NOT_FOUND; }
         cur_node = child;
     }
 
     /* scan leaf nodes */
     while (cur_node != 0) {
         err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { free(node); return err; }
+        if (err != ODFS_OK) { odfs_free(node); return err; }
         if (node[8] != 0xFF) break; /* not leaf */
 
         uint16_t nrecs = hfsp_be16(&node[10]);
@@ -437,7 +437,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
 
             if (key_parent < parent_cnid) continue;
             if (key_parent > parent_cnid) {
-                free(node);
+                odfs_free(node);
                 if (resume_offset) *resume_offset = (uint32_t)entry_index;
                 return ODFS_OK;
             }
@@ -502,7 +502,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             entry_index++;
             err = callback(&fnode, cb_ctx);
             if (err != ODFS_OK) {
-                free(node);
+                odfs_free(node);
                 if (resume_offset) *resume_offset = (uint32_t)entry_index;
                 return err;
             }
@@ -523,7 +523,7 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
         }
     }
 
-    free(node);
+    odfs_free(node);
     if (resume_offset) *resume_offset = (uint32_t)entry_index;
     return ODFS_OK;
 }
