@@ -33,8 +33,8 @@ HOSTLDFLAGS =
 
 # ---- Amiga build options ----
 
-# Serial debug output (override with: make SERIAL_DEBUG=0)
-SERIAL_DEBUG ?= 1
+# Serial debug output (override with: make SERIAL_DEBUG=1)
+SERIAL_DEBUG ?= 0
 
 # Packet trace instrumentation (override with: make PACKET_TRACE=1)
 PACKET_TRACE ?= 0
@@ -87,6 +87,8 @@ endif
 HOST_BUILD  = build/host
 AMIGA_BUILD = build/amiga
 ROM_BUILD   = build/amiga-rom
+AMIGA_TEST_BUILD = build/amiga-test
+ROM_TEST_BUILD   = build/amiga-rom-test
 
 # ---- shared source lists ----
 
@@ -144,12 +146,13 @@ TOOL_BINS  = $(patsubst %,$(HOST_BUILD)/tools/%,$(TOOL_NAMES))
 # ---- handler target (Amiga) ----
 
 HANDLER = $(AMIGA_BUILD)/ODFileSystem
+TEST_HANDLER = $(AMIGA_TEST_BUILD)/ODFileSystem
 
 # ==================================================================
 # targets
 # ==================================================================
 
-.PHONY: all host amiga rom lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
+.PHONY: all host amiga amiga-test rom rom-test lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
 
 all: host
 
@@ -158,6 +161,12 @@ host: lib tests tools
 amiga: $(HANDLER)
 	@echo "  $(HANDLER) built successfully"
 	@wc -c < "$(HANDLER)" | awk '{printf "  Handler size: %s bytes\n", $$1}'
+
+amiga-test:
+	@$(MAKE) --no-print-directory \
+		AMIGA_BUILD=$(AMIGA_TEST_BUILD) \
+		SERIAL_DEBUG=1 \
+		amiga
 
 # ROM profile: minimal build for burning into ROM
 # ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
@@ -172,6 +181,18 @@ rom:
 		FEATURE_CDDA=0 \
 		amiga
 	@echo "  ROM profile build complete"
+
+rom-test:
+	@$(MAKE) --no-print-directory \
+		AMIGA_BUILD=$(ROM_TEST_BUILD) \
+		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
+		SERIAL_DEBUG=1 \
+		FEATURE_UDF=0 \
+		FEATURE_HFS=0 \
+		FEATURE_HFSPLUS=0 \
+		FEATURE_CDDA=0 \
+		amiga
+	@echo "  ROM test profile build complete"
 
 # Print size breakdown of Amiga library objects
 size: $(AMIGA_BUILD)/libodfs.a
@@ -236,9 +257,9 @@ fuzz-check: fuzz
 	@echo "=== Running parser fuzz smoke tests ==="
 	@FUZZ_BINS="$(PWD)/$(HOST_BUILD)/tests" tests/fuzz/run_fuzz.sh
 
-integration-check: amiga
+integration-check: amiga-test
 	@echo "=== Running AmiFUSE integration test ==="
-	@ODFS_HANDLER="$(PWD)/$(HANDLER)" tests/integration/test_amifuse.sh
+	@ODFS_HANDLER="$(PWD)/$(TEST_HANDLER)" tests/integration/test_amifuse.sh
 
 # ---- host tools ----
 

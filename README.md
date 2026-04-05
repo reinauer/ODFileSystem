@@ -94,6 +94,9 @@ Build the handler with:
 make amiga
 ```
 
+This builds the release handler with serial logging disabled. For a test build
+with serial output enabled, use `make amiga-test`.
+
 Then copy `build/amiga/ODFileSystem` to `L:ODFileSystem` and add a mount entry such as:
 
 ```text

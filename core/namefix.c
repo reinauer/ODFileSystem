@@ -8,9 +8,9 @@
 
 #include "odfs/alloc.h"
 #include "odfs/node.h"
+#include "odfs/printf.h"
 #include "odfs/string.h"
 
-#include <stdio.h>
 #include <string.h>
 
 void odfs_namefix_init(odfs_namefix_state_t *state)
@@ -81,7 +81,7 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
 
     for (unsigned int ordinal = 2; ordinal < 1000000; ordinal++) {
         char suffix[32];
-        int suffix_len = snprintf(suffix, sizeof(suffix), "~%u", ordinal);
+        int suffix_len = odfs_snprintf(suffix, sizeof(suffix), "~%u", ordinal);
         size_t base_len = strlen(base);
 
         if (suffix_len < 0)

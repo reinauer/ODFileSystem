@@ -59,6 +59,9 @@ If you want a fully self-contained smoke test with no external image, just run:
 make integration-check
 ```
 
+This target builds and uses `build/amiga-test/ODFileSystem`, so serial logging
+remains enabled during local handler testing.
+
 To use the AmigaOS 3.2 CD image instead:
 
 ```sh

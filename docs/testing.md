@@ -33,7 +33,11 @@ make check    # build and run all unit tests
 make golden-check  # run golden image tests with the host tools
 make malformed-check  # run malformed-image smoke tests
 make fuzz-check  # run parser fuzz smoke tests
-make integration-check  # local-only AmiFUSE handler test with a generated ISO
+make amiga      # release Amiga handler build, serial logging disabled
+make amiga-test # test Amiga handler build, serial logging enabled
+make rom        # release ROM-profile build, serial logging disabled
+make rom-test   # test ROM-profile build, serial logging enabled
+make integration-check  # local-only AmiFUSE test using the amiga-test handler
 AMIGAOS32_ISO=/path/to/AmigaOS3.2CD.iso make integration-check  # local-only AmiFUSE handler test
 ```
 

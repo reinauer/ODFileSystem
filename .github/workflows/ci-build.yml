@@ -34,8 +34,14 @@ jobs:
       - name: Build Amiga handler
         run: make amiga
 
+      - name: Build Amiga test handler
+        run: make amiga-test
+
       - name: Build ROM profile
         run: make rom
+
+      - name: Build ROM test profile
+        run: make rom-test
 
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
@@ -43,6 +49,8 @@ jobs:
           name: odfilesystem-build
           path: |
             build/amiga/ODFileSystem
+            build/amiga-test/ODFileSystem
             build/amiga-rom/ODFileSystem
+            build/amiga-rom-test/ODFileSystem
             build/host/tools/
           if-no-files-found: error
