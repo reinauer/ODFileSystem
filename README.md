@@ -40,6 +40,18 @@ ODFileSystem currently includes backends for:
 - Block-cache based media access
 - Host-side tools for inspecting image files
 
+### Feature Matrix
+
+| Filesystem | Status | Notes |
+| --- | --- | --- |
+| ISO 9660 | Supported | Plain ISO 9660 names and directory traversal |
+| Rock Ridge | Supported | Preferred over plain ISO when present |
+| Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
+| UDF | Supported | Bridge discs default to ISO-family content unless forced |
+| HFS | Supported with limitations | Data fork only; simplified Mac Roman name conversion |
+| HFS+ | Supported with limitations | Data fork only; resource forks are not exposed |
+| CDDA | Supported | Exposed as virtual WAV files |
+
 ### Format Selection Rules
 
 For ISO-family hybrids, the default precedence is:
@@ -61,6 +73,17 @@ For bridge and hybrid discs:
 If multiple on-disc names normalize to the same visible AmigaDOS name, the first
 entry keeps the unsuffixed name and later entries are renamed deterministically
 in on-disc order using `~2`, `~3`, and so on.
+
+### HFS And HFS+ Limitations
+
+- Only data forks are exposed. Resource forks and Finder metadata are not
+  presented as separate files or alternate streams.
+- Classic HFS name decoding currently uses a simplified Mac Roman conversion.
+  ASCII names are preserved, but unsupported high-bit characters are shown as
+  `?`.
+- Because of those limits, some classic Mac software distributions may be
+  incomplete when viewed through ODFileSystem even though their main data files
+  remain readable.
 
 ### CDDA
 

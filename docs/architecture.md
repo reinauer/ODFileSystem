@@ -26,6 +26,10 @@ Pluggable readers implementing `odfs_backend_ops_t`:
 - udf, hfs, hfsplus
 - cdda, multisession
 
+For HFS-family media, the current frontend contract is data-fork-only.
+Resource forks and Finder metadata are intentionally not surfaced through the
+AmigaDOS view.
+
 ### E. Auxiliary Services
 - Logging (`odfs_log`)
 - Charset conversion
@@ -58,6 +62,13 @@ The ISO9660 backend is probed first because Rock Ridge detection happens during 
 
 - Default policy: prefer ISO-family content on Amiga
 - `prefer_hfs`: prefer HFS instead
+
+### HFS-Family Limits
+
+- HFS and HFS+ expose data forks only
+- Classic HFS names currently use a simplified Mac Roman to UTF-8 conversion
+- Some classic Mac media may therefore lose non-ASCII filename fidelity or
+  resource-fork content in the AmigaDOS view
 
 ### Mount Options That Affect Selection
 
