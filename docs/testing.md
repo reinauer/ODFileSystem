@@ -31,7 +31,11 @@ Host-side fuzz targets for each parser backend.
 ```
 make check    # build and run all unit tests
 make golden-check  # run golden image tests with the host tools
+make malformed-check  # run malformed-image smoke tests
+make fuzz-check  # run parser fuzz smoke tests
+make integration-check  # local-only AmiFUSE handler test with a generated ISO
+AMIGAOS32_ISO=/path/to/AmigaOS3.2CD.iso make integration-check  # local-only AmiFUSE handler test
 ```
 
 ## CI Requirements
-Per push: build, unit tests, golden image tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
+Per push: build, unit tests, golden image tests, malformed-image tests, parser fuzz smoke tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.

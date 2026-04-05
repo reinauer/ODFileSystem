@@ -130,6 +130,11 @@ AMIGA_LIB_OBJS = $(patsubst %.c,$(AMIGA_BUILD)/%.o,$(AMIGA_LIB_SRCS))
 TEST_SRCS = $(wildcard tests/unit/test_*.c)
 TEST_BINS = $(patsubst tests/unit/%.c,$(HOST_BUILD)/tests/%,$(TEST_SRCS))
 
+# ---- fuzz binaries (host only) ----
+
+FUZZ_SRCS = $(wildcard tests/fuzz/fuzz_*.c)
+FUZZ_BINS = $(patsubst tests/fuzz/%.c,$(HOST_BUILD)/tests/%,$(FUZZ_SRCS))
+
 # ---- host tool binaries ----
 
 TOOL_NAMES = imginfo imgls imgcat imgstat imgbench imgdump
@@ -143,7 +148,7 @@ HANDLER = $(AMIGA_BUILD)/ODFileSystem
 # targets
 # ==================================================================
 
-.PHONY: all host amiga rom lib tests tools check golden-check clean size
+.PHONY: all host amiga rom lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
 
 all: host
 
@@ -214,6 +219,25 @@ check: tests
 golden-check: tools
 	@echo "=== Running golden image tests ==="
 	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" tests/golden/test_formats.sh
+
+malformed-check: tools
+	@echo "=== Running malformed image tests ==="
+	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" tests/malformed/test_malformed.sh
+
+fuzz: $(FUZZ_BINS)
+
+$(HOST_BUILD)/tests/fuzz_%: tests/fuzz/fuzz_%.c $(HOST_BUILD)/libodfs.a
+	@mkdir -p $(@D)
+	@echo "  HOSTCC $<"
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+
+fuzz-check: fuzz
+	@echo "=== Running parser fuzz smoke tests ==="
+	@FUZZ_BINS="$(PWD)/$(HOST_BUILD)/tests" tests/fuzz/run_fuzz.sh
+
+integration-check: amiga
+	@echo "=== Running AmiFUSE integration test ==="
+	@ODFS_HANDLER="$(PWD)/$(HANDLER)" tests/integration/test_amifuse.sh
 
 # ---- host tools ----
 

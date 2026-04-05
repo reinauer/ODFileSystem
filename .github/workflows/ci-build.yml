@@ -25,6 +25,12 @@ jobs:
       - name: Run golden image tests
         run: make golden-check
 
+      - name: Run malformed image tests
+        run: make malformed-check
+
+      - name: Run parser fuzz smoke tests
+        run: make fuzz-check
+
       - name: Build Amiga handler
         run: make amiga
 
