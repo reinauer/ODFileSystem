@@ -30,8 +30,8 @@
 
 #include "odfs/string.h"
 
-static const char version_string[] =
-    "$VER: ODFileSystem " ODFS_HANDLER_VERSION " (" __DATE__ ")";
+static const char version_string[] __attribute__((used)) =
+    "$VER: ODFileSystem " ODFS_HANDLER_VERSION " (" ODFS_AMIGA_DATE ")";
 
 /* library bases — set by handler_main() */
 struct ExecBase *SysBase;

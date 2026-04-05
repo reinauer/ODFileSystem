@@ -20,7 +20,7 @@
 #include "aros_compat.h"
 #include "odfs/api.h"
 
-#define ODFS_HANDLER_VERSION  "0.1"
+#define ODFS_HANDLER_VERSION  "0.9"
 
 /* ---- handler globals ---- */
 

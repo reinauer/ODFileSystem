@@ -21,6 +21,8 @@ HOSTCC ?= cc
 
 # ---- common flags ----
 
+AMIGA_DATE ?= $(shell date '+%-d.%-m.%Y')
+
 INCLUDES = -I include -I backends
 
 # ---- host build flags ----
@@ -58,6 +60,7 @@ FEATURE_CDDA         ?= 1
 # ---- Amiga build flags (following xsysinfo conventions) ----
 
 FEATURE_DEFS = \
+          -DODFS_AMIGA_DATE=\"$(AMIGA_DATE)\" \
           -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
           -DODFS_PACKET_TRACE=$(PACKET_TRACE) \
           -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \
