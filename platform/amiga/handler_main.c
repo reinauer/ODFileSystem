@@ -668,6 +668,35 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     fib->fib_DiskKey = fnode->extent.lba;
 }
 
+static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode)
+{
+    if (!g || !fnode)
+        return 0;
+
+    return fnode->kind == ODFS_NODE_DIR &&
+           fnode->backend == g->mount.root.backend &&
+           fnode->id == g->mount.root.id &&
+           fnode->extent.lba == g->mount.root.extent.lba &&
+           fnode->extent.length == g->mount.root.extent.length;
+}
+
+static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
+                          const odfs_node_t *fnode)
+{
+    int len;
+
+    fill_fib(fib, fnode);
+
+    fib->fib_DirEntryType = ST_ROOT;
+    fib->fib_EntryType = ST_ROOT;
+
+    len = strlen(g->volname);
+    if (len > 30)
+        len = 30;
+    fib->fib_FileName[0] = len;
+    memcpy(&fib->fib_FileName[1], g->volname, len);
+}
+
 /* ------------------------------------------------------------------ */
 /* packet handlers                                                     */
 /* ------------------------------------------------------------------ */
@@ -817,8 +846,12 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
+    const odfs_node_t *fnode = ol ? &ol->fnode : &g->mount.root;
 
-    fill_fib(fib, ol ? &ol->fnode : &g->mount.root);
+    if (node_is_mount_root(g, fnode))
+        fill_root_fib(g, fib, fnode);
+    else
+        fill_fib(fib, fnode);
     fib->fib_DiskKey = 0; /* reset ExNext resume offset */
     pkt->dp_Res1 = DOSTRUE;
 }
