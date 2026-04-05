@@ -394,6 +394,46 @@ static void serial_puts(const char *s)
         raw_putchar(*s++);
 }
 
+#if ODFS_PACKET_TRACE
+static void serial_put_hex_nibble(unsigned int v)
+{
+    v &= 0xfu;
+    raw_putchar((v < 10u) ? (char)('0' + v) : (char)('a' + (v - 10u)));
+}
+
+static void serial_put_hex32(ULONG v)
+{
+    int shift;
+
+    serial_puts("0x");
+    for (shift = 28; shift >= 0; shift -= 4)
+        serial_put_hex_nibble((unsigned int)(v >> shift));
+}
+
+static void serial_trace_kv(const char *key, ULONG value)
+{
+    serial_puts(" ");
+    serial_puts(key);
+    serial_puts("=");
+    serial_put_hex32(value);
+}
+
+static void serial_trace_pkt(const char *tag, struct DosPacket *pkt)
+{
+    serial_puts("[trace] ");
+    serial_puts(tag);
+    if (pkt) {
+        serial_trace_kv("pkt", (ULONG)pkt);
+        serial_trace_kv("type", (ULONG)pkt->dp_Type);
+        serial_trace_kv("res1", (ULONG)pkt->dp_Res1);
+        serial_trace_kv("res2", (ULONG)pkt->dp_Res2);
+        serial_trace_kv("port", (ULONG)pkt->dp_Port);
+        serial_trace_kv("link", (ULONG)pkt->dp_Link);
+    }
+    raw_putchar('\n');
+}
+#endif
+
 static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
                      const char *msg, void *ctx)
 {
@@ -642,7 +682,15 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
     const odfs_node_t *start;
     const odfs_node_t *start_parent;
 
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_pkt("locate-enter", pkt);
+#endif
     bstr_to_cstr(pkt->dp_Arg2, path, sizeof(path));
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_puts("[trace] locate-path ");
+    serial_puts(path);
+    raw_putchar('\n');
+#endif
 
     if (parent_lock) {
         start = &parent_lock->fnode;
@@ -656,6 +704,9 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
     if (err != ODFS_OK) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = odfs_err_to_dos(err);
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+        serial_trace_pkt("locate-resolve-fail", pkt);
+#endif
         return;
     }
 
@@ -663,10 +714,16 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
     if (!ol) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+        serial_trace_pkt("locate-alloc-fail", pkt);
+#endif
         return;
     }
 
     pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_pkt("locate-exit", pkt);
+#endif
 }
 
 static void action_free_lock(handler_global_t *g, struct DosPacket *pkt)
@@ -1112,11 +1169,25 @@ static void return_packet(handler_global_t *g, struct DosPacket *pkt)
     struct MsgPort *replyport = pkt->dp_Port;
     struct Message *msg = pkt->dp_Link;
 
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_pkt("return-enter", pkt);
+    serial_trace_kv(" msg", (ULONG)msg);
+    raw_putchar('\n');
+#endif
     pkt->dp_Port = g->dosport;
     msg->mn_Node.ln_Name = (char *)pkt;
     msg->mn_Node.ln_Succ = NULL;
     msg->mn_Node.ln_Pred = NULL;
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_puts("[trace] return-putmsg");
+    serial_trace_kv(" reply", (ULONG)replyport);
+    serial_trace_kv(" msg", (ULONG)msg);
+    raw_putchar('\n');
+#endif
     PutMsg(replyport, msg);
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_pkt("return-done", pkt);
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1716,6 +1787,9 @@ void handler_main(void)
         if (sigs & dossig) {
             while ((msg = GetMsg(g->dosport)) != NULL) {
                 pkt = (struct DosPacket *)msg->mn_Node.ln_Name;
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+                serial_trace_pkt("dequeue", pkt);
+#endif
 
                 if (pkt->dp_Type == ACTION_DIE) {
                     pkt->dp_Res1 = DOSTRUE;
