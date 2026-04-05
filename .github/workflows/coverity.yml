@@ -31,6 +31,7 @@ jobs:
 
       - uses: reinauer/coverity-scan-action@v1
         with:
+          project: ODFileSystem
           # Rebuild from a clean tree so cov-build captures the full compile.
           command: make clean amiga
           configure: --compiler m68k-amigaos-gcc --comptype gcc --template
