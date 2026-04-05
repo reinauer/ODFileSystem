@@ -82,6 +82,7 @@ endif
 
 HOST_BUILD  = build/host
 AMIGA_BUILD = build/amiga
+ROM_BUILD   = build/amiga-rom
 
 # ---- shared source lists ----
 
@@ -151,6 +152,8 @@ amiga: $(HANDLER)
 # ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
 rom:
 	@$(MAKE) --no-print-directory \
+		AMIGA_BUILD=$(ROM_BUILD) \
+		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		SERIAL_DEBUG=0 \
 		FEATURE_UDF=0 \
 		FEATURE_HFS=0 \
@@ -178,7 +181,7 @@ $(HOST_BUILD)/libodfs.a: $(HOST_LIB_OBJS)
 $(HOST_BUILD)/%.o: %.c
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -c -o $@ $<
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -c -o $@ $<
 
 # ---- host tests ----
 
@@ -187,7 +190,7 @@ tests: $(TEST_BINS)
 $(HOST_BUILD)/tests/test_%: tests/unit/test_%.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) -I tests/unit $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) -I tests/unit $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 check: tests
 	@echo "=== Running unit tests ==="
@@ -210,32 +213,32 @@ tools: $(TOOL_BINS)
 $(HOST_BUILD)/tools/imginfo: tools/imginfo/imginfo.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 $(HOST_BUILD)/tools/imgls: tools/imgls/imgls.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 $(HOST_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 $(HOST_BUILD)/tools/imgstat: tools/imgstat/imgstat.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 $(HOST_BUILD)/tools/imgbench: tools/imgbench/imgbench.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 $(HOST_BUILD)/tools/imgdump: tools/imgdump/imgdump.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
-	@$(HOSTCC) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
+	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
 # ---- Amiga library ----
 
@@ -249,14 +252,14 @@ $(AMIGA_BUILD)/libodfs.a: $(AMIGA_LIB_OBJS)
 $(AMIGA_BUILD)/%.o: %.c
 	@mkdir -p $(@D)
 	@echo "  CC    $<"
-	@$(CC) $(INCLUDES) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(INCLUDES) $(CFLAGS) -c -o $@ $<
 
 # ---- Amiga assembly ----
 
 $(AMIGA_BUILD)/%.o: %.S
 	@mkdir -p $(@D)
 	@echo "  AS    $<"
-	@$(CC) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 # ---- Amiga handler ----
 

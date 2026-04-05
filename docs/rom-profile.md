@@ -26,8 +26,11 @@
 
 ## Build
 ```
-make CPPFLAGS="-DODFS_PROFILE_ROM -Iinclude"
+make rom
 ```
+
+This writes ROM-profile objects and the handler to `build/amiga-rom/`, so it does not
+reuse or clobber the normal Amiga build in `build/amiga/`.
 
 ## Size Budget
 TBD — will be established once core backends are implemented.
