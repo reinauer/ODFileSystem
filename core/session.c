@@ -38,6 +38,8 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 {
     odfs_err_t err;
 
+    (void)log;
+
     *last_lba_out = 0;
 
     /* strategy 1: device TOC */

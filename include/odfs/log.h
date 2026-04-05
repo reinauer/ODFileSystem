@@ -101,7 +101,8 @@ static inline int odfs_log_enabled(const odfs_log_state_t *state,
       do { if (odfs_log_enabled((st), (lv), (sub))) \
                odfs_log((st), (lv), (sub), __VA_ARGS__); } while (0)
 #else
-  #define ODFS_LOG(st, lv, sub, ...) ((void)0)
+  #define ODFS_LOG(st, lv, sub, ...) \
+      do { (void)(st); (void)(lv); (void)(sub); } while (0)
 #endif
 
 /* shorthand per-level macros */
