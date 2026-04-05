@@ -431,6 +431,37 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
 /* readdir                                                             */
 /* ------------------------------------------------------------------ */
 
+static odfs_err_t udf_read_bytes(odfs_cache_t *cache,
+                                   uint32_t start_lba,
+                                   uint32_t offset,
+                                   void *buf,
+                                   size_t len)
+{
+    uint8_t *out = buf;
+    size_t done = 0;
+
+    while (done < len) {
+        uint32_t sector_lba = start_lba + ((offset + (uint32_t)done) / 2048);
+        uint32_t sector_off = (offset + (uint32_t)done) % 2048;
+        const uint8_t *sector;
+        odfs_err_t err;
+        size_t chunk;
+
+        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+
+        chunk = 2048 - sector_off;
+        if (chunk > len - done)
+            chunk = len - done;
+
+        memcpy(out + done, sector + sector_off, chunk);
+        done += chunk;
+    }
+
+    return ODFS_OK;
+}
+
 static odfs_err_t udf_readdir(void *backend_ctx,
                                 odfs_cache_t *cache,
                                 odfs_log_state_t *log,
@@ -457,22 +488,18 @@ static odfs_err_t udf_readdir(void *backend_ctx,
 
     /* walk File Identifier Descriptors */
     while (offset < dir_size) {
-        uint32_t sector_lba = dir_data_lba + (offset / 2048);
-        uint32_t sector_off = offset % 2048;
-        const uint8_t *sector;
+        uint8_t fid_hdr[38];
+        const uint8_t *fid = fid_hdr;
+        uint8_t *fid_alloc = NULL;
+        uint64_t remaining = dir_size - offset;
 
-        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (remaining < sizeof(fid_hdr))
+            break;
+
+        err = udf_read_bytes(cache, dir_data_lba, offset,
+                             fid_hdr, sizeof(fid_hdr));
         if (err != ODFS_OK)
             return err;
-
-        const uint8_t *fid = sector + sector_off;
-        size_t avail = 2048 - sector_off;
-
-        if (avail < 38) {
-            /* FID header doesn't fit in remainder — skip to next sector */
-            offset = ((offset / 2048) + 1) * 2048;
-            continue;
-        }
 
         udf_tag_t tag;
         if (!udf_read_tag(fid, &tag) || tag.id != UDF_TAG_FID)
@@ -490,20 +517,32 @@ static odfs_err_t udf_readdir(void *backend_ctx,
         /* FID total length: 38 + impl_len + name_len, padded to 4 bytes */
         uint32_t fid_len = (38 + impl_len + name_len + 3) & ~3u;
 
-        if (fid_len > avail || fid_len < 38) {
-            /* FID spans sector boundary — skip for now */
-            /* TODO: handle cross-sector FIDs */
-            offset = ((offset / 2048) + 1) * 2048;
-            continue;
+        if (fid_len < sizeof(fid_hdr) || (uint64_t)fid_len > remaining)
+            return ODFS_ERR_CORRUPT;
+
+        if (fid_len > sizeof(fid_hdr)) {
+            fid_alloc = odfs_malloc(fid_len);
+            if (!fid_alloc)
+                return ODFS_ERR_NOMEM;
+
+            err = udf_read_bytes(cache, dir_data_lba, offset,
+                                 fid_alloc, fid_len);
+            if (err != ODFS_OK) {
+                odfs_free(fid_alloc);
+                return err;
+            }
+            fid = fid_alloc;
         }
 
         /* skip deleted and parent entries */
         if (fid_flags & UDF_FID_FLAG_DELETED) {
             offset += fid_len;
+            odfs_free(fid_alloc);
             continue;
         }
         if (fid_flags & UDF_FID_FLAG_PARENT) {
             offset += fid_len;
+            odfs_free(fid_alloc);
             continue;
         }
 
@@ -532,6 +571,7 @@ static odfs_err_t udf_readdir(void *backend_ctx,
                            &fsize, &data_lba, &ftype, &ts);
         if (err != ODFS_OK) {
             offset += fid_len;
+            odfs_free(fid_alloc);
             continue;
         }
 
@@ -551,6 +591,7 @@ static odfs_err_t udf_readdir(void *backend_ctx,
         offset += fid_len;
 
         err = callback(&node, cb_ctx);
+        odfs_free(fid_alloc);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = offset;
