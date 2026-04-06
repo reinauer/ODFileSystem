@@ -172,17 +172,18 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
         case RR_SIG_SL:
             /* symbolic link — parse component records */
             if (entry_len > 5) {
-                size_t spos = 5;
+                const uint8_t *comp = &sua[pos + 5];
+                const uint8_t *entry_end = &sua[pos + entry_len];
                 size_t sl_pos = strlen(info->symlink_target);
                 if (sl_pos >= sizeof(info->symlink_target))
                     sl_pos = sizeof(info->symlink_target) - 1;
                 info->symlink_target[sl_pos] = '\0';
 
-                while (spos + 2 <= entry_len) {
-                    uint8_t cflags = sua[pos + spos];
-                    uint8_t clen = sua[pos + spos + 1];
+                while (comp + 2 <= entry_end) {
+                    uint8_t cflags = comp[0];
+                    uint8_t clen = comp[1];
                     size_t comp_len = clen;
-                    if (comp_len > entry_len - (spos + 2))
+                    if (comp_len > (size_t)(entry_end - (comp + 2)))
                         break;
                     if (cflags & 0x02) {
                         /* current directory "." */
@@ -204,14 +205,14 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                                 info->symlink_target[sl_pos++] = '/';
                         if (sl_pos + comp_len < sizeof(info->symlink_target)) {
                             memcpy(info->symlink_target + sl_pos,
-                                   &sua[pos + spos + 2], comp_len);
+                                   comp + 2, comp_len);
                             sl_pos += comp_len;
                         }
                     }
                     if (sl_pos >= sizeof(info->symlink_target))
                         sl_pos = sizeof(info->symlink_target) - 1;
                     info->symlink_target[sl_pos] = '\0';
-                    spos += 2 + comp_len;
+                    comp += 2 + comp_len;
                 }
                 info->is_symlink = 1;
             }
