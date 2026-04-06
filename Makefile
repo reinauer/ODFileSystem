@@ -74,7 +74,7 @@ FEATURE_DEFS = \
           -DODFS_FEATURE_CDDA=$(FEATURE_CDDA)
 
 ifeq ($(AROS),1)
-CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
+CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
           -Wall -Wextra -Werror \
           -Wstrict-prototypes -Wmissing-prototypes \
           -Wno-array-bounds \
@@ -82,7 +82,7 @@ CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
 LDFLAGS = -static
 LIBS    = -lamiga -lgcc
 else
-CFLAGS  = -O2 -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
+CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
           -Wall -Wextra -Werror \
           -Wstrict-prototypes -Wmissing-prototypes \
           -Wno-array-bounds \
