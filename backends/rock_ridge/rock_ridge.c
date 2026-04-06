@@ -10,6 +10,8 @@
 
 #include <string.h>
 
+#define RR_SL_MAX_PAYLOAD_LEN 250U
+
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -176,17 +178,33 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
             /* symbolic link — parse component records */
             if (entry_len > 5) {
                 const uint8_t *comp = &sua[pos + 5];
-                size_t comp_rem = entry_len - 5;
+                size_t comp_area_len = entry_len - 5;
+                size_t comp_pos = 0;
                 size_t sl_pos = strlen(info->symlink_target);
+
+                /*
+                 * SUSP entry lengths are one byte, so an SL payload cannot
+                 * exceed 255 - 5 bytes. Keep an explicit bound here so the
+                 * component walk does not use an unchecked on-disc length as
+                 * its loop boundary.
+                 */
+                if (comp_area_len > RR_SL_MAX_PAYLOAD_LEN)
+                    break;
+
                 if (sl_pos >= sizeof(info->symlink_target))
                     sl_pos = sizeof(info->symlink_target) - 1;
                 info->symlink_target[sl_pos] = '\0';
 
-                while (comp_rem >= 2) {
-                    uint8_t cflags = comp[0];
-                    size_t comp_len = comp[1];
-                    if (comp_len > comp_rem - 2)
+                while (comp_pos + 2 <= comp_area_len) {
+                    uint8_t cflags = comp[comp_pos];
+                    size_t comp_len = comp[comp_pos + 1];
+                    size_t record_len = 2 + comp_len;
+                    const uint8_t *comp_data;
+
+                    if (record_len > comp_area_len - comp_pos)
                         break;
+                    comp_data = comp + comp_pos + 2;
+
                     if (cflags & 0x02) {
                         /* current directory "." */
                         if (sl_pos + 1 < sizeof(info->symlink_target))
@@ -207,15 +225,14 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                                 info->symlink_target[sl_pos++] = '/';
                         if (sl_pos + comp_len < sizeof(info->symlink_target)) {
                             memcpy(info->symlink_target + sl_pos,
-                                   comp + 2, comp_len);
+                                   comp_data, comp_len);
                             sl_pos += comp_len;
                         }
                     }
                     if (sl_pos >= sizeof(info->symlink_target))
                         sl_pos = sizeof(info->symlink_target) - 1;
                     info->symlink_target[sl_pos] = '\0';
-                    comp += 2 + comp_len;
-                    comp_rem -= 2 + comp_len;
+                    comp_pos += record_len;
                 }
                 info->is_symlink = 1;
             }
