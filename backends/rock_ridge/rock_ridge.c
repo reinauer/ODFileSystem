@@ -147,23 +147,26 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
         case RR_SIG_TF: {
             uint8_t flags = sua[pos + 4];
             const uint8_t *tp = &sua[pos + 5];
-            int ts_size = (flags & RR_TF_LONG_FORM) ? 17 : 7;
+            size_t tf_rem = entry_len - 5;
+            size_t ts_len = (flags & RR_TF_LONG_FORM) ? 17U : 7U;
             void (*parse_ts)(const uint8_t *, odfs_timestamp_t *) =
                 (flags & RR_TF_LONG_FORM) ? rr_parse_ts17 : rr_parse_ts7;
 
             if (flags & RR_TF_CREATION) {
-                if (tp + ts_size <= sua + pos + len) {
-                    parse_ts(tp, &info->ctime);
-                    info->has_timestamps = 1;
-                }
-                tp += ts_size;
+                if (ts_len > tf_rem)
+                    break;
+                parse_ts(tp, &info->ctime);
+                info->has_timestamps = 1;
+                tp += ts_len;
+                tf_rem -= ts_len;
             }
             if (flags & RR_TF_MODIFY) {
-                if (tp + ts_size <= sua + pos + len) {
-                    parse_ts(tp, &info->mtime);
-                    info->has_timestamps = 1;
-                }
-                tp += ts_size;
+                if (ts_len > tf_rem)
+                    break;
+                parse_ts(tp, &info->mtime);
+                info->has_timestamps = 1;
+                tp += ts_len;
+                tf_rem -= ts_len;
             }
             /* skip remaining TF fields (access, attributes, etc.) */
             break;
@@ -173,17 +176,16 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
             /* symbolic link — parse component records */
             if (entry_len > 5) {
                 const uint8_t *comp = &sua[pos + 5];
-                const uint8_t *entry_end = &sua[pos + entry_len];
+                size_t comp_rem = entry_len - 5;
                 size_t sl_pos = strlen(info->symlink_target);
                 if (sl_pos >= sizeof(info->symlink_target))
                     sl_pos = sizeof(info->symlink_target) - 1;
                 info->symlink_target[sl_pos] = '\0';
 
-                while (comp + 2 <= entry_end) {
+                while (comp_rem >= 2) {
                     uint8_t cflags = comp[0];
-                    uint8_t clen = comp[1];
-                    size_t comp_len = clen;
-                    if (comp_len > (size_t)(entry_end - (comp + 2)))
+                    size_t comp_len = comp[1];
+                    if (comp_len > comp_rem - 2)
                         break;
                     if (cflags & 0x02) {
                         /* current directory "." */
@@ -199,7 +201,7 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                         /* root "/" */
                         if (sl_pos < sizeof(info->symlink_target))
                             info->symlink_target[sl_pos++] = '/';
-                    } else if (clen > 0) {
+                    } else if (comp_len > 0) {
                         if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
                             if (sl_pos < sizeof(info->symlink_target))
                                 info->symlink_target[sl_pos++] = '/';
@@ -213,6 +215,7 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                         sl_pos = sizeof(info->symlink_target) - 1;
                     info->symlink_target[sl_pos] = '\0';
                     comp += 2 + comp_len;
+                    comp_rem -= 2 + comp_len;
                 }
                 info->is_symlink = 1;
             }
