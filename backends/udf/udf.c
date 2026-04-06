@@ -506,17 +506,22 @@ static odfs_err_t udf_readdir(void *backend_ctx,
         odfs_namefix_destroy(&namefix);
         return err;
     }
+    if (dir_size > UINT32_MAX) {
+        odfs_namefix_destroy(&namefix);
+        return ODFS_ERR_CORRUPT;
+    }
 
     uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
+    uint32_t dir_size32 = (uint32_t)dir_size;
     uint32_t offset = 0;
 
     /* walk File Identifier Descriptors */
-    while (offset < dir_size) {
+    while (offset < dir_size32) {
         uint32_t entry_start = offset;
         uint8_t fid_hdr[38];
         const uint8_t *fid = fid_hdr;
         uint8_t *fid_alloc = NULL;
-        uint64_t remaining = dir_size - offset;
+        uint32_t remaining = dir_size32 - offset;
 
         if (remaining < sizeof(fid_hdr))
             break;
@@ -580,14 +585,22 @@ static odfs_err_t udf_readdir(void *backend_ctx,
 
         /* decode filename */
         odfs_node_t node;
+        uint32_t name_off = 38u + impl_len;
         memset(&node, 0, sizeof(node));
         node.id = ctx->next_node_id++;
         node.parent_id = dir->id;
         node.backend = ODFS_BACKEND_UDF;
 
+        if (name_off > fid_len || name_len > fid_len - name_off) {
+            odfs_free(fid_alloc);
+            odfs_namefix_destroy(&namefix);
+            return ODFS_ERR_CORRUPT;
+        }
+
         if (name_len > 0) {
-            const uint8_t *name_data = fid + 38 + impl_len;
-            udf_decode_cs0(name_data, name_len,
+            const uint8_t *name_data = fid + name_off;
+            size_t safe_name_len = name_len;
+            udf_decode_cs0(name_data, safe_name_len,
                            node.name, sizeof(node.name));
         }
 
@@ -645,7 +658,7 @@ static odfs_err_t udf_readdir(void *backend_ctx,
     }
 
     if (resume_offset)
-        *resume_offset = (uint32_t)dir_size;
+        *resume_offset = dir_size32;
     odfs_namefix_destroy(&namefix);
     return ODFS_OK;
 }
