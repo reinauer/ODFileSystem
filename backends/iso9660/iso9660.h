@@ -46,6 +46,9 @@ static inline uint16_t iso_read_le16(const uint8_t *p)
 static inline void iso_copy_strfield(const uint8_t *src, size_t src_len,
                                      char *dst, size_t dst_size)
 {
+    if (dst_size == 0)
+        return;
+
     size_t len = src_len;
     while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == '\0'))
         len--;

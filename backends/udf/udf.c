@@ -379,35 +379,49 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
     if (!udf_read_tag(sector, &tag))
         return ODFS_ERR_CORRUPT;
 
+    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
     uint16_t alloc_type;
     uint32_t ad_offset;  /* offset of allocation descriptors in FE */
     uint32_t ad_length;
+    uint32_t ad_base;
+    uint32_t ea_len;
 
     if (tag.id == UDF_TAG_FE) {
         /* File Entry (ECMA-167 14.9) */
-        *file_type = sector[11]; /* ICB tag file type at offset 11 within ICB tag (FE+16) */
-        /* Actually ICB tag is at FE offset 16, file type at ICB tag offset 11 */
+        if (block_size < 176)
+            return ODFS_ERR_CORRUPT;
+
         *file_type = sector[16 + 11];
         alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
         *data_size = udf_le64(&sector[56]);
         if (mtime)
             udf_parse_timestamp(&sector[84], mtime);
-        uint32_t ea_len = udf_le32(&sector[168]);
+        ea_len = udf_le32(&sector[168]);
         ad_length = udf_le32(&sector[172]);
-        ad_offset = 176 + ea_len;
+        ad_base = 176;
     } else if (tag.id == UDF_TAG_EFE) {
         /* Extended File Entry (ECMA-167 14.17) */
+        if (block_size < 216)
+            return ODFS_ERR_CORRUPT;
+
         *file_type = sector[16 + 11];
         alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
         *data_size = udf_le64(&sector[56]);
         if (mtime)
             udf_parse_timestamp(&sector[108], mtime);
-        uint32_t ea_len = udf_le32(&sector[208]);
+        ea_len = udf_le32(&sector[208]);
         ad_length = udf_le32(&sector[212]);
-        ad_offset = 216 + ea_len;
+        ad_base = 216;
     } else {
         return ODFS_ERR_BAD_FORMAT;
     }
+
+    if (ea_len > block_size - ad_base)
+        return ODFS_ERR_CORRUPT;
+    ad_offset = ad_base + ea_len;
+
+    if (ad_length > block_size - ad_offset)
+        return ODFS_ERR_CORRUPT;
 
     /* get data location from first allocation descriptor */
     *data_phys_lba = 0;
@@ -415,12 +429,16 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
     if (alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
         /* data is embedded in the FE itself */
         *data_phys_lba = icb_phys_lba;
-    } else if (alloc_type == UDF_ICB_ALLOC_SHORT && ad_length >= 8) {
+    } else if (alloc_type == UDF_ICB_ALLOC_SHORT) {
         /* short AD: 4 bytes length + 4 bytes position */
+        if (ad_length < 8 || ad_offset > block_size - 8)
+            return ODFS_ERR_CORRUPT;
         uint32_t pos = udf_le32(&sector[ad_offset + 4]);
         *data_phys_lba = udf_phys_lba(ctx, pos);
-    } else if (alloc_type == UDF_ICB_ALLOC_LONG && ad_length >= 16) {
+    } else if (alloc_type == UDF_ICB_ALLOC_LONG) {
         /* long AD: 4 bytes length + 4 bytes LBA + 2 bytes partition + 6 impl use */
+        if (ad_length < 16 || ad_offset > block_size - 16)
+            return ODFS_ERR_CORRUPT;
         uint32_t lba = udf_le32(&sector[ad_offset + 4]);
         *data_phys_lba = udf_phys_lba(ctx, lba);
     }

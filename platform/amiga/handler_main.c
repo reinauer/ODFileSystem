@@ -247,9 +247,11 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
 
     if (toc_len < 2)
         return ODFS_ERR_BAD_FORMAT;
+    if ((size_t)toc_len + 2 > sizeof(buf))
+        return ODFS_ERR_BAD_FORMAT;
 
     /* each TOC descriptor is 8 bytes starting at offset 4 */
-    int ndesc = (toc_len - 2) / 8;
+    int ndesc = (int)(((size_t)toc_len + 2 - 4) / 8);
     uint8_t session_count = 0;
 
     for (int i = 0; i < ndesc && i < 99; i++) {
@@ -1537,11 +1539,11 @@ static void remove_media_change(handler_global_t *g)
     if (!g->chg_installed)
         return;
 
-    g->chgreq->io_Command = TD_REMCHANGEINT;
-    DoIO((struct IORequest *)g->chgreq);
     g->chg_installed = 0;
 
     if (g->chgreq) {
+        g->chgreq->io_Command = TD_REMCHANGEINT;
+        DoIO((struct IORequest *)g->chgreq);
         /* don't CloseDevice — we don't own it */
         g->chgreq->io_Device = NULL;
         g->chgreq->io_Unit = NULL;

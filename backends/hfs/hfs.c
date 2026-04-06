@@ -127,6 +127,25 @@ static uint16_t hfs_rec_offset(const uint8_t *node, uint32_t node_size,
     return hfs_be16(&node[pos]);
 }
 
+static int hfs_read_record_count(const uint8_t *node, uint32_t node_size,
+                                 uint16_t *nrecs_out)
+{
+    uint16_t max_recs;
+    uint16_t nrecs;
+
+    if (node_size < 12)
+        return 0;
+
+    /* Reserve one trailing offset-table slot for r + 1 lookups. */
+    max_recs = (uint16_t)((node_size / 2) - 1);
+    nrecs = hfs_be16(&node[10]);
+    if (nrecs > max_recs)
+        return 0;
+
+    *nrecs_out = nrecs;
+    return 1;
+}
+
 /* Mac Roman to UTF-8, then normalize a few Amiga-problematic bytes. */
 static void hfs_name_to_utf8(const uint8_t *src, uint8_t src_len,
                               char *dst, size_t dst_size)
@@ -251,9 +270,11 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     ctx->alloc_block_size = hfs_be32(&mdb[HFS_MDB_ALBLKSIZ]);
     ctx->alloc_block_start = hfs_be16(&mdb[HFS_MDB_ALBLST]);
 
+    uint8_t volname_raw[27];
+    memcpy(volname_raw, &mdb[HFS_MDB_VOLNAME], sizeof(volname_raw));
     uint8_t vnamelen = mdb[HFS_MDB_VOLNAMELEN];
     if (vnamelen > 27) vnamelen = 27;
-    hfs_name_to_utf8(&mdb[HFS_MDB_VOLNAME], vnamelen,
+    hfs_name_to_utf8(volname_raw, vnamelen,
                      ctx->volume_name, sizeof(ctx->volume_name));
 
     ctx->cat_file_size = hfs_be32(&mdb[HFS_MDB_CTFLSIZE]);
@@ -281,7 +302,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         ctx->cat_first_leaf = hfs_be32(&hdr_buf[24]);
         ctx->cat_node_size = hfs_be16(&hdr_buf[32]);
 
-        if (ctx->cat_node_size == 0 || ctx->cat_node_size > 32768) {
+        if (ctx->cat_node_size < 14 || ctx->cat_node_size > 32768) {
             odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
@@ -352,12 +373,17 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
         if (err != ODFS_OK) { odfs_free(node_buf); return err; }
 
         uint8_t ntype = node_buf[8];
-        uint16_t nrecs = hfs_be16(&node_buf[10]);
+        uint16_t nrecs;
 
         if (ntype == HFS_NODE_LEAF)
             break; /* reached leaf level */
 
         if (ntype != HFS_NODE_INDEX) {
+            odfs_free(node_buf);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        if (!hfs_read_record_count(node_buf, ctx->cat_node_size, &nrecs)) {
             odfs_free(node_buf);
             return ODFS_ERR_CORRUPT;
         }
@@ -391,7 +417,11 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
 
         if (node_buf[8] != HFS_NODE_LEAF) break;
 
-        uint16_t nrecs = hfs_be16(&node_buf[10]);
+        uint16_t nrecs;
+        if (!hfs_read_record_count(node_buf, ctx->cat_node_size, &nrecs)) {
+            odfs_free(node_buf);
+            return ODFS_ERR_CORRUPT;
+        }
 
         for (uint16_t r = 0; r < nrecs; r++) {
             uint32_t off = hfs_rec_offset(node_buf, ctx->cat_node_size, r);

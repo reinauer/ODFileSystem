@@ -141,6 +141,25 @@ static uint16_t hfsp_rec_offset(const uint8_t *node, uint32_t node_size,
     return hfsp_be16(&node[pos]);
 }
 
+static int hfsp_read_record_count(const uint8_t *node, uint32_t node_size,
+                                  uint16_t *nrecs_out)
+{
+    uint16_t max_recs;
+    uint16_t nrecs;
+
+    if (node_size < 12)
+        return 0;
+
+    /* Reserve one trailing offset-table slot for r + 1 lookups. */
+    max_recs = (uint16_t)((node_size / 2) - 1);
+    nrecs = hfsp_be16(&node[10]);
+    if (nrecs > max_recs)
+        return 0;
+
+    *nrecs_out = nrecs;
+    return 1;
+}
+
 /* decode HFS+ Unicode name (big-endian UTF-16) to UTF-8 */
 static void hfsp_decode_name(const uint8_t *uname, uint16_t ulen,
                               char *dst, size_t dst_size)
@@ -294,7 +313,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         ctx->cat_first_leaf = hfsp_be32(&hdr_buf[14 + 2 + 4 + 4]);
         ctx->cat_node_size  = hfsp_be16(&hdr_buf[14 + 2 + 4 + 4 + 4 + 4]);
 
-        if (ctx->cat_node_size == 0 || ctx->cat_node_size > 32768) {
+        if (ctx->cat_node_size < 14 || ctx->cat_node_size > 32768) {
             odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
@@ -310,28 +329,36 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
             /* read root node and scan for folder thread of CNID 2 */
             err = hfsp_read_node(ctx, cache, ctx->cat_first_leaf, node);
             if (err == ODFS_OK && node[8] == 0xFF) { /* leaf */
-                uint16_t nrecs = hfsp_be16(&node[10]);
-                for (uint16_t r = 0; r < nrecs; r++) {
-                    uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
-                    if (roff + 10 >= ctx->cat_node_size) continue;
-                    /* catalog key: keylen(2) parentID(4) namelen(2) name(...) */
-                    uint32_t parent_cnid = hfsp_be32(&node[roff + 2]);
-                    uint16_t namelen = hfsp_be16(&node[roff + 6]);
-                    uint32_t keylen = hfsp_be16(&node[roff]);
-                    uint32_t data_off = roff + 2 + keylen;
-                    if (data_off + 2 >= ctx->cat_node_size) continue;
-                    int16_t rec_type = (int16_t)hfsp_be16(&node[data_off]);
-                    if (rec_type == HFSPLUS_FOLDER_THREAD && parent_cnid == HFSPLUS_CNID_ROOT) {
-                        /* thread record: type(2) reserved(2) parentID(4) namelen(2) name(...) */
-                        if (data_off + 8 + 2 < ctx->cat_node_size) {
-                            uint16_t tnlen = hfsp_be16(&node[data_off + 8]);
-                            if (tnlen > 0 && data_off + 10 + (uint32_t)tnlen * 2 <= ctx->cat_node_size) {
-                                hfsp_decode_name(&node[data_off + 10], tnlen,
-                                                 ctx->volume_name, sizeof(ctx->volume_name));
+                uint16_t nrecs;
+                if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
+                    odfs_free(node);
+                    node = NULL;
+                }
+                if (node) {
+                    for (uint16_t r = 0; r < nrecs; r++) {
+                        uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
+                        if (roff + 10 >= ctx->cat_node_size) continue;
+                        /* catalog key: keylen(2) parentID(4) namelen(2) name(...) */
+                        uint32_t parent_cnid = hfsp_be32(&node[roff + 2]);
+                        uint16_t namelen = hfsp_be16(&node[roff + 6]);
+                        uint32_t keylen = hfsp_be16(&node[roff]);
+                        uint32_t data_off = roff + 2 + keylen;
+                        if (data_off + 2 >= ctx->cat_node_size) continue;
+                        int16_t rec_type = (int16_t)hfsp_be16(&node[data_off]);
+                        if (rec_type == HFSPLUS_FOLDER_THREAD && parent_cnid == HFSPLUS_CNID_ROOT) {
+                            /* thread record: type(2) reserved(2) parentID(4) namelen(2) name(...) */
+                            if (data_off + 10 <= ctx->cat_node_size) {
+                                uint16_t tnlen = hfsp_be16(&node[data_off + 8]);
+                                uint32_t max_name_chars = (ctx->cat_node_size - (data_off + 10)) / 2;
+                                if (tnlen > 0 && tnlen <= max_name_chars) {
+                                    uint16_t safe_tnlen = tnlen;
+                                    hfsp_decode_name(&node[data_off + 10], safe_tnlen,
+                                                     ctx->volume_name, sizeof(ctx->volume_name));
+                                }
                             }
                         }
+                        (void)namelen;
                     }
-                    (void)namelen;
                 }
             }
             odfs_free(node);
@@ -407,7 +434,12 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
         if (ntype == 0xFF) break; /* leaf */
         if (ntype != 0x00) { odfs_namefix_destroy(&namefix); odfs_free(node); return ODFS_ERR_CORRUPT; } /* not index */
 
-        uint16_t nrecs = hfsp_be16(&node[10]);
+        uint16_t nrecs;
+        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
+            odfs_namefix_destroy(&namefix);
+            odfs_free(node);
+            return ODFS_ERR_CORRUPT;
+        }
         uint32_t child = 0;
         for (uint16_t r = 0; r < nrecs; r++) {
             uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
@@ -432,7 +464,12 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
         if (err != ODFS_OK) { odfs_namefix_destroy(&namefix); odfs_free(node); return err; }
         if (node[8] != 0xFF) break; /* not leaf */
 
-        uint16_t nrecs = hfsp_be16(&node[10]);
+        uint16_t nrecs;
+        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
+            odfs_namefix_destroy(&namefix);
+            odfs_free(node);
+            return ODFS_ERR_CORRUPT;
+        }
         for (uint16_t r = 0; r < nrecs; r++) {
             uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
             uint32_t next_roff = hfsp_rec_offset(node, ctx->cat_node_size, r + 1);
@@ -474,9 +511,13 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
             fnode.backend = ODFS_BACKEND_HFSPLUS;
 
             /* decode name from key */
-            if (key_namelen > 0 && roff + 8 + (uint32_t)key_namelen * 2 <= ctx->cat_node_size) {
-                hfsp_decode_name(&node[roff + 8], key_namelen,
+            if (roff + 8 <= ctx->cat_node_size) {
+                uint32_t max_name_chars = (ctx->cat_node_size - (roff + 8)) / 2;
+                if (key_namelen > 0 && key_namelen <= max_name_chars) {
+                    uint16_t safe_name_len = key_namelen;
+                    hfsp_decode_name(&node[roff + 8], safe_name_len,
                                  fnode.name, sizeof(fnode.name));
+                }
             }
 
             /* skip entries with empty or null decoded names */
