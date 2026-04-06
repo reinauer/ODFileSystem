@@ -201,6 +201,8 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                     size_t record_len = 2 + comp_len;
                     const uint8_t *comp_data;
 
+                    if (comp_len > RR_SL_MAX_PAYLOAD_LEN)
+                        break;
                     if (record_len > comp_area_len - comp_pos)
                         break;
                     comp_data = comp + comp_pos + 2;
