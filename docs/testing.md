@@ -14,6 +14,11 @@ Test small deterministic components: endian helpers, path parsing, timestamps, d
 ### Golden Image Tests (`tests/golden/`)
 For each image, define expected: detected backend(s), volume name, root listing, file metadata, file hashes, timestamps.
 
+The golden suite also includes an optional real-world Amiga `AS` check. It
+downloads the small `Arabian Nights` archive from Archive.org on demand,
+verifies its MD5, extracts the data track, and skips cleanly if the network or
+required extraction tools are unavailable.
+
 ### Malformed Image Tests (`tests/malformed/`)
 Intentionally broken images to ensure: no crash, no infinite loop, graceful error paths, bounded resource usage.
 

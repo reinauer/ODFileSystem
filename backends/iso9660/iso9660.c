@@ -39,6 +39,54 @@ static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
     ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
 }
 
+#if ODFS_FEATURE_ROCK_RIDGE
+static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
+                         uint32_t session_start, int allow_name)
+{
+    if (allow_name && rr->has_name && rr->name[0] != '\0') {
+        size_t nlen = strlen(rr->name);
+        if (nlen >= sizeof(node->name))
+            nlen = sizeof(node->name) - 1;
+        memcpy(node->name, rr->name, nlen);
+        node->name[nlen] = '\0';
+    }
+
+    if (rr->has_posix) {
+        node->mode = rr->mode;
+        if ((rr->mode & 0170000) == 0120000)
+            node->kind = ODFS_NODE_SYMLINK;
+        else if ((rr->mode & 0170000) == 0040000)
+            node->kind = ODFS_NODE_DIR;
+        else
+            node->kind = ODFS_NODE_FILE;
+    }
+
+    if (rr->has_timestamps) {
+        node->mtime = rr->mtime;
+        node->ctime = rr->ctime;
+    }
+
+    if (rr->has_child_link)
+        node->extent.lba = rr->child_link_lba + session_start;
+
+    if (rr->has_amiga_protection) {
+        memcpy(node->amiga.protection, rr->amiga_protection, 4);
+        node->amiga.has_protection = 1;
+    }
+
+    if (rr->has_amiga_comment) {
+        size_t clen = strlen(rr->amiga_comment);
+        if (clen >= sizeof(node->amiga.comment))
+            clen = sizeof(node->amiga.comment) - 1;
+        memcpy(node->amiga.comment, rr->amiga_comment, clen);
+        node->amiga.comment[clen] = '\0';
+        node->amiga.has_comment = 1;
+    }
+
+    node->backend = ODFS_BACKEND_ROCK_RIDGE;
+}
+#endif
+
 /* iso_copy_strfield is now in iso9660.h as static inline */
 
 /*
@@ -260,12 +308,17 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
                     size_t sua_len = dot_rec_len - sua_start;
                     int rr_skip = 0;
                     if (rr_detect(sua, sua_len, &rr_skip)) {
+                        rr_info_t rr;
+
                         ctx->has_rock_ridge = 1;
                         ctx->rr_skip = rr_skip;
                         root_out->backend = ODFS_BACKEND_ROCK_RIDGE;
                         ODFS_INFO(log, ODFS_SUB_RR,
                                    "Rock Ridge extensions detected (skip=%d)",
                                    rr_skip);
+
+                        rr_parse(sua, sua_len, rr_skip, &rr, cache);
+                        iso_apply_rr(root_out, &rr, ctx->session_start, 0);
                     }
                 }
             }
@@ -356,40 +409,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
                 offset += consumed;
                 continue;
             }
-
-            /* use RR name if available */
-            if (rr.has_name && rr.name[0] != '\0') {
-                size_t nlen = strlen(rr.name);
-                if (nlen >= sizeof(node.name))
-                    nlen = sizeof(node.name) - 1;
-                memcpy(node.name, rr.name, nlen);
-                node.name[nlen] = '\0';
-            }
-
-            /* use RR POSIX attributes */
-            if (rr.has_posix) {
-                node.mode = rr.mode;
-                /* update kind from POSIX mode */
-                if ((rr.mode & 0170000) == 0120000)
-                    node.kind = ODFS_NODE_SYMLINK;
-                else if ((rr.mode & 0170000) == 0040000)
-                    node.kind = ODFS_NODE_DIR;
-                else
-                    node.kind = ODFS_NODE_FILE;
-            }
-
-            /* use RR timestamps */
-            if (rr.has_timestamps) {
-                node.mtime = rr.mtime;
-                node.ctime = rr.ctime;
-            }
-
-            /* follow child links (CL) for relocated directories */
-            if (rr.has_child_link) {
-                node.extent.lba = rr.child_link_lba + ctx->session_start;
-            }
-
-            node.backend = ODFS_BACKEND_ROCK_RIDGE;
+            iso_apply_rr(&node, &rr, ctx->session_start, 1);
         }
 #endif
 

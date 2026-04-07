@@ -88,6 +88,25 @@ in on-disc order using `~2`, `~3`, and so on.
 
 Audio tracks are exposed as virtual WAV files. On mixed-mode discs they appear in a `CDDA/` directory, and on pure audio discs they appear at the root.
 
+### Amiga Rock Ridge AS
+
+ODFileSystem now parses the Amiga-specific Rock Ridge `AS` SUSP entry on top of normal RRIP handling.
+
+Current behavior:
+
+- preserve the raw 4-byte Amiga protection field when present
+- expose Amiga comments through the Amiga handler metadata path
+- continue to use standard RRIP for names, timestamps, symlinks, and directory structure
+
+Real-world `AS` source images used during development:
+
+- `Arabian Nights (1993)(Buzz)(M4)`:
+  `https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BBIN%5D/Arabian%20Nights%20%281993%29%28Buzz%29%28M4%29.7z`
+- `Benefactor (1994)(Psygnosis)`:
+  `https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BIMG%5D/Benefactor%20%281994%29%28Psygnosis%29.7z`
+
+The automated real-image golden test downloads only the smaller `Arabian Nights` archive on demand, verifies the Archive.org MD5 before reuse, extracts track 1 to a plain 2048-byte data image, and skips cleanly if download or extraction tooling is unavailable. If a prepared data-track image already exists locally, set `ODFS_REAL_AS_IMAGE=/path/to/arabian_nights.iso` to reuse it without redownloading. The larger `Benefactor` image is kept as a manual reference input.
+
 ## Sample Mountlist
 
 Build the handler with:
@@ -154,6 +173,8 @@ make check
 This builds the host library and the unit-test binaries, then runs all suites. In this workspace, `make check` completes successfully.
 
 The repository also contains image-based golden tests in `tests/golden/`, but the unit-test entry point is `make check`.
+
+`make golden-check` also includes an optional real-world `AS` fixture test. It uses `tests/golden/fetch_real_as_fixture.sh` to cache and verify the small `Arabian Nights` archive locally before running the metadata assertions.
 
 ## License
 

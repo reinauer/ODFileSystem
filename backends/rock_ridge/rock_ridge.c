@@ -26,6 +26,55 @@ static inline uint32_t rr_read_le32(const uint8_t *p)
     return iso_read_le32(p);
 }
 
+static void rr_parse_as(const uint8_t *entry, size_t entry_len, rr_info_t *info)
+{
+    uint8_t flags;
+    size_t pos = 5;
+
+    if (entry_len < 5)
+        return;
+
+    flags = entry[4];
+
+    if (flags & RR_AS_PROTECTION) {
+        if (pos + 4 > entry_len)
+            return;
+        if (!info->has_amiga_protection) {
+            memcpy(info->amiga_protection, entry + pos, 4);
+            info->has_amiga_protection = 1;
+        }
+        pos += 4;
+    }
+
+    if (flags & RR_AS_COMMENT) {
+        size_t comment_pos;
+        uint8_t frag_len;
+        size_t copy_len;
+
+        if (pos + 1 > entry_len)
+            return;
+
+        frag_len = entry[pos++];
+        if (frag_len == 0 || pos + ((size_t)frag_len - 1) > entry_len)
+            return;
+
+        comment_pos = info->has_amiga_comment ? strlen(info->amiga_comment) : 0;
+        if (comment_pos >= sizeof(info->amiga_comment))
+            comment_pos = sizeof(info->amiga_comment) - 1;
+
+        copy_len = (size_t)frag_len - 1;
+        if (copy_len > (sizeof(info->amiga_comment) - 1) - comment_pos)
+            copy_len = (sizeof(info->amiga_comment) - 1) - comment_pos;
+
+        if (copy_len > 0) {
+            memcpy(info->amiga_comment + comment_pos, entry + pos, copy_len);
+            comment_pos += copy_len;
+            info->amiga_comment[comment_pos] = '\0';
+        }
+        info->has_amiga_comment = 1;
+    }
+}
+
 /*
  * Parse a 7-byte ISO 9660 directory record timestamp (same as ISO DR).
  */
@@ -144,6 +193,10 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                 info->gid    = rr_read_le32(&sua[pos + 28]);
                 info->has_posix = 1;
             }
+            break;
+
+        case RR_SIG_AS:
+            rr_parse_as(&sua[pos], entry_len, info);
             break;
 
         case RR_SIG_TF: {

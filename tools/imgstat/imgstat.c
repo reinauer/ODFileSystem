@@ -8,6 +8,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static void print_amiga_prot_text(uint8_t value)
+{
+    putchar((value & 0x80) ? 'h' : '-');
+    putchar((value & 0x40) ? 's' : '-');
+    putchar((value & 0x20) ? 'p' : '-');
+    putchar((value & 0x10) ? 'a' : '-');
+    putchar((value & 0x08) ? '-' : 'r');
+    putchar((value & 0x04) ? '-' : 'w');
+    putchar((value & 0x02) ? '-' : 'e');
+    putchar((value & 0x01) ? '-' : 'd');
+}
+
 int main(int argc, char **argv)
 {
     odfs_media_t media;
@@ -56,6 +68,15 @@ int main(int argc, char **argv)
     printf("extent:  LBA %u, %u bytes\n", node.extent.lba, node.extent.length);
     if (node.mode)
         printf("mode:    %04o\n", node.mode);
+    if (node.amiga.has_protection) {
+        printf("amiga:   protection %02x %02x %02x %02x (owner ",
+               node.amiga.protection[0], node.amiga.protection[1],
+               node.amiga.protection[2], node.amiga.protection[3]);
+        print_amiga_prot_text(node.amiga.protection[3]);
+        printf(")\n");
+    }
+    if (node.amiga.has_comment)
+        printf("comment: %s\n", node.amiga.comment);
     printf("mtime:   %04d-%02u-%02u %02u:%02u:%02u\n",
            node.mtime.year, node.mtime.month, node.mtime.day,
            node.mtime.hour, node.mtime.minute, node.mtime.second);

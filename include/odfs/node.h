@@ -51,6 +51,14 @@ typedef struct odfs_extent {
 
 /* maximum name length for internal representation (UTF-8) */
 #define ODFS_NAME_MAX 512
+#define ODFS_AMIGA_COMMENT_MAX 80
+
+typedef struct odfs_amiga_meta {
+    uint8_t has_protection;
+    uint8_t protection[4]; /* raw AS bytes, preserved verbatim */
+    uint8_t has_comment;
+    char    comment[ODFS_AMIGA_COMMENT_MAX];
+} odfs_amiga_meta_t;
 
 /* internal node */
 typedef struct odfs_node {
@@ -65,6 +73,7 @@ typedef struct odfs_node {
     odfs_timestamp_t    mtime;         /* modification time */
     odfs_timestamp_t    ctime;         /* creation time */
     uint32_t             mode;          /* unix-style mode bits (from RR etc), 0 if unavailable */
+    odfs_amiga_meta_t    amiga;         /* Amiga-specific metadata (Rock Ridge AS) */
 
     /* data location */
     odfs_extent_t       extent;        /* primary extent */

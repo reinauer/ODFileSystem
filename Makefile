@@ -30,7 +30,8 @@ INCLUDES = -I include -I backends
 HOSTCFLAGS  = -std=c11 -O2 -g \
               -Wall -Wextra -Wpedantic -Werror \
               -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
-              -Wno-unused-parameter
+              -Wno-unused-parameter \
+              -MMD -MP
 HOSTLDFLAGS =
 
 # ---- Amiga build options ----
@@ -78,6 +79,7 @@ CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
           -Wall -Wextra -Werror \
           -Wstrict-prototypes -Wmissing-prototypes \
           -Wno-array-bounds \
+          -MMD -MP \
           -DAMIGA -D__AROS__ $(FEATURE_DEFS)
 LDFLAGS = -static
 LIBS    = -lamiga -lgcc
@@ -86,6 +88,7 @@ CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
           -Wall -Wextra -Werror \
           -Wstrict-prototypes -Wmissing-prototypes \
           -Wno-array-bounds \
+          -MMD -MP \
           -DAMIGA $(FEATURE_DEFS)
 LDFLAGS = -noixemul
 LIBS    = -lamiga -lgcc
@@ -133,24 +136,30 @@ AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
 HOST_LIB_SRCS  = $(CORE_SRCS) $(HOST_SRCS)
 HOST_LIB_OBJS  = $(patsubst %.c,$(HOST_BUILD)/%.o,$(HOST_LIB_SRCS))
+HOST_LIB_DEPS  = $(HOST_LIB_OBJS:.o=.d)
 
 AMIGA_LIB_SRCS = $(CORE_SRCS) $(AMIGA_SRCS)
 AMIGA_LIB_OBJS = $(patsubst %.c,$(AMIGA_BUILD)/%.o,$(AMIGA_LIB_SRCS))
+AMIGA_LIB_DEPS = $(AMIGA_LIB_OBJS:.o=.d)
+AMIGA_ASM_DEPS = $(AMIGA_ASM_OBJS:.o=.d)
 
 # ---- test binaries (host only) ----
 
 TEST_SRCS = $(wildcard tests/unit/test_*.c)
 TEST_BINS = $(patsubst tests/unit/%.c,$(HOST_BUILD)/tests/%,$(TEST_SRCS))
+TEST_DEPS = $(patsubst tests/unit/%.c,$(HOST_BUILD)/tests/%.d,$(TEST_SRCS))
 
 # ---- fuzz binaries (host only) ----
 
 FUZZ_SRCS = $(wildcard tests/fuzz/fuzz_*.c)
 FUZZ_BINS = $(patsubst tests/fuzz/%.c,$(HOST_BUILD)/tests/%,$(FUZZ_SRCS))
+FUZZ_DEPS = $(patsubst tests/fuzz/%.c,$(HOST_BUILD)/tests/%.d,$(FUZZ_SRCS))
 
 # ---- host tool binaries ----
 
 TOOL_NAMES = imginfo imgls imgcat imgstat imgbench imgdump
 TOOL_BINS  = $(patsubst %,$(HOST_BUILD)/tools/%,$(TOOL_NAMES))
+TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 
 # ---- handler target (Amiga) ----
 
@@ -260,7 +269,8 @@ check: tests
 
 golden-check: tools
 	@echo "=== Running golden image tests ==="
-	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" tests/golden/test_formats.sh
+	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" sh tests/golden/test_formats.sh
+	@TOOLS="$(PWD)/$(HOST_BUILD)/tools" FETCH="$(PWD)/tests/golden/fetch_real_as_fixture.sh" sh tests/golden/test_as_real.sh
 
 malformed-check: tools
 	@echo "=== Running malformed image tests ==="
@@ -350,3 +360,6 @@ $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 clean:
 	@echo "  CLEAN"
 	@rm -rf build
+
+-include $(HOST_LIB_DEPS) $(AMIGA_LIB_DEPS) $(AMIGA_ASM_DEPS) \
+	$(TEST_DEPS) $(FUZZ_DEPS) $(TOOL_DEPS)

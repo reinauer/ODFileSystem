@@ -622,6 +622,9 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 
 static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
 {
+    ULONG prot = 0;
+    int comment_len = 0;
+
     memset(fib, 0, sizeof(*fib));
 
     /* filename — BCPL string (length prefix) */
@@ -637,8 +640,54 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     fib->fib_EntryType    = fib->fib_DirEntryType;
     fib->fib_Size         = (LONG)fnode->size;
     fib->fib_NumBlocks    = (fnode->size + 511) / 512;
-    /* Amiga RWED protection bits are deny bits, not allow bits. */
-    fib->fib_Protection   = FIBF_WRITE | FIBF_DELETE;
+
+    if (fnode->amiga.has_protection) {
+        prot = fnode->amiga.protection[3];
+    } else if (fnode->mode != 0) {
+        /* MakeCD table 6 default mapping from PX to classic Amiga bits. */
+        if ((fnode->mode & 0200) == 0)
+            prot |= FIBF_DELETE | FIBF_WRITE;
+        if ((fnode->mode & 0100) == 0)
+            prot |= FIBF_EXECUTE;
+        if ((fnode->mode & 0400) == 0)
+            prot |= FIBF_READ;
+#ifdef FIBF_GRP_DELETE
+        if (fnode->mode & 0020)
+            prot |= FIBF_GRP_DELETE;
+#endif
+#ifdef FIBF_GRP_EXECUTE
+        if (fnode->mode & 0010)
+            prot |= FIBF_GRP_EXECUTE;
+#endif
+#ifdef FIBF_GRP_WRITE
+        if (fnode->mode & 0020)
+            prot |= FIBF_GRP_WRITE;
+#endif
+#ifdef FIBF_GRP_READ
+        if (fnode->mode & 0040)
+            prot |= FIBF_GRP_READ;
+#endif
+#ifdef FIBF_OTR_DELETE
+        if (fnode->mode & 0002)
+            prot |= FIBF_OTR_DELETE;
+#endif
+#ifdef FIBF_OTR_EXECUTE
+        if (fnode->mode & 0001)
+            prot |= FIBF_OTR_EXECUTE;
+#endif
+#ifdef FIBF_OTR_WRITE
+        if (fnode->mode & 0002)
+            prot |= FIBF_OTR_WRITE;
+#endif
+#ifdef FIBF_OTR_READ
+        if (fnode->mode & 0004)
+            prot |= FIBF_OTR_READ;
+#endif
+    } else {
+        /* Read-only fallback when there is no RR/AS metadata at all. */
+        prot = FIBF_WRITE | FIBF_DELETE;
+    }
+    fib->fib_Protection = prot;
 
     /* date stamp — Amiga epoch is 1978-01-01 */
     if (fnode->mtime.year >= 1978) {
@@ -665,6 +714,15 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
         fib->fib_Date.ds_Days   = days;
         fib->fib_Date.ds_Minute = fnode->mtime.hour * 60 + fnode->mtime.minute;
         fib->fib_Date.ds_Tick   = fnode->mtime.second * TICKS_PER_SECOND;
+    }
+
+    if (fnode->amiga.has_comment) {
+        comment_len = strlen(fnode->amiga.comment);
+        if (comment_len > (int)sizeof(fib->fib_Comment) - 1)
+            comment_len = (int)sizeof(fib->fib_Comment) - 1;
+        fib->fib_Comment[0] = comment_len;
+        if (comment_len > 0)
+            memcpy(&fib->fib_Comment[1], fnode->amiga.comment, comment_len);
     }
 
     fib->fib_DiskKey = fnode->extent.lba;

@@ -9,11 +9,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct imgls_opts {
+    int show_amiga;
+} imgls_opts_t;
+
 static odfs_err_t print_entry(const odfs_node_t *entry, void *ctx)
 {
-    (void)ctx;
+    const imgls_opts_t *opts = ctx;
     const char *kind = odfs_node_kind_name(entry->kind);
+
     printf("%-7s %10llu  %s\n", kind, (unsigned long long)entry->size, entry->name);
+    if (opts && opts->show_amiga) {
+        if (entry->amiga.has_protection) {
+            printf("                     amiga=%02x %02x %02x %02x\n",
+                   entry->amiga.protection[0], entry->amiga.protection[1],
+                   entry->amiga.protection[2], entry->amiga.protection[3]);
+        }
+        if (entry->amiga.has_comment && entry->amiga.comment[0] != '\0')
+            printf("                     comment=%s\n", entry->amiga.comment);
+    }
     return ODFS_OK;
 }
 
@@ -27,12 +41,17 @@ int main(int argc, char **argv)
     const char *image = NULL;
     const char *path = "/";
     int force_udf = 0, force_hfs = 0;
+    imgls_opts_t ls_opts;
+
+    memset(&ls_opts, 0, sizeof(ls_opts));
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--udf") == 0)
             force_udf = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--hfs") == 0)
             force_hfs = 1;
+        else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--amiga") == 0)
+            ls_opts.show_amiga = 1;
         else if (!image)
             image = argv[i];
         else
@@ -40,7 +59,7 @@ int main(int argc, char **argv)
     }
 
     if (!image) {
-        fprintf(stderr, "usage: imgls [-u|-h] <image> [path]\n");
+        fprintf(stderr, "usage: imgls [-u|-h] [-a] <image> [path]\n");
         return 1;
     }
 
@@ -73,7 +92,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    err = odfs_readdir(&mnt, &dir, print_entry, NULL, NULL);
+    err = odfs_readdir(&mnt, &dir, print_entry, &ls_opts, NULL);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: readdir: %s\n", odfs_err_str(err));
         odfs_unmount(&mnt);

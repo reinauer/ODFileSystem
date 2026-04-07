@@ -21,6 +21,7 @@
 #define RR_SIG_ER  SUSP_SIG('E','R')  /* extensions reference */
 #define RR_SIG_ST  SUSP_SIG('S','T')  /* terminator */
 #define RR_SIG_RR  SUSP_SIG('R','R')  /* RR indicator (deprecated but common) */
+#define RR_SIG_AS  SUSP_SIG('A','S')  /* Amiga-specific extensions */
 #define RR_SIG_NM  SUSP_SIG('N','M')  /* alternate name */
 #define RR_SIG_PX  SUSP_SIG('P','X')  /* POSIX attributes */
 #define RR_SIG_TF  SUSP_SIG('T','F')  /* timestamps */
@@ -48,6 +49,11 @@
 #define RR_SP_CHECK1  0xBE
 #define RR_SP_CHECK2  0xEF
 
+/* AS flags */
+#define RR_AS_PROTECTION       0x01
+#define RR_AS_COMMENT          0x02
+#define RR_AS_COMMENT_CONTINUE 0x04
+
 /* parsed RR data to overlay onto an odfs_node_t */
 typedef struct rr_info {
     int      has_name;           /* NM entry found */
@@ -65,6 +71,10 @@ typedef struct rr_info {
     int      is_relocated;       /* RE entry found (skip this entry) */
     uint32_t child_link_lba;     /* CL: real location of relocated dir */
     int      has_child_link;
+    int      has_amiga_protection;
+    uint8_t  amiga_protection[4];
+    int      has_amiga_comment;
+    char     amiga_comment[ODFS_AMIGA_COMMENT_MAX];
 } rr_info_t;
 
 /*
