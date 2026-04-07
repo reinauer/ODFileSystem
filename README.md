@@ -100,10 +100,8 @@ Current behavior:
 
 Real-world `AS` source images used during development:
 
-- `Arabian Nights (1993)(Buzz)(M4)`:
-  `https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BBIN%5D/Arabian%20Nights%20%281993%29%28Buzz%29%28M4%29.7z`
-- `Benefactor (1994)(Psygnosis)`:
-  `https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BIMG%5D/Benefactor%20%281994%29%28Psygnosis%29.7z`
+- [Arabian Nights (1993)(Buzz)(M4)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BBIN%5D/Arabian%20Nights%20%281993%29%28Buzz%29%28M4%29.7z)
+- [Benefactor (1994)(Psygnosis)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BIMG%5D/Benefactor%20%281994%29%28Psygnosis%29.7z)
 
 The automated real-image golden test downloads only the smaller `Arabian Nights` archive on demand, verifies the Archive.org MD5 before reuse, extracts track 1 to a plain 2048-byte data image, and skips cleanly if download or extraction tooling is unavailable. If a prepared data-track image already exists locally, set `ODFS_REAL_AS_IMAGE=/path/to/arabian_nights.iso` to reuse it without redownloading. The larger `Benefactor` image is kept as a manual reference input.
 
