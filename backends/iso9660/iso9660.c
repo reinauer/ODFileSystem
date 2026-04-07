@@ -70,17 +70,17 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
         node->extent.lba = rr->child_link_lba + session_start;
 
     if (rr->has_amiga_protection) {
-        memcpy(node->amiga.protection, rr->amiga_protection, 4);
-        node->amiga.has_protection = 1;
+        memcpy(node->amiga_as.protection, rr->amiga_protection, 4);
+        node->amiga_as.has_protection = 1;
     }
 
     if (rr->has_amiga_comment) {
         size_t clen = strlen(rr->amiga_comment);
-        if (clen >= sizeof(node->amiga.comment))
-            clen = sizeof(node->amiga.comment) - 1;
-        memcpy(node->amiga.comment, rr->amiga_comment, clen);
-        node->amiga.comment[clen] = '\0';
-        node->amiga.has_comment = 1;
+        if (clen >= sizeof(node->amiga_as.comment))
+            clen = sizeof(node->amiga_as.comment) - 1;
+        memcpy(node->amiga_as.comment, rr->amiga_comment, clen);
+        node->amiga_as.comment[clen] = '\0';
+        node->amiga_as.has_comment = 1;
     }
 
     node->backend = ODFS_BACKEND_ROCK_RIDGE;

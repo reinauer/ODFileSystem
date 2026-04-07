@@ -68,15 +68,15 @@ int main(int argc, char **argv)
     printf("extent:  LBA %u, %u bytes\n", node.extent.lba, node.extent.length);
     if (node.mode)
         printf("mode:    %04o\n", node.mode);
-    if (node.amiga.has_protection) {
+    if (node.amiga_as.has_protection) {
         printf("amiga:   protection %02x %02x %02x %02x (owner ",
-               node.amiga.protection[0], node.amiga.protection[1],
-               node.amiga.protection[2], node.amiga.protection[3]);
-        print_amiga_prot_text(node.amiga.protection[3]);
+               node.amiga_as.protection[0], node.amiga_as.protection[1],
+               node.amiga_as.protection[2], node.amiga_as.protection[3]);
+        print_amiga_prot_text(node.amiga_as.protection[3]);
         printf(")\n");
     }
-    if (node.amiga.has_comment)
-        printf("comment: %s\n", node.amiga.comment);
+    if (node.amiga_as.has_comment)
+        printf("comment: %s\n", node.amiga_as.comment);
     printf("mtime:   %04d-%02u-%02u %02u:%02u:%02u\n",
            node.mtime.year, node.mtime.month, node.mtime.day,
            node.mtime.hour, node.mtime.minute, node.mtime.second);

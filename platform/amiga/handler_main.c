@@ -641,8 +641,8 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     fib->fib_Size         = (LONG)fnode->size;
     fib->fib_NumBlocks    = (fnode->size + 511) / 512;
 
-    if (fnode->amiga.has_protection) {
-        prot = fnode->amiga.protection[3];
+    if (fnode->amiga_as.has_protection) {
+        prot = fnode->amiga_as.protection[3];
     } else if (fnode->mode != 0) {
         /* MakeCD table 6 default mapping from PX to classic Amiga bits. */
         if ((fnode->mode & 0200) == 0)
@@ -716,13 +716,13 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
         fib->fib_Date.ds_Tick   = fnode->mtime.second * TICKS_PER_SECOND;
     }
 
-    if (fnode->amiga.has_comment) {
-        comment_len = strlen(fnode->amiga.comment);
+    if (fnode->amiga_as.has_comment) {
+        comment_len = strlen(fnode->amiga_as.comment);
         if (comment_len > (int)sizeof(fib->fib_Comment) - 1)
             comment_len = (int)sizeof(fib->fib_Comment) - 1;
         fib->fib_Comment[0] = comment_len;
         if (comment_len > 0)
-            memcpy(&fib->fib_Comment[1], fnode->amiga.comment, comment_len);
+            memcpy(&fib->fib_Comment[1], fnode->amiga_as.comment, comment_len);
     }
 
     fib->fib_DiskKey = fnode->extent.lba;

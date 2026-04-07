@@ -20,13 +20,13 @@ static odfs_err_t print_entry(const odfs_node_t *entry, void *ctx)
 
     printf("%-7s %10llu  %s\n", kind, (unsigned long long)entry->size, entry->name);
     if (opts && opts->show_amiga) {
-        if (entry->amiga.has_protection) {
+        if (entry->amiga_as.has_protection) {
             printf("                     amiga=%02x %02x %02x %02x\n",
-                   entry->amiga.protection[0], entry->amiga.protection[1],
-                   entry->amiga.protection[2], entry->amiga.protection[3]);
+                   entry->amiga_as.protection[0], entry->amiga_as.protection[1],
+                   entry->amiga_as.protection[2], entry->amiga_as.protection[3]);
         }
-        if (entry->amiga.has_comment && entry->amiga.comment[0] != '\0')
-            printf("                     comment=%s\n", entry->amiga.comment);
+        if (entry->amiga_as.has_comment && entry->amiga_as.comment[0] != '\0')
+            printf("                     comment=%s\n", entry->amiga_as.comment);
     }
     return ODFS_OK;
 }
