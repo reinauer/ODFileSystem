@@ -94,6 +94,7 @@ struct odfs_volume {
     struct MinNode      node;
     struct DeviceList  *volnode;
     ULONG               id;
+    ULONG               object_count;
 };
 
 /* ---- object metadata shared by locks and filehandles ---- */
