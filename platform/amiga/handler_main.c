@@ -460,29 +460,108 @@ static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
 /* lock management                                                     */
 /* ------------------------------------------------------------------ */
 
+static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
+{
+    return volume ? volume->volnode : NULL;
+}
+
+static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
+                                 const odfs_node_t *fnode,
+                                 const odfs_node_t *parent)
+{
+    odfs_entry_t *entry;
+
+    entry = AllocMem(sizeof(*entry), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!entry)
+        return NULL;
+
+    entry->volume = volume;
+    entry->fnode = *fnode;
+    if (parent)
+        entry->parent_node = *parent;
+    else
+        entry->parent_node = *fnode;
+    entry->refcount = 1;
+    return entry;
+}
+
+static odfs_entry_t *retain_entry(odfs_entry_t *entry)
+{
+    if (entry)
+        entry->refcount++;
+    return entry;
+}
+
+static void release_entry(odfs_entry_t *entry)
+{
+    if (!entry)
+        return;
+    if (--entry->refcount == 0)
+        FreeMem(entry, sizeof(*entry));
+}
+
+static odfs_node_t *lock_node(odfs_lock_t *ol)
+{
+    return ol ? &ol->entry->fnode : NULL;
+}
+
+static odfs_node_t *lock_parent_node(odfs_lock_t *ol)
+{
+    return ol ? &ol->entry->parent_node : NULL;
+}
+
+static odfs_node_t *fh_node(odfs_fh_t *fh)
+{
+    return fh ? &fh->entry->fnode : NULL;
+}
+
+static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
+{
+    odfs_volume_t *volume;
+
+    volume = AllocMem(sizeof(*volume), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!volume)
+        return NULL;
+
+    volume->volnode = volnode;
+    volume->id = g->next_volume_id++;
+    return volume;
+}
+
+static void free_volume(odfs_volume_t *volume)
+{
+    if (volume)
+        FreeMem(volume, sizeof(*volume));
+}
+
 static odfs_lock_t *alloc_lock(handler_global_t *g,
                                 const odfs_node_t *fnode,
                                 const odfs_node_t *parent,
                                 LONG access)
 {
     odfs_lock_t *ol;
+    odfs_entry_t *entry;
 
-    ol = AllocMem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!ol)
+    if (!g->current_volume)
         return NULL;
 
-    ol->fnode = *fnode;
-    if (parent)
-        ol->parent_node = *parent;
-    else
-        ol->parent_node = g->mount.root;
+    entry = alloc_entry(g->current_volume, fnode, parent);
+    if (!entry)
+        return NULL;
+
+    ol = AllocMem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!ol) {
+        release_entry(entry);
+        return NULL;
+    }
+    ol->entry = entry;
     ol->key = g->next_key++;
 
     ol->lock.fl_Link   = 0;
     ol->lock.fl_Key    = ol->key;
     ol->lock.fl_Access = access;
     ol->lock.fl_Task   = g->dosport;
-    ol->lock.fl_Volume = MKBADDR(g->volnode);
+    ol->lock.fl_Volume = MKBADDR(volume_node_ptr(entry->volume));
 
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
     return ol;
@@ -494,37 +573,60 @@ static void free_lock(handler_global_t *g __attribute__((unused)),
     if (!ol)
         return;
     Remove((struct Node *)&ol->node);
+    release_entry(ol->entry);
     FreeMem(ol, sizeof(*ol));
 }
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 {
+    odfs_lock_t *ol;
+
     if (!src)
         return NULL;
-    return alloc_lock(g, &src->fnode, &src->parent_node, src->lock.fl_Access);
+
+    ol = AllocMem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!ol)
+        return NULL;
+
+    ol->entry = retain_entry(src->entry);
+    ol->key = g->next_key++;
+    ol->lock.fl_Link = 0;
+    ol->lock.fl_Key = ol->key;
+    ol->lock.fl_Access = src->lock.fl_Access;
+    ol->lock.fl_Task = g->dosport;
+    ol->lock.fl_Volume = MKBADDR(volume_node_ptr(ol->entry->volume));
+    AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
+    return ol;
 }
 
 /* ------------------------------------------------------------------ */
 /* file handle management                                              */
 /* ------------------------------------------------------------------ */
 
-static odfs_fh_t *alloc_fh(const odfs_node_t *fnode)
+static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry)
 {
     odfs_fh_t *fh;
+
+    if (!entry)
+        return NULL;
 
     fh = AllocMem(sizeof(*fh), MEMF_PUBLIC | MEMF_CLEAR);
     if (!fh)
         return NULL;
 
-    fh->fnode = *fnode;
+    fh->entry = retain_entry(entry);
     fh->pos = 0;
+    AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
 }
 
-static void free_fh(odfs_fh_t *fh)
+static void free_fh(handler_global_t *g __attribute__((unused)), odfs_fh_t *fh)
 {
-    if (fh)
-        FreeMem(fh, sizeof(*fh));
+    if (!fh)
+        return;
+    Remove((struct Node *)&fh->node);
+    release_entry(fh->entry);
+    FreeMem(fh, sizeof(*fh));
 }
 
 /* ------------------------------------------------------------------ */
@@ -782,8 +884,8 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 #endif
 
     if (parent_lock) {
-        start = &parent_lock->fnode;
-        start_parent = &parent_lock->parent_node;
+        start = lock_node(parent_lock);
+        start_parent = lock_parent_node(parent_lock);
     } else {
         start = &g->mount.root;
         start_parent = &g->mount.root;
@@ -851,13 +953,13 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     }
 
     /* already at root? */
-    if (ol->fnode.extent.lba == g->mount.root.extent.lba) {
+    if (lock_node(ol)->extent.lba == g->mount.root.extent.lba) {
         pkt->dp_Res1 = 0;
         return;
     }
 
     /* return a lock on the parent directory */
-    odfs_lock_t *parent = alloc_lock(g, &ol->parent_node,
+    odfs_lock_t *parent = alloc_lock(g, lock_parent_node(ol),
                                       &g->mount.root, /* grandparent = root as fallback */
                                       SHARED_LOCK);
     if (!parent) {
@@ -874,7 +976,7 @@ static void action_same_lock(handler_global_t *g __attribute__((unused)),
     odfs_lock_t *l1 = LOCK_FROM_BPTR(pkt->dp_Arg1);
     odfs_lock_t *l2 = LOCK_FROM_BPTR(pkt->dp_Arg2);
 
-    if (l1 && l2 && l1->fnode.extent.lba == l2->fnode.extent.lba)
+    if (l1 && l2 && lock_node(l1)->extent.lba == lock_node(l2)->extent.lba)
         pkt->dp_Res1 = DOSTRUE;
     else
         pkt->dp_Res1 = DOSFALSE;
@@ -906,7 +1008,7 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
-    const odfs_node_t *fnode = ol ? &ol->fnode : &g->mount.root;
+    const odfs_node_t *fnode = ol ? lock_node(ol) : &g->mount.root;
 
     if (node_is_mount_root(g, fnode))
         fill_root_fib(g, fib, fnode);
@@ -920,7 +1022,7 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
-    const odfs_node_t *dir = ol ? &ol->fnode : &g->mount.root;
+    const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
 
     if (dir->kind != ODFS_NODE_DIR) {
         pkt->dp_Res1 = DOSFALSE;
@@ -991,7 +1093,7 @@ static void action_examine_fh(handler_global_t *g __attribute__((unused)),
         return;
     }
 
-    fill_fib(fib, &fh->fnode);
+    fill_fib(fib, fh_node(fh));
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -1010,8 +1112,8 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
     bstr_to_cstr(pkt->dp_Arg3, path, sizeof(path));
 
     if (dirlock) {
-        start = &dirlock->fnode;
-        start_parent = &dirlock->parent_node;
+        start = lock_node(dirlock);
+        start_parent = lock_parent_node(dirlock);
     } else {
         start = &g->mount.root;
         start_parent = &g->mount.root;
@@ -1030,7 +1132,17 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    odfs_fh_t *fh = alloc_fh(&result);
+    odfs_entry_t *entry = alloc_entry(g->current_volume, &result, &parent_node);
+    odfs_fh_t *fh;
+
+    if (!entry) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return;
+    }
+
+    fh = alloc_fh(g, entry);
+    release_entry(entry);
     if (!fh) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_FREE_STORE;
@@ -1054,7 +1166,7 @@ static void action_read(handler_global_t *g, struct DosPacket *pkt)
     }
 
     size_t actual = (size_t)len;
-    odfs_err_t err = odfs_read(&g->mount, &fh->fnode, fh->pos, buf, &actual);
+    odfs_err_t err = odfs_read(&g->mount, fh_node(fh), fh->pos, buf, &actual);
     if (err != ODFS_OK && actual == 0) {
         pkt->dp_Res1 = -1;
         pkt->dp_Res2 = odfs_err_to_dos(err);
@@ -1084,14 +1196,14 @@ static void action_seek(handler_global_t *g __attribute__((unused)),
     switch (mode) {
     case OFFSET_BEGINNING: newpos = offset; break;
     case OFFSET_CURRENT:   newpos = oldpos + offset; break;
-    case OFFSET_END:       newpos = (LONG)fh->fnode.size + offset; break;
+    case OFFSET_END:       newpos = (LONG)fh_node(fh)->size + offset; break;
     default:
         pkt->dp_Res1 = -1;
         pkt->dp_Res2 = ERROR_SEEK_ERROR;
         return;
     }
 
-    if (newpos < 0 || (ULONG)newpos > fh->fnode.size) {
+    if (newpos < 0 || (ULONG)newpos > fh_node(fh)->size) {
         pkt->dp_Res1 = -1;
         pkt->dp_Res2 = ERROR_SEEK_ERROR;
         return;
@@ -1101,11 +1213,10 @@ static void action_seek(handler_global_t *g __attribute__((unused)),
     pkt->dp_Res1 = oldpos;
 }
 
-static void action_end(handler_global_t *g __attribute__((unused)),
-                       struct DosPacket *pkt)
+static void action_end(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
-    free_fh(fh);
+    free_fh(g, fh);
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -1165,7 +1276,7 @@ static void action_is_filesystem(handler_global_t *g __attribute__((unused)),
 static void action_current_volume(handler_global_t *g,
                                   struct DosPacket *pkt)
 {
-    pkt->dp_Res1 = MKBADDR(g->volnode);
+    pkt->dp_Res1 = MKBADDR(volume_node_ptr(g->current_volume));
 }
 
 static void action_inhibit(handler_global_t *g, struct DosPacket *pkt)
@@ -1236,7 +1347,7 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
         odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg2);
         if (ol) {
             struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
-            odfs_fh_t *fh = alloc_fh(&ol->fnode);
+            odfs_fh_t *fh = alloc_fh(g, ol->entry);
             if (fh) {
                 fhandle->fh_Arg1 = (LONG)fh;
                 free_lock(g, ol);
@@ -1346,6 +1457,19 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
     dl->dl_Name     = MKBADDR(bname);
 
     return dl;
+}
+
+static void destroy_volume_node(struct DeviceList *volnode)
+{
+    if (!volnode)
+        return;
+
+    {
+        UBYTE *bname = (UBYTE *)BADDR(volnode->dl_Name);
+        if (bname)
+            FreeMem(bname, bname[0] + 2);
+    }
+    FreeMem(volnode, sizeof(*volnode));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1515,6 +1639,14 @@ static void mount_volume(handler_global_t *g)
 
     g->volnode = create_volume_node(g);
     if (g->volnode) {
+        g->current_volume = alloc_volume(g, g->volnode);
+        if (!g->current_volume) {
+            destroy_volume_node(g->volnode);
+            g->volnode = NULL;
+            odfs_unmount(&g->mount);
+            g->mounted = 0;
+            return;
+        }
         if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
             AddDosEntry((struct DosList *)g->volnode);
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
@@ -1534,8 +1666,20 @@ static void unmount_volume(handler_global_t *g)
     /* free all locks (they become stale on media change) */
     {
         struct Node *node;
-        while ((node = RemHead((struct List *)&g->locklist)) != NULL)
-            FreeMem(node, sizeof(odfs_lock_t));
+        while ((node = RemHead((struct List *)&g->locklist)) != NULL) {
+            odfs_lock_t *ol = (odfs_lock_t *)node;
+            release_entry(ol->entry);
+            FreeMem(ol, sizeof(*ol));
+        }
+    }
+
+    {
+        struct Node *node;
+        while ((node = RemHead((struct List *)&g->fhlist)) != NULL) {
+            odfs_fh_t *fh = (odfs_fh_t *)node;
+            release_entry(fh->entry);
+            FreeMem(fh, sizeof(*fh));
+        }
     }
 
 #if ODFS_FEATURE_CDDA
@@ -1556,14 +1700,11 @@ static void unmount_volume(handler_global_t *g)
             RemDosEntry((struct DosList *)g->volnode);
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
         }
-        {
-            UBYTE *bname = (UBYTE *)BADDR(g->volnode->dl_Name);
-            if (bname)
-                FreeMem(bname, bname[0] + 2);
-        }
-        FreeMem(g->volnode, sizeof(struct DeviceList));
+        destroy_volume_node(g->volnode);
         g->volnode = NULL;
     }
+    free_volume(g->current_volume);
+    g->current_volume = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1757,7 +1898,11 @@ void handler_main(void)
     g->locklist.mlh_Head     = (struct MinNode *)&g->locklist.mlh_Tail;
     g->locklist.mlh_Tail     = NULL;
     g->locklist.mlh_TailPred = (struct MinNode *)&g->locklist.mlh_Head;
+    g->fhlist.mlh_Head       = (struct MinNode *)&g->fhlist.mlh_Tail;
+    g->fhlist.mlh_Tail       = NULL;
+    g->fhlist.mlh_TailPred   = (struct MinNode *)&g->fhlist.mlh_Head;
     g->next_key = 1;
+    g->next_volume_id = 1;
     g->chgsigbit = -1;
 
     {

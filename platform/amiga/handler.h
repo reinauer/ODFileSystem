@@ -22,12 +22,18 @@
 
 #define ODFS_HANDLER_VERSION  "0.9"
 
+typedef struct odfs_volume odfs_volume_t;
+typedef struct odfs_entry odfs_entry_t;
+typedef struct odfs_lock odfs_lock_t;
+typedef struct odfs_fh odfs_fh_t;
+
 /* ---- handler globals ---- */
 
 typedef struct handler_global {
     struct MsgPort      *dosport;       /* DOS message port */
     struct DeviceNode   *devnode;       /* our device node */
     struct DeviceList   *volnode;       /* DOS volume node (or NULL) */
+    odfs_volume_t       *current_volume;/* current mounted volume state */
 
     /* libraries */
     struct ExecBase     *sysbase;
@@ -77,26 +83,44 @@ typedef struct handler_global {
 
     /* lock list */
     struct MinList       locklist;      /* active locks */
+    struct MinList       fhlist;        /* active file handles */
     ULONG                next_key;      /* next unique lock key */
+    ULONG                next_volume_id;/* next volume generation */
 } handler_global_t;
+
+/* ---- volume tracking ---- */
+
+struct odfs_volume {
+    struct MinNode      node;
+    struct DeviceList  *volnode;
+    ULONG               id;
+};
+
+/* ---- object metadata shared by locks and filehandles ---- */
+
+struct odfs_entry {
+    odfs_volume_t      *volume;
+    odfs_node_t         fnode;
+    odfs_node_t         parent_node;
+    ULONG               refcount;
+};
 
 /* ---- lock wrapper ---- */
 
-typedef struct odfs_lock {
+struct odfs_lock {
     struct MinNode  node;           /* for locklist */
     struct FileLock lock;           /* DOS lock (MUST be at known offset) */
-    odfs_node_t    fnode;          /* filesystem node */
-    odfs_node_t    parent_node;    /* parent directory node (for ACTION_PARENT) */
+    odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
-} odfs_lock_t;
+};
 
 /* ---- file handle wrapper ---- */
 
-typedef struct odfs_fh {
+struct odfs_fh {
     struct MinNode  node;           /* for tracking */
-    odfs_node_t    fnode;          /* filesystem node */
+    odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           pos;            /* current read position */
-} odfs_fh_t;
+};
 
 /* ---- helper macros ---- */
 
