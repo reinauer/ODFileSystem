@@ -515,6 +515,16 @@ static odfs_node_t *fh_node(odfs_fh_t *fh)
     return fh ? &fh->entry->fnode : NULL;
 }
 
+static odfs_node_t *fh_parent_node(odfs_fh_t *fh)
+{
+    return fh ? &fh->entry->parent_node : NULL;
+}
+
+static odfs_volume_t *fh_volume(odfs_fh_t *fh)
+{
+    return fh ? fh->entry->volume : NULL;
+}
+
 static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
 {
     odfs_volume_t *volume;
@@ -603,7 +613,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 /* file handle management                                              */
 /* ------------------------------------------------------------------ */
 
-static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry)
+static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access)
 {
     odfs_fh_t *fh;
 
@@ -615,6 +625,7 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry)
         return NULL;
 
     fh->entry = retain_entry(entry);
+    fh->access = access;
     fh->pos = 0;
     AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
@@ -942,6 +953,24 @@ static void action_copy_dir(handler_global_t *g, struct DosPacket *pkt)
     pkt->dp_Res1 = LOCK_TO_BPTR(ol);
 }
 
+static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    odfs_lock_t *ol;
+
+    if (!fh)
+        ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
+    else
+        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), fh->access);
+
+    if (!ol) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+}
+
 static void action_parent(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
@@ -962,6 +991,32 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     odfs_lock_t *parent = alloc_lock(g, lock_parent_node(ol),
                                       &g->mount.root, /* grandparent = root as fallback */
                                       SHARED_LOCK);
+    if (!parent) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+}
+
+static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    odfs_lock_t *parent;
+
+    if (!fh) {
+        pkt->dp_Res1 = 0;
+        return;
+    }
+
+    if (fh_node(fh)->extent.lba == g->mount.root.extent.lba) {
+        pkt->dp_Res1 = 0;
+        return;
+    }
+
+    parent = alloc_lock(g, fh_parent_node(fh),
+                        &g->mount.root, /* grandparent = root as fallback */
+                        SHARED_LOCK);
     if (!parent) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_FREE_STORE;
@@ -1097,6 +1152,25 @@ static void action_examine_fh(handler_global_t *g __attribute__((unused)),
     pkt->dp_Res1 = DOSTRUE;
 }
 
+static void action_fh_from_lock(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg2);
+
+    if (ol) {
+        struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
+        odfs_fh_t *fh = alloc_fh(g, ol->entry, ol->lock.fl_Access);
+        if (fh) {
+            fhandle->fh_Arg1 = (LONG)fh;
+            free_lock(g, ol);
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        }
+    } else {
+        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+    }
+}
+
 /* ---- file I/O ---- */
 
 static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
@@ -1141,7 +1215,7 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    fh = alloc_fh(g, entry);
+    fh = alloc_fh(g, entry, SHARED_LOCK);
     release_entry(entry);
     if (!fh) {
         pkt->dp_Res1 = DOSFALSE;
@@ -1276,7 +1350,10 @@ static void action_is_filesystem(handler_global_t *g __attribute__((unused)),
 static void action_current_volume(handler_global_t *g,
                                   struct DosPacket *pkt)
 {
-    pkt->dp_Res1 = MKBADDR(volume_node_ptr(g->current_volume));
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+
+    pkt->dp_Res1 = MKBADDR(volume_node_ptr(fh ? fh_volume(fh) : g->current_volume));
+    pkt->dp_Res2 = g->devunit;
 }
 
 static void action_inhibit(handler_global_t *g, struct DosPacket *pkt)
@@ -1341,25 +1418,9 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
     case ACTION_INHIBIT:        action_inhibit(g, pkt); break;
 
     /* ---- FH variants ---- */
-    case ACTION_COPY_DIR_FH:    action_copy_dir(g, pkt); break;
-    case ACTION_PARENT_FH:      action_parent(g, pkt); break;
-    case ACTION_FH_FROM_LOCK: {
-        odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg2);
-        if (ol) {
-            struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
-            odfs_fh_t *fh = alloc_fh(g, ol->entry);
-            if (fh) {
-                fhandle->fh_Arg1 = (LONG)fh;
-                free_lock(g, ol);
-                pkt->dp_Res1 = DOSTRUE;
-            } else {
-                pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-            }
-        } else {
-            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
-        }
-        break;
-    }
+    case ACTION_COPY_DIR_FH:    action_copy_dir_fh(g, pkt); break;
+    case ACTION_PARENT_FH:      action_parent_fh(g, pkt); break;
+    case ACTION_FH_FROM_LOCK:   action_fh_from_lock(g, pkt); break;
 
     /* ---- read-only: reject writes ---- */
     case ACTION_FINDOUTPUT:

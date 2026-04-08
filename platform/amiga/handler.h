@@ -119,6 +119,7 @@ struct odfs_lock {
 struct odfs_fh {
     struct MinNode  node;           /* for tracking */
     odfs_entry_t  *entry;          /* shared object metadata */
+    LONG            access;         /* originating DOS access mode */
     ULONG           pos;            /* current read position */
 };
 
