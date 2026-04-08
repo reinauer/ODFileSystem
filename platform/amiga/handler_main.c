@@ -537,7 +537,7 @@ static void free_fh(odfs_fh_t *fh)
  * AmigaDOS path rules:
  *   "/"          = go to parent
  *   "foo/bar"    = descend into foo, then bar
- *   "foo/bar/"   = descend into foo, bar, then parent of bar
+ *   "//foo"      = go to parent, then descend into foo
  *   ""           = current node
  *
  * On success, *result is the resolved node and *parent_out is its
@@ -607,8 +607,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
             return err;
 
         p = end;
-        /* don't skip the '/' here — let the loop handle it
-           (so trailing "/" means "go to parent" on next iteration) */
+        if (*p == '/')
+            p++;
     }
 
     *result = cur;
@@ -1129,6 +1129,33 @@ static void action_disk_info(handler_global_t *g, struct DosPacket *pkt)
     pkt->dp_Res1 = DOSTRUE;
 }
 
+static void action_info(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    struct InfoData *info = (struct InfoData *)BADDR(pkt->dp_Arg2);
+
+    if (pkt->dp_Arg1 && !ol) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_INVALID_LOCK;
+        return;
+    }
+
+    /* Single mounted volume: the lock only needs to be valid/current. */
+    (void)ol;
+    memset(info, 0, sizeof(*info));
+    info->id_NumSoftErrors = 0;
+    info->id_UnitNumber    = g->devunit;
+    info->id_DiskState     = ID_WRITE_PROTECTED;
+    info->id_NumBlocks     = odfs_media_sector_count(&g->media);
+    info->id_NumBlocksUsed = info->id_NumBlocks;
+    info->id_BytesPerBlock = g->sector_size;
+    info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
+    info->id_VolumeNode    = MKBADDR(g->volnode);
+    info->id_InUse         = DOSFALSE;
+
+    pkt->dp_Res1 = DOSTRUE;
+}
+
 static void action_is_filesystem(handler_global_t *g __attribute__((unused)),
                                  struct DosPacket *pkt)
 {
@@ -1197,7 +1224,7 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
 
     /* ---- info ---- */
     case ACTION_DISK_INFO:      action_disk_info(g, pkt); break;
-    case ACTION_INFO:           action_disk_info(g, pkt); break;
+    case ACTION_INFO:           action_info(g, pkt); break;
     case ACTION_IS_FILESYSTEM:  action_is_filesystem(g, pkt); break;
     case ACTION_CURRENT_VOLUME: action_current_volume(g, pkt); break;
     case ACTION_INHIBIT:        action_inhibit(g, pkt); break;
