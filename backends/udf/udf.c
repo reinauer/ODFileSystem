@@ -778,6 +778,20 @@ static odfs_err_t udf_get_volume_name(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* get_volume_size                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint32_t udf_get_volume_size(void *backend_ctx)
+{
+    udf_context_t *ctx = backend_ctx;
+    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
+    uint64_t bytes = (uint64_t)ctx->part_length * block_size;
+    uint64_t blocks = (bytes + 2047u) / 2048u;
+
+    return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -791,4 +805,5 @@ const odfs_backend_ops_t udf_backend_ops = {
     .read            = udf_read,
     .lookup          = udf_lookup,
     .get_volume_name = udf_get_volume_name,
+    .get_volume_size = udf_get_volume_size,
 };

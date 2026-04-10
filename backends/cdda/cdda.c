@@ -410,6 +410,22 @@ static odfs_err_t cdda_get_volume_name(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* get_volume_size                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint32_t cdda_get_volume_size(void *backend_ctx)
+{
+    cdda_context_t *ctx = backend_ctx;
+    uint64_t bytes = 0;
+
+    for (int i = 0; i < ctx->track_count; i++)
+        bytes += ctx->tracks[i].wav_size;
+
+    uint64_t blocks = (bytes + 2047u) / 2048u;
+    return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -423,4 +439,5 @@ const odfs_backend_ops_t cdda_backend_ops = {
     .read            = cdda_read,
     .lookup          = cdda_lookup,
     .get_volume_name = cdda_get_volume_name,
+    .get_volume_size = cdda_get_volume_size,
 };

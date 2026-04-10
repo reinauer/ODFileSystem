@@ -685,6 +685,19 @@ static odfs_err_t hfsp_get_volume_name(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* get_volume_size                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint32_t hfsp_get_volume_size(void *backend_ctx)
+{
+    hfsplus_context_t *ctx = backend_ctx;
+    uint64_t bytes = (uint64_t)ctx->total_blocks * ctx->block_size;
+    uint64_t blocks = (bytes + 2047u) / 2048u;
+
+    return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -698,4 +711,5 @@ const odfs_backend_ops_t hfsplus_backend_ops = {
     .read            = hfsp_read,
     .lookup          = hfsp_lookup,
     .get_volume_name = hfsp_get_volume_name,
+    .get_volume_size = hfsp_get_volume_size,
 };

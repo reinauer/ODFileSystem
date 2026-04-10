@@ -565,7 +565,7 @@ static void rebuild_volume_locklist(handler_global_t *g, odfs_volume_t *volume)
 
     if (prev)
         prev->lock.fl_Link = 0;
-    volume->volnode->dl_Lock = head;
+    volume->volnode->dl_LockList = head;
 }
 
 static void destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
@@ -905,6 +905,15 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
     const char *p = path;
     char comp[256];
     odfs_err_t err;
+
+    /* Handle colons in the path (e.g., "CD0:foo" or "CD0:") */
+    const char *colon = strchr(p, ':');
+    if (colon) {
+        /* A colon resets the path to the root of the volume */
+        cur = g->mount.root;
+        parent = cur;
+        p = colon + 1;
+    }
 
     /* empty path = current node */
     if (*p == '\0') {
@@ -1728,7 +1737,7 @@ static void action_disk_info(handler_global_t *g, struct DosPacket *pkt)
     info->id_NumSoftErrors = 0;
     info->id_UnitNumber    = g->devunit;
     info->id_DiskState     = ID_WRITE_PROTECTED;
-    info->id_NumBlocks     = odfs_media_sector_count(&g->media);
+    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
     info->id_NumBlocksUsed = info->id_NumBlocks;
     info->id_BytesPerBlock = g->sector_size;
     info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
@@ -1764,7 +1773,7 @@ static void action_info(handler_global_t *g, struct DosPacket *pkt)
     info->id_NumSoftErrors = 0;
     info->id_UnitNumber    = g->devunit;
     info->id_DiskState     = ID_WRITE_PROTECTED;
-    info->id_NumBlocks     = odfs_media_sector_count(&g->media);
+    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
     info->id_NumBlocksUsed = info->id_NumBlocks;
     info->id_BytesPerBlock = g->sector_size;
     info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;

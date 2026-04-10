@@ -568,6 +568,16 @@ static odfs_err_t iso_get_volume_name(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* get_volume_size                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint32_t iso_get_volume_size(void *backend_ctx)
+{
+    iso_context_t *ctx = backend_ctx;
+    return ctx->pvd.volume_space_size;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -581,4 +591,5 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .read            = iso_read,
     .lookup          = iso_lookup,
     .get_volume_name = iso_get_volume_name,
+    .get_volume_size = iso_get_volume_size,
 };

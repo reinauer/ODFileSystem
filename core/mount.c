@@ -244,10 +244,12 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     mnt->backend_ops = chosen;
     mnt->active_backend = mnt->root.backend;
 
-    /* retrieve volume name from backend */
+    /* retrieve volume name and size from backend */
     if (chosen->get_volume_name)
         chosen->get_volume_name(mnt->backend_ctx,
                                 mnt->volume_name, sizeof(mnt->volume_name));
+    if (chosen->get_volume_size)
+        mnt->total_blocks = chosen->get_volume_size(mnt->backend_ctx);
 
     return ODFS_OK;
 }

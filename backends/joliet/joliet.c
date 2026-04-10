@@ -438,6 +438,16 @@ static odfs_err_t joliet_get_volume_name(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* get_volume_size                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint32_t joliet_get_volume_size(void *backend_ctx)
+{
+    joliet_context_t *ctx = backend_ctx;
+    return ctx->svd.volume_space_size;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -451,4 +461,5 @@ const odfs_backend_ops_t joliet_backend_ops = {
     .read            = joliet_read,
     .lookup          = joliet_lookup,
     .get_volume_name = joliet_get_volume_name,
+    .get_volume_size = joliet_get_volume_size,
 };

@@ -39,6 +39,8 @@ typedef struct odfs_mount {
     void                      *backend_ctx;
 
     odfs_node_t              root;
+    /* total volume size in 2048-byte logical media blocks */
+    uint32_t                  total_blocks;
     char                      volume_name[128];
 } odfs_mount_t;
 

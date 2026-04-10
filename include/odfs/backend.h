@@ -94,6 +94,11 @@ typedef struct odfs_backend_ops {
     odfs_err_t (*get_volume_name)(void *backend_ctx,
                                    char *buf,
                                    size_t buf_size);
+
+    /*
+     * Get volume total size in 2048-byte logical media blocks. May be NULL.
+     */
+    uint32_t (*get_volume_size)(void *backend_ctx);
 } odfs_backend_ops_t;
 
 const char *odfs_backend_type_name(odfs_backend_type_t type);
