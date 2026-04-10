@@ -434,6 +434,30 @@ static void serial_trace_pkt(const char *tag, struct DosPacket *pkt)
         serial_trace_kv("res2", (ULONG)pkt->dp_Res2);
         serial_trace_kv("port", (ULONG)pkt->dp_Port);
         serial_trace_kv("link", (ULONG)pkt->dp_Link);
+        serial_trace_kv("arg1", (ULONG)pkt->dp_Arg1);
+        serial_trace_kv("arg2", (ULONG)pkt->dp_Arg2);
+        serial_trace_kv("arg3", (ULONG)pkt->dp_Arg3);
+        serial_trace_kv("arg4", (ULONG)pkt->dp_Arg4);
+    }
+    raw_putchar('\n');
+}
+
+static void serial_trace_node(const char *tag, const odfs_node_t *node)
+{
+    serial_puts("[trace] ");
+    serial_puts(tag);
+    if (node) {
+        serial_trace_kv(" kind", (ULONG)node->kind);
+        serial_trace_kv(" backend", (ULONG)node->backend);
+        serial_trace_kv(" id", (ULONG)node->id);
+        serial_trace_kv(" parent", (ULONG)node->parent_id);
+        serial_trace_kv(" lba", (ULONG)node->extent.lba);
+        serial_trace_kv(" len", (ULONG)node->extent.length);
+        serial_trace_kv(" size_lo", (ULONG)node->size);
+        serial_puts(" name=");
+        serial_puts(node->name);
+    } else {
+        serial_puts(" null");
     }
     raw_putchar('\n');
 }
@@ -528,6 +552,22 @@ static odfs_volume_t *fh_volume(odfs_fh_t *fh)
     return fh ? fh->entry->volume : NULL;
 }
 
+static int lock_is_active(handler_global_t *g, odfs_lock_t *needle)
+{
+    odfs_lock_t *ol;
+
+    if (!g || !needle)
+        return 0;
+
+    for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
+         ol->node.mln_Succ != NULL;
+         ol = (odfs_lock_t *)ol->node.mln_Succ) {
+        if (ol == needle)
+            return 1;
+    }
+    return 0;
+}
+
 static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
 {
     odfs_volume_t *volume;
@@ -550,6 +590,7 @@ static void rebuild_volume_locklist(handler_global_t *g, odfs_volume_t *volume)
     if (!volume || !volume->volnode)
         return;
 
+    Forbid();
     for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
          ol->node.mln_Succ != NULL;
          ol = (odfs_lock_t *)ol->node.mln_Succ) {
@@ -566,6 +607,7 @@ static void rebuild_volume_locklist(handler_global_t *g, odfs_volume_t *volume)
     if (prev)
         prev->lock.fl_Link = 0;
     volume->volnode->dl_LockList = head;
+    Permit();
 }
 
 static void destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
@@ -624,6 +666,27 @@ static int nodes_same(const odfs_node_t *a, const odfs_node_t *b)
            a->id == b->id &&
            a->extent.lba == b->extent.lba &&
            a->extent.length == b->extent.length;
+}
+
+static ULONG amiga_node_key(const odfs_node_t *node)
+{
+    ULONG key;
+
+    if (!node)
+        return 0;
+
+    /*
+     * AmigaDOS exposes FileLock.fl_Key and FileInfoBlock.fib_DiskKey as
+     * object keys.  Use stable on-disc identity rather than transient ODFS
+     * node ids; ISO/Joliet nodes are regenerated during directory scans.
+     */
+    key = (((ULONG)node->backend & 0x7UL) << 28) |
+          ((ULONG)node->extent.lba & 0x0fffffffUL);
+    if ((key & 0x0fffffffUL) == 0)
+        key |= ((ULONG)node->id + 1UL) & 0x0fffffffUL;
+    if (key == 0)
+        key = 1;
+    return key;
 }
 
 typedef struct find_node_ctx {
@@ -797,7 +860,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
         return NULL;
     }
     ol->entry = entry;
-    ol->key = g->next_key++;
+    ol->key = amiga_node_key(fnode);
 
     ol->lock.fl_Link   = 0;
     ol->lock.fl_Key    = ol->key;
@@ -807,6 +870,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
 
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
+    rebuild_volume_locklist(g, entry->volume);
     return ol;
 }
 
@@ -815,6 +879,7 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
     if (!ol)
         return;
     Remove((struct Node *)&ol->node);
+    rebuild_volume_locklist(g, ol->entry->volume);
     release_volume_object(g, ol->entry->volume);
     release_entry(ol->entry);
     FreeMem(ol, sizeof(*ol));
@@ -832,7 +897,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
         return NULL;
 
     ol->entry = retain_entry(src->entry);
-    ol->key = g->next_key++;
+    ol->key = src->key;
     ol->lock.fl_Link = 0;
     ol->lock.fl_Key = ol->key;
     ol->lock.fl_Access = src->lock.fl_Access;
@@ -840,6 +905,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
     ol->lock.fl_Volume = MKBADDR(volume_node_ptr(ol->entry->volume));
     retain_volume_object(ol->entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
+    rebuild_volume_locklist(g, ol->entry->volume);
     return ol;
 }
 
@@ -1087,7 +1153,7 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
             memcpy(&fib->fib_Comment[1], fnode->amiga_as.comment, comment_len);
     }
 
-    fib->fib_DiskKey = fnode->extent.lba;
+    fib->fib_DiskKey = (LONG)amiga_node_key(fnode);
 }
 
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode)
@@ -1171,6 +1237,11 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 #endif
         return;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_node("locate-node", &result);
+    serial_trace_node("locate-parent", &parent_node);
+#endif
 
     odfs_lock_t *ol = alloc_lock(g, &result, &parent_node, access);
     if (!ol) {
@@ -1258,6 +1329,17 @@ static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
 static void action_parent(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    odfs_node_t parent_node;
+    odfs_node_t grandparent_node;
+    odfs_node_t greatgrandparent_node;
+    odfs_err_t err;
+    odfs_lock_t *parent;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_kv("[trace] parent-enter arg1", (ULONG)pkt->dp_Arg1);
+    serial_trace_kv(" ol", (ULONG)ol);
+    raw_putchar('\n');
+#endif
 
     if (!ol) {
         if (!g->mounted) {
@@ -1267,6 +1349,16 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
         }
         /* NULL lock = root — root has no parent */
         pkt->dp_Res1 = 0;
+        return;
+    }
+
+    if (!lock_is_active(g, ol)) {
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+        serial_trace_kv("[trace] parent-invalid-lock ol", (ULONG)ol);
+        raw_putchar('\n');
+#endif
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_INVALID_LOCK;
         return;
     }
 
@@ -1280,37 +1372,54 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     }
 
     /* already at root? */
-    if (lock_node(ol)->extent.lba == g->mount.root.extent.lba) {
+    if (node_is_mount_root(g, lock_node(ol))) {
         pkt->dp_Res1 = 0;
         return;
     }
 
-    {
-        odfs_node_t parent_node;
-        odfs_node_t grandparent_node;
-        odfs_lock_t *parent;
-
-        if (resolve_parent_node(g, lock_node(ol), &parent_node,
-                                &grandparent_node) != ODFS_OK) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
-            return;
-        }
-
-        /* return a lock on the parent directory */
-        parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
-        if (!parent) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-            return;
-        }
-        pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+    /*
+     * Follow the CDFS pattern: parent identity lives in the lock.  Do not
+     * rediscover the original object's parent by scanning for generated
+     * ODFS ids; ISO nodes are recreated during readdir.
+     */
+    parent_node = *lock_parent_node(ol);
+    if (node_is_mount_root(g, &parent_node)) {
+        grandparent_node = g->mount.root;
+    } else {
+        err = resolve_parent_node(g, &parent_node, &grandparent_node,
+                                  &greatgrandparent_node);
+        if (err != ODFS_OK)
+            grandparent_node = g->mount.root;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_node("parent-node", lock_node(ol));
+    serial_trace_node("parent-result", &parent_node);
+    serial_trace_node("parent-grandparent", &grandparent_node);
+#endif
+
+    parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
+    if (!parent) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
 }
 
 static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    odfs_node_t parent_node;
+    odfs_node_t grandparent_node;
+    odfs_node_t greatgrandparent_node;
+    odfs_err_t err;
+    odfs_lock_t *parent;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_kv("[trace] parentfh-enter fh", (ULONG)fh);
+    raw_putchar('\n');
+#endif
 
     if (!fh) {
         if (!g->mounted) {
@@ -1336,26 +1445,28 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    {
-        odfs_node_t parent_node;
-        odfs_node_t grandparent_node;
-        odfs_lock_t *parent;
-
-        if (resolve_parent_node(g, fh_node(fh), &parent_node,
-                                &grandparent_node) != ODFS_OK) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
-            return;
-        }
-
-        parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
-        if (!parent) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-            return;
-        }
-        pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+    parent_node = *fh_parent_node(fh);
+    if (node_is_mount_root(g, &parent_node)) {
+        grandparent_node = g->mount.root;
+    } else {
+        err = resolve_parent_node(g, &parent_node, &grandparent_node,
+                                  &greatgrandparent_node);
+        if (err != ODFS_OK)
+            grandparent_node = g->mount.root;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_node("parentfh-node", fh_node(fh));
+    serial_trace_node("parentfh-result", &parent_node);
+#endif
+
+    parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
+    if (!parent) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
 }
 
 static void action_same_lock(handler_global_t *g, struct DosPacket *pkt)
@@ -1400,21 +1511,24 @@ static void action_same_lock(handler_global_t *g, struct DosPacket *pkt)
 
 /* ---- examine ---- */
 
-/*
- * ExNext uses fib_DiskKey as a byte offset into the directory.
- * readdir resumes from that offset and delivers one entry via
- * the callback, then updates the offset to point past it. O(1)
- * per call instead of O(n).
- */
-
 typedef struct exnext_ctx {
     struct FileInfoBlock *fib;
+    ULONG previous_key;
+    int   first;
+    int   seen_previous;
     int   found;
 } exnext_ctx_t;
 
 static odfs_err_t exnext_cb(const odfs_node_t *entry, void *ctx)
 {
     exnext_ctx_t *ec = ctx;
+
+    if (!ec->first && !ec->seen_previous) {
+        if (amiga_node_key(entry) == ec->previous_key)
+            ec->seen_previous = 1;
+        return ODFS_OK;
+    }
+
     fill_fib(ec->fib, entry);
     ec->found = 1;
     return ODFS_ERR_EOF; /* stop after one entry */
@@ -1443,7 +1557,13 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
         fill_root_fib(g, fib, fnode);
     else
         fill_fib(fib, fnode);
-    fib->fib_DiskKey = 0; /* reset ExNext resume offset */
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    serial_trace_node("examine-node", fnode);
+    serial_trace_kv("[trace] examine-fib key", (ULONG)fib->fib_DiskKey);
+    serial_trace_kv(" type", (ULONG)fib->fib_DirEntryType);
+    serial_trace_kv(" size", (ULONG)fib->fib_Size);
+    raw_putchar('\n');
+#endif
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -1452,6 +1572,9 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
     const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
+    ULONG dir_key;
+    uint32_t resume = 0;
+    exnext_ctx_t ec;
 
     if (ol) {
         LONG err_dos = validate_object_volume(g, ol->entry->volume);
@@ -1472,16 +1595,24 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    uint32_t resume = (uint32_t)fib->fib_DiskKey;
-    exnext_ctx_t ec;
+    dir_key = ol ? ol->key : amiga_node_key(dir);
     ec.fib = fib;
+    ec.previous_key = (ULONG)fib->fib_DiskKey;
+    ec.first = (ec.previous_key == dir_key);
+    ec.seen_previous = 0;
     ec.found = 0;
 
-    /* check if CDDA virtual dir was already emitted (sentinel) */
+    /*
+     * Match the Amiga CD filesystem model: Examine() leaves fib_DiskKey as
+     * the directory key, and ExNext() returns each child's object key.  This
+     * costs a rescan but avoids exposing private iterator offsets to
+     * Workbench/icon.library.
+     */
+
+    /* check if CDDA virtual dir was already emitted */
 #if ODFS_FEATURE_CDDA
-#define CDDA_EXNEXT_SENTINEL 0x7FFFFFFE
-    if (resume == CDDA_EXNEXT_SENTINEL + 1) {
-        /* CDDA entry was the last thing we returned — done */
+    if (g->has_cdda && !ec.first &&
+        ec.previous_key == amiga_node_key(&g->cdda_root)) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
         return;
@@ -1494,7 +1625,6 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
         (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
                                        &g->log, dir, exnext_cb, &ec, &resume);
         if (ec.found) {
-            fib->fib_DiskKey = (LONG)resume;
             pkt->dp_Res1 = DOSTRUE;
         } else {
             pkt->dp_Res1 = DOSFALSE;
@@ -1506,14 +1636,20 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 
     (void)odfs_readdir(&g->mount, dir, exnext_cb, &ec, &resume);
     if (ec.found) {
-        fib->fib_DiskKey = (LONG)resume;
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+        serial_trace_kv("[trace] exnext-found key", (ULONG)fib->fib_DiskKey);
+        serial_trace_kv(" type", (ULONG)fib->fib_DirEntryType);
+        serial_puts(" name=");
+        serial_puts((char *)&fib->fib_FileName[1]);
+        raw_putchar('\n');
+#endif
         pkt->dp_Res1 = DOSTRUE;
     } else {
 #if ODFS_FEATURE_CDDA
         /* data entries exhausted — inject CDDA virtual dir if at root */
-        if (g->has_cdda && dir->extent.lba == g->mount.root.extent.lba) {
+        if (g->has_cdda && node_is_mount_root(g, dir) &&
+            (ec.first || ec.seen_previous)) {
             fill_fib(fib, &g->cdda_root);
-            fib->fib_DiskKey = CDDA_EXNEXT_SENTINEL + 1;
             pkt->dp_Res1 = DOSTRUE;
             return;
         }
@@ -1742,7 +1878,9 @@ static void action_disk_info(handler_global_t *g, struct DosPacket *pkt)
     info->id_BytesPerBlock = g->sector_size;
     info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
-    info->id_InUse         = DOSFALSE;
+    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
+                              g->current_volume->volnode->dl_LockList) ?
+                             DOSTRUE : DOSFALSE;
 
     pkt->dp_Res1 = DOSTRUE;
 }
@@ -1778,7 +1916,9 @@ static void action_info(handler_global_t *g, struct DosPacket *pkt)
     info->id_BytesPerBlock = g->sector_size;
     info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
-    info->id_InUse         = DOSFALSE;
+    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
+                              g->current_volume->volnode->dl_LockList) ?
+                             DOSTRUE : DOSFALSE;
 
     pkt->dp_Res1 = DOSTRUE;
 }
@@ -2301,31 +2441,11 @@ static void handle_media_change(handler_global_t *g)
 
 static void show_appicon(handler_global_t *g)
 {
-    if (!IconBase || !WorkbenchBase)
-        return;
-    if (g->appicon)
-        return; /* already shown */
-
-    if (!g->appport) {
-        g->appport = CreateMsgPort();
-        if (!g->appport)
-            return;
-    }
-
-    /* get a default disc icon if we don't have one yet */
-    if (!g->diskobj) {
-        g->diskobj = GetDefDiskObject(WBDISK);
-        if (!g->diskobj)
-            return;
-    }
-
-    g->appicon = AddAppIconA(0, 0,
-                              (UBYTE *)g->volname,
-                              g->appport,
-                              MKBADDR(NULL),
-                              g->diskobj,
-                              NULL);
-    /* AddAppIcon may fail if Workbench hasn't loaded yet — non-fatal */
+    (void)g;
+    /*
+     * The mounted DLT_VOLUME is already visible to Workbench through the
+     * DOS list. Adding a separate AppIcon creates a second, unrelated icon.
+     */
 }
 
 static void hide_appicon(handler_global_t *g)
@@ -2390,7 +2510,6 @@ void handler_main(void)
     g->fhlist.mlh_Head       = (struct MinNode *)&g->fhlist.mlh_Tail;
     g->fhlist.mlh_Tail       = NULL;
     g->fhlist.mlh_TailPred   = (struct MinNode *)&g->fhlist.mlh_Head;
-    g->next_key = 1;
     g->next_volume_id = 1;
     g->chgsigbit = -1;
 
