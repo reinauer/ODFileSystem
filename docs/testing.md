@@ -40,6 +40,7 @@ make malformed-check  # run malformed-image smoke tests
 make fuzz-check  # run parser fuzz smoke tests
 make amiga      # release Amiga handler build, serial logging disabled
 make amiga-test # test Amiga handler build, serial logging enabled
+make adf        # build build/amiga-test/ODFileSystem.adf for emulator testing
 make rom        # release ROM-profile build, serial logging disabled
 make rom-test   # test ROM-profile build, serial logging enabled
 make integration-check  # local-only AmiFUSE test using the amiga-test handler

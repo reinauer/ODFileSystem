@@ -163,14 +163,19 @@ TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 
 # ---- handler target (Amiga) ----
 
-HANDLER = $(AMIGA_BUILD)/ODFileSystem
+HANDLER      = $(AMIGA_BUILD)/ODFileSystem
 TEST_HANDLER = $(AMIGA_TEST_BUILD)/ODFileSystem
+ADF          = $(AMIGA_TEST_BUILD)/ODFileSystem.adf
+ADF_VOLUME   = ODFileSystem
+ADF_DOSDRIVER      = platform/amiga/dosdrivers/CD0
+ADF_DOSDRIVER_ICON = platform/amiga/dosdrivers/CD0.info
+XDFTOOL      ?= xdftool
 
 # ==================================================================
 # targets
 # ==================================================================
 
-.PHONY: all host amiga amiga-test rom rom-test lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
+.PHONY: all host amiga amiga-test adf rom rom-test lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
 
 all: host
 
@@ -192,6 +197,18 @@ amiga-test:
 		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \
 		amiga
+
+adf: amiga-test $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
+	@mkdir -p $(dir $(ADF))
+	@echo "  ADF   $(ADF)"
+	@$(XDFTOOL) -f $(ADF) \
+		create + \
+		format "$(ADF_VOLUME)" + \
+		makedir L + \
+		write $(TEST_HANDLER) L + \
+		write $(ADF_DOSDRIVER) + \
+		write $(ADF_DOSDRIVER_ICON)
+	@echo "  ADF image ready: $(ADF)"
 
 # ROM profile: minimal build for burning into ROM
 # ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
@@ -354,6 +371,7 @@ $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 	@$(CC) $(LDFLAGS) -nostartfiles -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 	@echo "  STRIP $@"
 	@$(STRIP) $@
+
 
 # ---- clean ----
 
