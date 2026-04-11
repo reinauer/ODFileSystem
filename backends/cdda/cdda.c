@@ -309,8 +309,8 @@ static odfs_err_t cdda_read(void *backend_ctx,
     }
 
     /*
-     * Audio data: read via SCSI Read CD (0xBE) if available,
-     * otherwise return silence (host placeholder).
+     * Audio data: read via SCSI Read CD (0xBE). Any failure is returned
+     * to the caller; do not mask it by synthesizing silence.
      */
     while (done < want) {
         uint64_t audio_pos = (offset + done) - CDDA_WAV_HEADER_SIZE;
@@ -325,10 +325,12 @@ static odfs_err_t cdda_read(void *backend_ctx,
                                                       start_frame, 1,
                                                       frame_buf);
             if (err != ODFS_OK) {
-                /* read failed — fill with silence */
-                memset(out + done, 0, want - done);
-                done = want;
-                break;
+                ODFS_ERROR(log, ODFS_SUB_CDDA,
+                           "audio read failed track=%d lba=%" PRIu32
+                           " err=%s",
+                           trk->number, start_frame, odfs_err_str(err));
+                *len = 0;
+                return err;
             }
 
             size_t avail = CDDA_FRAME_SIZE - frame_off;
@@ -336,9 +338,11 @@ static odfs_err_t cdda_read(void *backend_ctx,
             memcpy(out + done, frame_buf + frame_off, chunk);
             done += chunk;
         } else {
-            /* no audio read support — fill with silence */
-            memset(out + done, 0, want - done);
-            done = want;
+            ODFS_ERROR(log, ODFS_SUB_CDDA,
+                       "audio read unavailable track=%d lba=%" PRIu32,
+                       trk->number, start_frame);
+            *len = 0;
+            return ODFS_ERR_UNSUPPORTED;
         }
     }
 
