@@ -24,6 +24,7 @@ typedef struct odfs_toc {
     uint8_t         first_session;
     uint8_t         last_session;
     uint8_t         session_count;
+    uint32_t        leadout_lba;
     odfs_session_t sessions[99]; /* CD max 99 TOC entries */
 } odfs_toc_t;
 
@@ -111,6 +112,8 @@ static inline odfs_err_t odfs_media_read_audio(odfs_media_t *m,
 
 static inline void odfs_media_close(odfs_media_t *m)
 {
+    if (!m || !m->ops || !m->ops->close)
+        return;
     if (m->ops->close)
         m->ops->close(m->ctx);
 }

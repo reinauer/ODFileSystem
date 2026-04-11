@@ -62,6 +62,7 @@ static void detach_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
 static int query_media_present(handler_global_t *g, ULONG *status);
+static int toc_has_data_track(const odfs_toc_t *toc);
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
@@ -336,14 +337,16 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
         const uint8_t *desc = &buf[4 + i * 8];
         uint8_t adr_ctrl = desc[1];
         uint8_t track = desc[2];
-        uint8_t control = (uint8_t)(adr_ctrl >> 4);
+        uint8_t control = (uint8_t)(adr_ctrl & 0x0f);
         uint32_t lba = ((uint32_t)desc[4] << 24) |
                        ((uint32_t)desc[5] << 16) |
                        ((uint32_t)desc[6] << 8)  |
                         (uint32_t)desc[7];
 
-        if (track == 0xAA)
+        if (track == 0xAA) {
+            toc->leadout_lba = lba;
             continue; /* lead-out, skip */
+        }
 
         if (session_count < 99) {
             toc->sessions[session_count].number = track;
@@ -352,6 +355,19 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
             toc->sessions[session_count].length = 0;
             session_count++;
         }
+    }
+
+    for (int i = 0; i < session_count; i++) {
+        uint32_t start = toc->sessions[i].start_lba;
+        uint32_t end = 0;
+
+        if (i + 1 < session_count)
+            end = toc->sessions[i + 1].start_lba;
+        else
+            end = toc->leadout_lba;
+
+        if (end > start)
+            toc->sessions[i].length = end - start;
     }
 
     toc->session_count = session_count;
@@ -2596,6 +2612,18 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
 }
 #endif /* !ODFS_PROFILE_ROM */
 
+static int toc_has_data_track(const odfs_toc_t *toc)
+{
+    uint8_t i;
+
+    for (i = 0; i < toc->session_count; i++) {
+        if ((toc->sessions[i].control & 0x04) != 0)
+            return 1;
+    }
+
+    return 0;
+}
+
 static void mount_volume(handler_global_t *g)
 {
     odfs_mount_opts_t opts;
@@ -2609,6 +2637,42 @@ static void mount_volume(handler_global_t *g)
 #if !defined(ODFS_PROFILE_ROM) || !ODFS_PROFILE_ROM
     if (g->envec)
         parse_control_string(g, g->envec, &opts);
+#endif
+
+#if ODFS_FEATURE_CDDA
+    {
+        odfs_toc_t toc;
+
+        if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
+            !toc_has_data_track(&toc)) {
+            err = cdda_mount_from_toc(&toc, 0, &g->media,
+                                      &g->cdda_root, &g->cdda_ctx);
+            if (err != ODFS_OK) {
+                ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                          "audio-only disc found no playable audio: %s",
+                          odfs_err_str(err));
+                return;
+            }
+
+            memset(&g->mount, 0, sizeof(g->mount));
+            g->mount.media = g->media;
+            g->mount.log = g->log;
+            g->mount.opts = opts;
+            g->has_cdda = 1;
+            g->mounted = 1;
+            g->mount.root = g->cdda_root;
+            g->mount.backend_ops = &cdda_backend_ops;
+            g->mount.backend_ctx = g->cdda_ctx;
+            g->mount.active_backend = ODFS_BACKEND_CDDA;
+            odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
+                                        &cdda_backend_ops, g->cdda_ctx,
+                                        &g->cdda_root);
+            memcpy(g->volname, "Audio CD", 9);
+            ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                      "mounted pure audio CD via CDDA backend");
+            goto mounted;
+        }
+    }
 #endif
 
     err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
@@ -2672,6 +2736,7 @@ static void mount_volume(handler_global_t *g)
 #endif
     }
 
+mounted:
     g->volnode = create_volume_node(g);
     if (g->volnode) {
         g->current_volume = alloc_volume(g, g->volnode);

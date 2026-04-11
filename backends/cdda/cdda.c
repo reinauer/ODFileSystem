@@ -158,6 +158,8 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
 
         if (length == 0 && i + 1 < toc->session_count)
             length = toc->sessions[i + 1].start_lba - start;
+        if (length == 0 && toc->leadout_lba > start)
+            length = toc->leadout_lba - start;
 
         if (length == 0)
             continue;

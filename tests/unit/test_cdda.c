@@ -65,4 +65,39 @@ TEST(cdda_mixed_mode_exports_only_audio_tracks)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_pure_audio_uses_leadout_for_last_track)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    cdda_context_t *cdda_ctx;
+    collect_ctx_t collect;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 2;
+    toc.leadout_lba = 300;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 100;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x00;
+    toc.sessions[1].start_lba = 100;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &root, &backend_ctx));
+    cdda_ctx = backend_ctx;
+    ASSERT_EQ(cdda_ctx->track_count, 2);
+    ASSERT_EQ(cdda_ctx->tracks[1].length_frames, 200);
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
+                                       collect_entry, &collect, NULL));
+
+    ASSERT_EQ(collect.count, 2);
+    ASSERT_STR_EQ(collect.entries[0].name, "Track01.wav");
+    ASSERT_STR_EQ(collect.entries[1].name, "Track02.wav");
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()

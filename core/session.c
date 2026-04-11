@@ -48,11 +48,22 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         memset(&toc, 0, sizeof(toc));
         err = odfs_media_read_toc(media, &toc);
         if (err == ODFS_OK && toc.session_count > 0) {
-            uint8_t last = toc.session_count - 1;
+            int found_data = 0;
+            uint8_t last = 0;
 
             for (uint8_t i = 0; i < toc.session_count; i++) {
-                if ((toc.sessions[i].control & 0x04) != 0)
+                if ((toc.sessions[i].control & 0x04) != 0) {
                     last = i;
+                    found_data = 1;
+                }
+            }
+
+            if (!found_data) {
+                ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                          "TOC: %" PRIu32
+                          " track(s), no data track found; using LBA 0",
+                          (uint32_t)toc.session_count);
+                return ODFS_OK;
             }
 
             *last_lba_out = toc.sessions[last].start_lba;
