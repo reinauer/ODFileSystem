@@ -2548,6 +2548,9 @@ static void mount_volume(handler_global_t *g)
             g->mount.backend_ops = &cdda_backend_ops;
             g->mount.backend_ctx = g->cdda_ctx;
             g->mount.active_backend = ODFS_BACKEND_CDDA;
+            odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
+                                        &cdda_backend_ops, g->cdda_ctx,
+                                        &g->cdda_root);
             memcpy(g->volname, "Audio CD", 9);
         }
 #endif
@@ -2568,6 +2571,9 @@ static void mount_volume(handler_global_t *g)
                 cdda_mount_from_toc(&toc, 1, &g->media, &g->cdda_root,
                                     &g->cdda_ctx) == ODFS_OK) {
                 g->has_cdda = 1;
+                odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
+                                            &cdda_backend_ops, g->cdda_ctx,
+                                            &g->cdda_root);
             }
         }
 #endif
@@ -2602,20 +2608,15 @@ static void unmount_volume(handler_global_t *g)
     hide_appicon(g);
     volume = g->current_volume;
 
-#if ODFS_FEATURE_CDDA
-    /* free CDDA context if separate from main mount */
-    if (g->has_cdda && g->cdda_ctx &&
-        g->cdda_ctx != g->mount.backend_ctx) {
-        cdda_backend_ops.unmount(g->cdda_ctx);
-    }
-    g->cdda_ctx = NULL;
-    g->has_cdda = 0;
-#endif
-
     odfs_unmount(&g->mount);
     g->mounted = 0;
     g->current_volume = NULL;
     g->volnode = NULL;
+
+#if ODFS_FEATURE_CDDA
+    g->cdda_ctx = NULL;
+    g->has_cdda = 0;
+#endif
 
     if (!volume)
         return;

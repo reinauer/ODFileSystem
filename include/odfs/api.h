@@ -37,6 +37,10 @@ typedef struct odfs_mount {
     odfs_backend_type_t      active_backend;
     const odfs_backend_ops_t *backend_ops;
     void                      *backend_ctx;
+    const odfs_backend_ops_t *backend_map[ODFS_BACKEND__COUNT];
+    void                      *backend_ctx_map[ODFS_BACKEND__COUNT];
+    odfs_node_t               virtual_root_map[ODFS_BACKEND__COUNT];
+    uint8_t                   has_virtual_root[ODFS_BACKEND__COUNT];
 
     odfs_node_t              root;
     /* total volume size in 2048-byte logical media blocks */
@@ -52,6 +56,13 @@ odfs_err_t odfs_mount(odfs_media_t *media,
                         const odfs_mount_opts_t *opts,
                         odfs_log_state_t *log,
                         odfs_mount_t *mnt);
+
+/* register an additional node backend on an existing mount */
+void odfs_mount_register_backend(odfs_mount_t *mnt,
+                                   odfs_backend_type_t node_backend,
+                                   const odfs_backend_ops_t *ops,
+                                   void *ctx,
+                                   const odfs_node_t *virtual_root);
 
 /* unmount */
 void odfs_unmount(odfs_mount_t *mnt);

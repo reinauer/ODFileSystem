@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "odfs/string.h"
 #include <string.h>
 #include <inttypes.h>
 
@@ -51,6 +52,68 @@ static const odfs_backend_ops_t *backend_table[] = {
     NULL
 };
 
+static int mount_is_root(const odfs_mount_t *mnt, const odfs_node_t *node)
+{
+    if (!mnt || !node)
+        return 0;
+
+    return node->kind == mnt->root.kind &&
+           node->backend == mnt->root.backend &&
+           node->id == mnt->root.id &&
+           node->extent.lba == mnt->root.extent.lba &&
+           node->extent.length == mnt->root.extent.length;
+}
+
+static int mount_backend_for_type(const odfs_mount_t *mnt,
+                                  odfs_backend_type_t type,
+                                  const odfs_backend_ops_t **ops_out,
+                                  void **ctx_out)
+{
+    if (!mnt || type <= ODFS_BACKEND_NONE || type >= ODFS_BACKEND__COUNT)
+        return 0;
+
+    if (mnt->backend_map[type]) {
+        if (ops_out)
+            *ops_out = mnt->backend_map[type];
+        if (ctx_out)
+            *ctx_out = mnt->backend_ctx_map[type];
+        return 1;
+    }
+
+    if (mnt->backend_ops &&
+        (type == mnt->root.backend || type == mnt->backend_ops->backend_type)) {
+        if (ops_out)
+            *ops_out = mnt->backend_ops;
+        if (ctx_out)
+            *ctx_out = mnt->backend_ctx;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int mount_virtual_root_by_name(const odfs_mount_t *mnt,
+                                      const odfs_node_t *dir,
+                                      const char *name,
+                                      odfs_node_t *out)
+{
+    int i;
+
+    if (!mnt || !dir || !name || !out || !mount_is_root(mnt, dir))
+        return 0;
+
+    for (i = ODFS_BACKEND_NONE + 1; i < ODFS_BACKEND__COUNT; i++) {
+        if (!mnt->has_virtual_root[i])
+            continue;
+        if (odfs_strcasecmp(name, mnt->virtual_root_map[i].name) != 0)
+            continue;
+        *out = mnt->virtual_root_map[i];
+        return 1;
+    }
+
+    return 0;
+}
+
 void odfs_mount_opts_default(odfs_mount_opts_t *opts)
 {
     memset(opts, 0, sizeof(*opts));
@@ -62,6 +125,26 @@ void odfs_mount_opts_default(odfs_mount_opts_t *opts)
     opts->prefer_hfs = 0;
     opts->lowercase_iso = 0; /* preserve original case */
     opts->cache_blocks = 0; /* use default from config.h */
+}
+
+void odfs_mount_register_backend(odfs_mount_t *mnt,
+                                   odfs_backend_type_t node_backend,
+                                   const odfs_backend_ops_t *ops,
+                                   void *ctx,
+                                   const odfs_node_t *virtual_root)
+{
+    if (!mnt || node_backend <= ODFS_BACKEND_NONE ||
+        node_backend >= ODFS_BACKEND__COUNT)
+        return;
+
+    mnt->backend_map[node_backend] = ops;
+    mnt->backend_ctx_map[node_backend] = ctx;
+    mnt->has_virtual_root[node_backend] = 0;
+
+    if (virtual_root) {
+        mnt->virtual_root_map[node_backend] = *virtual_root;
+        mnt->has_virtual_root[node_backend] = 1;
+    }
 }
 
 odfs_err_t odfs_mount(odfs_media_t *media,
@@ -243,6 +326,11 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 
     mnt->backend_ops = chosen;
     mnt->active_backend = mnt->root.backend;
+    odfs_mount_register_backend(mnt, mnt->root.backend, chosen,
+                                mnt->backend_ctx, &mnt->root);
+    if (chosen->backend_type != mnt->root.backend)
+        odfs_mount_register_backend(mnt, chosen->backend_type, chosen,
+                                    mnt->backend_ctx, NULL);
 
     /* retrieve volume name and size from backend */
     if (chosen->get_volume_name)
@@ -256,10 +344,36 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 
 void odfs_unmount(odfs_mount_t *mnt)
 {
+    int primary_seen = 0;
+    int i;
+
     if (!mnt)
         return;
 
-    if (mnt->backend_ops && mnt->backend_ops->unmount)
+    for (i = ODFS_BACKEND_NONE + 1; i < ODFS_BACKEND__COUNT; i++) {
+        const odfs_backend_ops_t *ops = mnt->backend_map[i];
+        void *ctx = mnt->backend_ctx_map[i];
+        int j;
+        int duplicate = 0;
+
+        if (!ops || !ops->unmount)
+            continue;
+
+        for (j = ODFS_BACKEND_NONE + 1; j < i; j++) {
+            if (mnt->backend_map[j] == ops && mnt->backend_ctx_map[j] == ctx) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+
+        if (ops == mnt->backend_ops && ctx == mnt->backend_ctx)
+            primary_seen = 1;
+        ops->unmount(ctx);
+    }
+
+    if (!primary_seen && mnt->backend_ops && mnt->backend_ops->unmount)
         mnt->backend_ops->unmount(mnt->backend_ctx);
 
     odfs_cache_destroy(&mnt->cache);
@@ -274,15 +388,21 @@ odfs_err_t odfs_readdir(odfs_mount_t *mnt,
                           void *ctx,
                           uint32_t *resume_offset)
 {
-    if (!mnt || !mnt->backend_ops || !mnt->backend_ops->readdir)
+    const odfs_backend_ops_t *ops;
+    void *backend_ctx;
+
+    if (!mnt || !dir)
         return ODFS_ERR_UNSUPPORTED;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
 
-    return mnt->backend_ops->readdir(mnt->backend_ctx, &mnt->cache,
-                                     &mnt->log, dir, callback, ctx,
-                                     resume_offset);
+    if (!mount_backend_for_type(mnt, dir->backend, &ops, &backend_ctx) ||
+        !ops || !ops->readdir)
+        return ODFS_ERR_UNSUPPORTED;
+
+    return ops->readdir(backend_ctx, &mnt->cache, &mnt->log, dir,
+                        callback, ctx, resume_offset);
 }
 
 odfs_err_t odfs_read(odfs_mount_t *mnt,
@@ -291,14 +411,21 @@ odfs_err_t odfs_read(odfs_mount_t *mnt,
                        void *buf,
                        size_t *len)
 {
-    if (!mnt || !mnt->backend_ops || !mnt->backend_ops->read)
+    const odfs_backend_ops_t *ops;
+    void *backend_ctx;
+
+    if (!mnt || !file)
         return ODFS_ERR_UNSUPPORTED;
 
     if (file->kind == ODFS_NODE_DIR)
         return ODFS_ERR_IS_DIR;
 
-    return mnt->backend_ops->read(mnt->backend_ctx, &mnt->cache,
-                                  &mnt->log, file, offset, buf, len);
+    if (!mount_backend_for_type(mnt, file->backend, &ops, &backend_ctx) ||
+        !ops || !ops->read)
+        return ODFS_ERR_UNSUPPORTED;
+
+    return ops->read(backend_ctx, &mnt->cache, &mnt->log, file,
+                     offset, buf, len);
 }
 
 odfs_err_t odfs_lookup(odfs_mount_t *mnt,
@@ -306,14 +433,20 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
                          const char *name,
                          odfs_node_t *out)
 {
-    if (!mnt || !mnt->backend_ops || !mnt->backend_ops->lookup)
+    const odfs_backend_ops_t *ops;
+    void *backend_ctx;
+
+    if (!mnt || !dir)
         return ODFS_ERR_UNSUPPORTED;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
 
-    return mnt->backend_ops->lookup(mnt->backend_ctx, &mnt->cache,
-                                    &mnt->log, dir, name, out);
+    if (!mount_backend_for_type(mnt, dir->backend, &ops, &backend_ctx) ||
+        !ops || !ops->lookup)
+        return ODFS_ERR_UNSUPPORTED;
+
+    return ops->lookup(backend_ctx, &mnt->cache, &mnt->log, dir, name, out);
 }
 
 odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
@@ -356,6 +489,13 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
 
         memcpy(component, p, len);
         component[len] = '\0';
+
+        if (mount_virtual_root_by_name(mnt, &current, component, &current)) {
+            p = slash;
+            while (*p == '/')
+                p++;
+            continue;
+        }
 
         err = odfs_lookup(mnt, &current, component, &current);
         if (err != ODFS_OK)
