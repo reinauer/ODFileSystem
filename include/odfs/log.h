@@ -25,7 +25,8 @@ typedef enum odfs_log_level {
 /* --- subsystem tags --- */
 
 typedef enum odfs_log_subsys {
-    ODFS_SUB_CORE = 0,
+    ODFS_SUB_NONE = 0,
+    ODFS_SUB_CORE,
     ODFS_SUB_DOS,
     ODFS_SUB_MOUNT,
     ODFS_SUB_IO,
@@ -85,7 +86,8 @@ static inline int odfs_log_enabled(const odfs_log_state_t *state,
 {
     if (!state || !state->sink.write) return 0;
     if (level > state->max_level) return 0;
-    if (!(state->subsys_mask & (1u << subsys))) return 0;
+    if (subsys != ODFS_SUB_NONE &&
+        !(state->subsys_mask & (1u << subsys))) return 0;
     return 1;
 }
 

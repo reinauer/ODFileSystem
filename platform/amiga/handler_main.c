@@ -30,6 +30,7 @@
 
 #include <string.h>
 
+#include "odfs/error.h"
 #include "odfs/string.h"
 
 #ifndef ODFS_GIT_VERSION
@@ -134,8 +135,20 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
         else
             g->devreq->io_Command = CMD_READ;
 
-        if (DoIO((struct IORequest *)g->devreq) != 0)
+        if (DoIO((struct IORequest *)g->devreq) != 0 ||
+            g->devreq->io_Error != 0 ||
+            g->devreq->io_Actual != chunk) {
+            ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                       "sector read failed lba=%lu count=%lu "
+                       "chunk=%lu io_Error=%ld actual=%lu cmd=%lu",
+                       (unsigned long)cur_lba,
+                       (unsigned long)count,
+                       (unsigned long)chunk,
+                       (long)g->devreq->io_Error,
+                       (unsigned long)g->devreq->io_Actual,
+                       (unsigned long)g->devreq->io_Command);
             return ODFS_ERR_IO;
+        }
 
         memcpy(out + done, g->dma_buf, chunk);
         done += chunk;
@@ -169,9 +182,12 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
     uint8_t cmd[12];
+    uint8_t sense[32];
     struct SCSICmd scsi;
+    LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
+    memset(sense, 0, sizeof(sense));
     memset(&scsi, 0, sizeof(scsi));
 
     /* READ CD (0xBE) CDB */
@@ -193,15 +209,33 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     scsi.scsi_CmdLength  = 12;
     scsi.scsi_Command    = cmd;
     scsi.scsi_Flags      = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData  = NULL;
-    scsi.scsi_SenseLength = 0;
+    scsi.scsi_SenseData  = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
 
     g->devreq->io_Command = HD_SCSICMD;
     g->devreq->io_Data    = &scsi;
     g->devreq->io_Length  = sizeof(scsi);
 
-    if (DoIO((struct IORequest *)g->devreq) != 0)
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
+        scsi.scsi_Actual != scsi.scsi_Length) {
+        ODFS_ERROR(&g->log, ODFS_SUB_CDDA,
+                   "READ CD (0xBE) failed io_rc=%ld io_Error=%ld "
+                   "scsi_Status=%lu scsi_Actual=%lu scsi_Length=%lu "
+                   "lba=%lu count=%lu sense=%02x/%02x/%02x sense_actual=%u",
+                   (long)io_rc,
+                   (long)g->devreq->io_Error,
+                   (unsigned long)scsi.scsi_Status,
+                   (unsigned long)scsi.scsi_Actual,
+                   (unsigned long)scsi.scsi_Length,
+                   (unsigned long)lba,
+                   (unsigned long)count,
+                   (unsigned int)(sense[2] & 0x0f),
+                   (unsigned int)sense[12],
+                   (unsigned int)sense[13],
+                   (unsigned int)scsi.scsi_SenseActual);
         return ODFS_ERR_IO;
+    }
 
     return ODFS_OK;
 }
@@ -222,11 +256,14 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     handler_global_t *g = am->g;
     uint8_t cmd[10];
     uint8_t buf[256];
+    uint8_t sense[32];
     struct SCSICmd scsi;
+    LONG io_rc;
 
     memset(toc, 0, sizeof(*toc));
     memset(cmd, 0, sizeof(cmd));
     memset(buf, 0, sizeof(buf));
+    memset(sense, 0, sizeof(sense));
     memset(&scsi, 0, sizeof(scsi));
 
     /* SCSI Read TOC, format 0x00 (TOC) */
@@ -242,15 +279,27 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     scsi.scsi_CmdLength = 10;
     scsi.scsi_Command = cmd;
     scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = NULL;
-    scsi.scsi_SenseLength = 0;
+    scsi.scsi_SenseData = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
 
     g->devreq->io_Command = HD_SCSICMD;
     g->devreq->io_Data    = &scsi;
     g->devreq->io_Length  = sizeof(scsi);
 
-    if (DoIO((struct IORequest *)g->devreq) != 0)
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC (0x43) failed io_rc=%ld io_Error=%ld "
+                  "scsi_Status=%lu sense=%02x/%02x/%02x sense_actual=%u",
+                  (long)io_rc,
+                  (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status,
+                  (unsigned int)(sense[2] & 0x0f),
+                  (unsigned int)sense[12],
+                  (unsigned int)sense[13],
+                  (unsigned int)scsi.scsi_SenseActual);
         return ODFS_ERR_UNSUPPORTED;
+    }
 
     /* parse TOC response */
     uint16_t toc_len = ((uint16_t)buf[0] << 8) | buf[1];
@@ -258,10 +307,18 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     uint8_t last_track = buf[3];
     (void)first_track;
 
-    if (toc_len < 2)
+    if (toc_len < 2) {
+        ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC returned short header len=%u",
+                  (unsigned int)toc_len);
         return ODFS_ERR_BAD_FORMAT;
-    if ((size_t)toc_len + 2 > sizeof(buf))
+    }
+    if ((size_t)toc_len + 2 > sizeof(buf)) {
+        ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC length overflow len=%u buf=%u",
+                  (unsigned int)toc_len, (unsigned int)sizeof(buf));
         return ODFS_ERR_BAD_FORMAT;
+    }
 
     /* each TOC descriptor is 8 bytes starting at offset 4 */
     int ndesc = (int)(((size_t)toc_len + 2 - 4) / 8);
@@ -293,7 +350,13 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     toc->first_session = 1;
     toc->last_session = last_track;
 
-    return (session_count > 0) ? ODFS_OK : ODFS_ERR_BAD_FORMAT;
+    if (session_count == 0) {
+        ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC returned no usable track descriptors");
+        return ODFS_ERR_BAD_FORMAT;
+    }
+
+    return ODFS_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,6 +371,7 @@ static int scsi_test_unit_ready(handler_global_t *g)
 {
     uint8_t cmd[6];
     struct SCSICmd scsi;
+    LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
     memset(&scsi, 0, sizeof(scsi));
@@ -324,7 +388,17 @@ static int scsi_test_unit_ready(handler_global_t *g)
     g->devreq->io_Data    = &scsi;
     g->devreq->io_Length  = sizeof(scsi);
 
-    return (DoIO((struct IORequest *)g->devreq) == 0) ? 1 : 0;
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        ODFS_WARN(&g->log, ODFS_SUB_IO,
+                  "TEST UNIT READY failed io_rc=%ld io_Error=%ld "
+                  "scsi_Status=%lu",
+                  (long)io_rc, (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status);
+        return 0;
+    }
+
+    return 1;
 }
 
 /*
@@ -344,6 +418,7 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     uint8_t cmd[6];
     uint8_t mode_data[12];
     struct SCSICmd scsi;
+    LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
     memset(mode_data, 0, sizeof(mode_data));
@@ -372,7 +447,19 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     g->devreq->io_Data    = &scsi;
     g->devreq->io_Length  = sizeof(scsi);
 
-    return (DoIO((struct IORequest *)g->devreq) == 0) ? 1 : 0;
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        ODFS_WARN(&g->log, ODFS_SUB_IO,
+                  "MODE SELECT failed block_length=%lu io_rc=%ld "
+                  "io_Error=%ld scsi_Status=%lu",
+                  (unsigned long)block_length,
+                  (long)io_rc,
+                  (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status);
+        return 0;
+    }
+
+    return 1;
 }
 
 static const odfs_media_ops_t amiga_media_ops = {
@@ -407,75 +494,49 @@ static void serial_puts(const char *s)
         raw_putchar(*s++);
 }
 
-static void serial_startup_banner(void)
-{
-    serial_puts("[INFO] ODFileSystem v" ODFS_HANDLER_VERSION
-                " " ODFS_GIT_VERSION
-                " (" ODFS_AMIGA_DATE ") starting...");
-    raw_putchar('\n');
-}
-
 #if ODFS_PACKET_TRACE
-static void serial_put_hex_nibble(unsigned int v)
+static void trace_pkt(handler_global_t *g, const char *tag, struct DosPacket *pkt)
 {
-    v &= 0xfu;
-    raw_putchar((v < 10u) ? (char)('0' + v) : (char)('a' + (v - 10u)));
-}
-
-static void serial_put_hex32(ULONG v)
-{
-    int shift;
-
-    serial_puts("0x");
-    for (shift = 28; shift >= 0; shift -= 4)
-        serial_put_hex_nibble((unsigned int)(v >> shift));
-}
-
-static void serial_trace_kv(const char *key, ULONG value)
-{
-    serial_puts(" ");
-    serial_puts(key);
-    serial_puts("=");
-    serial_put_hex32(value);
-}
-
-static void serial_trace_pkt(const char *tag, struct DosPacket *pkt)
-{
-    serial_puts("[trace] ");
-    serial_puts(tag);
-    if (pkt) {
-        serial_trace_kv("pkt", (ULONG)pkt);
-        serial_trace_kv("type", (ULONG)pkt->dp_Type);
-        serial_trace_kv("res1", (ULONG)pkt->dp_Res1);
-        serial_trace_kv("res2", (ULONG)pkt->dp_Res2);
-        serial_trace_kv("port", (ULONG)pkt->dp_Port);
-        serial_trace_kv("link", (ULONG)pkt->dp_Link);
-        serial_trace_kv("arg1", (ULONG)pkt->dp_Arg1);
-        serial_trace_kv("arg2", (ULONG)pkt->dp_Arg2);
-        serial_trace_kv("arg3", (ULONG)pkt->dp_Arg3);
-        serial_trace_kv("arg4", (ULONG)pkt->dp_Arg4);
+    if (!pkt) {
+        ODFS_TRACE(&g->log, ODFS_SUB_DOS, "%s pkt=null", tag);
+        return;
     }
-    raw_putchar('\n');
+
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "%s pkt=%08lx type=%ld res1=%ld res2=%ld port=%08lx "
+               "link=%08lx arg1=%08lx arg2=%08lx arg3=%08lx arg4=%08lx",
+               tag,
+               (unsigned long)pkt,
+               (long)pkt->dp_Type,
+               (long)pkt->dp_Res1,
+               (long)pkt->dp_Res2,
+               (unsigned long)pkt->dp_Port,
+               (unsigned long)pkt->dp_Link,
+               (unsigned long)pkt->dp_Arg1,
+               (unsigned long)pkt->dp_Arg2,
+               (unsigned long)pkt->dp_Arg3,
+               (unsigned long)pkt->dp_Arg4);
 }
 
-static void serial_trace_node(const char *tag, const odfs_node_t *node)
+static void trace_node(handler_global_t *g, const char *tag, const odfs_node_t *node)
 {
-    serial_puts("[trace] ");
-    serial_puts(tag);
-    if (node) {
-        serial_trace_kv(" kind", (ULONG)node->kind);
-        serial_trace_kv(" backend", (ULONG)node->backend);
-        serial_trace_kv(" id", (ULONG)node->id);
-        serial_trace_kv(" parent", (ULONG)node->parent_id);
-        serial_trace_kv(" lba", (ULONG)node->extent.lba);
-        serial_trace_kv(" len", (ULONG)node->extent.length);
-        serial_trace_kv(" size_lo", (ULONG)node->size);
-        serial_puts(" name=");
-        serial_puts(node->name);
-    } else {
-        serial_puts(" null");
+    if (!node) {
+        ODFS_TRACE(&g->log, ODFS_SUB_DOS, "%s node=null", tag);
+        return;
     }
-    raw_putchar('\n');
+
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "%s kind=%lu backend=%lu id=%lu parent=%lu lba=%lu len=%lu "
+               "size_lo=%lu name=%s",
+               tag,
+               (unsigned long)node->kind,
+               (unsigned long)node->backend,
+               (unsigned long)node->id,
+               (unsigned long)node->parent_id,
+               (unsigned long)node->extent.lba,
+               (unsigned long)node->extent.length,
+               (unsigned long)node->size,
+               node->name);
 }
 #endif
 
@@ -1254,13 +1315,11 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
     const odfs_node_t *start_parent;
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_pkt("locate-enter", pkt);
+    trace_pkt(g, "locate-enter", pkt);
 #endif
     bstr_to_cstr(pkt->dp_Arg2, path, sizeof(path));
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_puts("[trace] locate-path ");
-    serial_puts(path);
-    raw_putchar('\n');
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS, "locate-path path=%s", path);
 #endif
 
     if (parent_lock) {
@@ -1287,14 +1346,14 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = odfs_err_to_dos(err);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        serial_trace_pkt("locate-resolve-fail", pkt);
+        trace_pkt(g, "locate-resolve-fail", pkt);
 #endif
         return;
     }
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_node("locate-node", &result);
-    serial_trace_node("locate-parent", &parent_node);
+    trace_node(g, "locate-node", &result);
+    trace_node(g, "locate-parent", &parent_node);
 #endif
 
     odfs_lock_t *ol = alloc_lock(g, &result, &parent_node, access);
@@ -1302,14 +1361,14 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_FREE_STORE;
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        serial_trace_pkt("locate-alloc-fail", pkt);
+        trace_pkt(g, "locate-alloc-fail", pkt);
 #endif
         return;
     }
 
     pkt->dp_Res1 = LOCK_TO_BPTR(ol);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_pkt("locate-exit", pkt);
+    trace_pkt(g, "locate-exit", pkt);
 #endif
 }
 
@@ -1390,9 +1449,9 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     odfs_lock_t *parent;
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_kv("[trace] parent-enter arg1", (ULONG)pkt->dp_Arg1);
-    serial_trace_kv(" ol", (ULONG)ol);
-    raw_putchar('\n');
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "parent-enter arg1=%08lx lock=%08lx",
+               (unsigned long)pkt->dp_Arg1, (unsigned long)ol);
 #endif
 
     if (!ol) {
@@ -1408,8 +1467,9 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
 
     if (!lock_is_active(g, ol)) {
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        serial_trace_kv("[trace] parent-invalid-lock ol", (ULONG)ol);
-        raw_putchar('\n');
+        ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+                   "parent-invalid-lock lock=%08lx",
+                   (unsigned long)ol);
 #endif
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_INVALID_LOCK;
@@ -1447,9 +1507,9 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     }
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_node("parent-node", lock_node(ol));
-    serial_trace_node("parent-result", &parent_node);
-    serial_trace_node("parent-grandparent", &grandparent_node);
+    trace_node(g, "parent-node", lock_node(ol));
+    trace_node(g, "parent-result", &parent_node);
+    trace_node(g, "parent-grandparent", &grandparent_node);
 #endif
 
     parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
@@ -1471,8 +1531,8 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
     odfs_lock_t *parent;
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_kv("[trace] parentfh-enter fh", (ULONG)fh);
-    raw_putchar('\n');
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "parentfh-enter fh=%08lx", (unsigned long)fh);
 #endif
 
     if (!fh) {
@@ -1510,8 +1570,8 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
     }
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_node("parentfh-node", fh_node(fh));
-    serial_trace_node("parentfh-result", &parent_node);
+    trace_node(g, "parentfh-node", fh_node(fh));
+    trace_node(g, "parentfh-result", &parent_node);
 #endif
 
     parent = alloc_lock(g, &parent_node, &grandparent_node, SHARED_LOCK);
@@ -1612,11 +1672,12 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
     else
         fill_fib(fib, fnode);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_node("examine-node", fnode);
-    serial_trace_kv("[trace] examine-fib key", (ULONG)fib->fib_DiskKey);
-    serial_trace_kv(" type", (ULONG)fib->fib_DirEntryType);
-    serial_trace_kv(" size", (ULONG)fib->fib_Size);
-    raw_putchar('\n');
+    trace_node(g, "examine-node", fnode);
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "examine-fib key=%08lx type=%ld size=%ld",
+               (unsigned long)fib->fib_DiskKey,
+               (long)fib->fib_DirEntryType,
+               (long)fib->fib_Size);
 #endif
     pkt->dp_Res1 = DOSTRUE;
 }
@@ -1691,11 +1752,11 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     (void)odfs_readdir(&g->mount, dir, exnext_cb, &ec, &resume);
     if (ec.found) {
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        serial_trace_kv("[trace] exnext-found key", (ULONG)fib->fib_DiskKey);
-        serial_trace_kv(" type", (ULONG)fib->fib_DirEntryType);
-        serial_puts(" name=");
-        serial_puts((char *)&fib->fib_FileName[1]);
-        raw_putchar('\n');
+        ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+                   "exnext-found key=%08lx type=%ld name=%s",
+                   (unsigned long)fib->fib_DiskKey,
+                   (long)fib->fib_DirEntryType,
+                   (char *)&fib->fib_FileName[1]);
 #endif
         pkt->dp_Res1 = DOSTRUE;
     } else {
@@ -1705,9 +1766,9 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
             ec.previous_key != amiga_node_key(&g->cdda_root)) {
             fill_fib(fib, &g->cdda_root);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-            serial_trace_kv("[trace] exnext-inject-cdda key",
-                            (ULONG)fib->fib_DiskKey);
-            raw_putchar('\n');
+            ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+                       "exnext-inject-cdda key=%08lx",
+                       (unsigned long)fib->fib_DiskKey);
 #endif
             pkt->dp_Res1 = DOSTRUE;
             return;
@@ -2337,23 +2398,22 @@ static void return_packet(handler_global_t *g, struct DosPacket *pkt)
     struct Message *msg = pkt->dp_Link;
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_pkt("return-enter", pkt);
-    serial_trace_kv(" msg", (ULONG)msg);
-    raw_putchar('\n');
+    trace_pkt(g, "return-enter", pkt);
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "return-enter msg=%08lx", (unsigned long)msg);
 #endif
     pkt->dp_Port = g->dosport;
     msg->mn_Node.ln_Name = (char *)pkt;
     msg->mn_Node.ln_Succ = NULL;
     msg->mn_Node.ln_Pred = NULL;
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_puts("[trace] return-putmsg");
-    serial_trace_kv(" reply", (ULONG)replyport);
-    serial_trace_kv(" msg", (ULONG)msg);
-    raw_putchar('\n');
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "return-putmsg reply=%08lx msg=%08lx",
+               (unsigned long)replyport, (unsigned long)msg);
 #endif
     PutMsg(replyport, msg);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    serial_trace_pkt("return-done", pkt);
+    trace_pkt(g, "return-done", pkt);
 #endif
 }
 
@@ -2536,12 +2596,18 @@ static void mount_volume(handler_global_t *g)
 
     err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
     if (err != ODFS_OK) {
+        ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                  "primary mount failed: %s",
+                  odfs_err_str(err));
 #if ODFS_FEATURE_CDDA
         /* no data filesystem — try pure audio CD */
         odfs_toc_t toc;
-        if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-            cdda_mount_from_toc(&toc, 0, &g->media, &g->cdda_root,
-                                &g->cdda_ctx) == ODFS_OK) {
+        odfs_err_t toc_err = odfs_media_read_toc(&g->media, &toc);
+        odfs_err_t cdda_err = ODFS_OK;
+        if (toc_err == ODFS_OK)
+            cdda_err = cdda_mount_from_toc(&toc, 0, &g->media,
+                                           &g->cdda_root, &g->cdda_ctx);
+        if (toc_err == ODFS_OK && cdda_err == ODFS_OK) {
             g->has_cdda = 1;
             g->mounted = 1;
             g->mount.root = g->cdda_root;
@@ -2552,6 +2618,16 @@ static void mount_volume(handler_global_t *g)
                                         &cdda_backend_ops, g->cdda_ctx,
                                         &g->cdda_root);
             memcpy(g->volname, "Audio CD", 9);
+            ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                      "mounted pure audio CD via CDDA backend");
+        } else if (toc_err != ODFS_OK) {
+            ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                      "audio CD fallback failed to read TOC: %s",
+                      odfs_err_str(toc_err));
+        } else {
+            ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                      "audio CD fallback found no playable audio: %s",
+                      odfs_err_str(cdda_err));
         }
 #endif
         if (!g->mounted)
@@ -2963,9 +3039,12 @@ void handler_main(void)
     odfs_log_init(&g->log);
     odfs_log_set_sink(&g->log, log_sink, NULL);
     odfs_log_set_level(&g->log, ODFS_LOG_INFO);
-#if ODFS_SERIAL_DEBUG
-    serial_startup_banner();
+#if ODFS_PACKET_TRACE
+    odfs_log_set_level(&g->log, ODFS_LOG_TRACE);
 #endif
+    ODFS_INFO(&g->log, ODFS_SUB_NONE,
+              "ODFileSystem v" ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
+              " (" ODFS_AMIGA_DATE ") starting...");
 
     /* reply startup packet */
     pkt->dp_Res1 = DOSTRUE;
@@ -3008,7 +3087,7 @@ void handler_main(void)
             while ((msg = GetMsg(g->dosport)) != NULL) {
                 pkt = (struct DosPacket *)msg->mn_Node.ln_Name;
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-                serial_trace_pkt("dequeue", pkt);
+                trace_pkt(g, "dequeue", pkt);
 #endif
 
                 if (pkt->dp_Type == ACTION_DIE) {

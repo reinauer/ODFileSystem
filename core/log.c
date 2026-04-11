@@ -19,6 +19,7 @@ static const char *level_names[] = {
 };
 
 static const char *subsys_names[] = {
+    [ODFS_SUB_NONE]         = "",
     [ODFS_SUB_CORE]         = "core",
     [ODFS_SUB_DOS]          = "dos",
     [ODFS_SUB_MOUNT]        = "mount",
@@ -86,9 +87,14 @@ void odfs_log(odfs_log_state_t *state,
     if (!odfs_log_enabled(state, level, subsys))
         return;
 
-    hdr = odfs_snprintf(buf, sizeof(buf), "[%s] %s: ",
-                        odfs_log_level_name(level),
-                        odfs_log_subsys_name(subsys));
+    if (subsys == ODFS_SUB_NONE) {
+        hdr = odfs_snprintf(buf, sizeof(buf), "[%s] ",
+                            odfs_log_level_name(level));
+    } else {
+        hdr = odfs_snprintf(buf, sizeof(buf), "[%s] %s: ",
+                            odfs_log_level_name(level),
+                            odfs_log_subsys_name(subsys));
+    }
     if (hdr < 0)
         hdr = 0;
 
