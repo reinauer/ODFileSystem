@@ -20,6 +20,7 @@
 #include <devices/scsidisk.h>
 #include <devices/input.h>
 #include <dos/dostags.h>
+#include <dos/exall.h>
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -259,22 +260,20 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
 
     for (int i = 0; i < ndesc && i < 99; i++) {
         const uint8_t *desc = &buf[4 + i * 8];
-        uint8_t session = desc[0];
         uint8_t adr_ctrl = desc[1];
         uint8_t track = desc[2];
+        uint8_t control = (uint8_t)(adr_ctrl >> 4);
         uint32_t lba = ((uint32_t)desc[4] << 24) |
                        ((uint32_t)desc[5] << 16) |
                        ((uint32_t)desc[6] << 8)  |
                         (uint32_t)desc[7];
 
-        (void)adr_ctrl;
-
         if (track == 0xAA)
             continue; /* lead-out, skip */
 
-        /* data track check: ctrl & 0x04 */
         if (session_count < 99) {
-            toc->sessions[session_count].number = session;
+            toc->sessions[session_count].number = track;
+            toc->sessions[session_count].control = control;
             toc->sessions[session_count].start_lba = lba;
             toc->sessions[session_count].length = 0;
             session_count++;
@@ -397,6 +396,13 @@ static void serial_puts(const char *s)
 {
     while (*s)
         raw_putchar(*s++);
+}
+
+static void serial_startup_banner(void)
+{
+    serial_puts("[INFO] ODFileSystem v" ODFS_HANDLER_VERSION
+                " (" ODFS_AMIGA_DATE ") starting...");
+    raw_putchar('\n');
 }
 
 #if ODFS_PACKET_TRACE
@@ -1659,6 +1665,234 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     }
 }
 
+static size_t exall_align_size(size_t size)
+{
+    return (size + 1u) & ~1u;
+}
+
+static size_t exall_fixed_size(LONG data)
+{
+    static const size_t sizes[] = {
+        0,
+        8,  /* ED_NAME: ed_Next, ed_Name */
+        12, /* ED_TYPE */
+        16, /* ED_SIZE */
+        20, /* ED_PROTECTION */
+        32, /* ED_DATE */
+        36, /* ED_COMMENT */
+        40  /* ED_OWNER */
+    };
+
+    if (data < ED_NAME || data > ED_OWNER)
+        return 0;
+    return sizes[data];
+}
+
+static int exall_fill_entry(struct ExAllData **cursor, LONG *remaining,
+                            LONG data, const odfs_node_t *entry)
+{
+    struct ExAllData *ed = *cursor;
+    struct FileInfoBlock fib;
+    const char *name = entry->name;
+    const char *comment = "";
+    size_t name_len = strlen(name) + 1u;
+    size_t comment_len = 1u;
+    size_t need;
+    UBYTE *p;
+
+    if (entry->amiga_as.has_comment) {
+        comment = entry->amiga_as.comment;
+        comment_len = strlen(comment) + 1u;
+    }
+
+    need = exall_fixed_size(data) + name_len;
+    if (data >= ED_COMMENT)
+        need += comment_len;
+    need = exall_align_size(need);
+
+    if (need > (size_t)*remaining)
+        return 0;
+
+    fill_fib(&fib, entry);
+    memset(ed, 0, exall_fixed_size(data));
+
+    p = ((UBYTE *)ed) + exall_fixed_size(data);
+    if (data >= ED_COMMENT) {
+        ed->ed_Comment = p;
+        memcpy(p, comment, comment_len);
+        p += comment_len;
+    }
+
+    ed->ed_Name = p;
+    memcpy(p, name, name_len);
+
+    if (data >= ED_TYPE)
+        ed->ed_Type = fib.fib_DirEntryType;
+    if (data >= ED_SIZE)
+        ed->ed_Size = (ULONG)fib.fib_Size;
+    if (data >= ED_PROTECTION)
+        ed->ed_Prot = (ULONG)fib.fib_Protection;
+    if (data >= ED_DATE) {
+        ed->ed_Days = (ULONG)fib.fib_Date.ds_Days;
+        ed->ed_Mins = (ULONG)fib.fib_Date.ds_Minute;
+        ed->ed_Ticks = (ULONG)fib.fib_Date.ds_Tick;
+    }
+    if (data >= ED_OWNER) {
+        ed->ed_OwnerUID = 0;
+        ed->ed_OwnerGID = 0;
+    }
+
+    ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
+    *cursor = ed->ed_Next;
+    *remaining -= (LONG)need;
+    return 1;
+}
+
+typedef struct exall_ctx {
+    struct ExAllData *cursor;
+    struct ExAllData *last;
+    struct ExAllControl *control;
+    LONG remaining;
+    LONG data;
+    ULONG previous_key;
+    int seen_previous;
+    int full;
+} exall_ctx_t;
+
+static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
+{
+    exall_ctx_t *ec = ctx;
+    ULONG key = amiga_node_key(entry);
+    struct ExAllData *slot;
+
+    if (ec->previous_key != 0 && !ec->seen_previous) {
+        if (key == ec->previous_key)
+            ec->seen_previous = 1;
+        return ODFS_OK;
+    }
+
+    if (ec->control->eac_MatchString &&
+        !MatchPatternNoCase((STRPTR)ec->control->eac_MatchString,
+                            (STRPTR)entry->name))
+        return ODFS_OK;
+
+    slot = ec->cursor;
+    if (!exall_fill_entry(&ec->cursor, &ec->remaining, ec->data, entry)) {
+        ec->full = 1;
+        return ODFS_ERR_EOF;
+    }
+
+    ec->last = slot;
+    ec->control->eac_Entries++;
+    ec->control->eac_LastKey = key;
+    return ODFS_OK;
+}
+
+static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    struct ExAllData *buf = (struct ExAllData *)pkt->dp_Arg2;
+    LONG size = pkt->dp_Arg3;
+    LONG data = pkt->dp_Arg4;
+    struct ExAllControl *control = (struct ExAllControl *)pkt->dp_Arg5;
+    const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
+    exall_ctx_t ec;
+    uint32_t resume = 0;
+
+    if (!buf || size <= 0 || !control) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_REQUIRED_ARG_MISSING;
+        return;
+    }
+
+    if (data < ED_NAME || data > ED_OWNER) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_BAD_NUMBER;
+        return;
+    }
+
+    if (control->eac_MatchFunc) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;
+        return;
+    }
+
+    if (ol) {
+        LONG err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = err_dos;
+            return;
+        }
+    } else if (!g->mounted) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_DISK;
+        return;
+    }
+
+    if (dir->kind != ODFS_NODE_DIR) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
+        return;
+    }
+
+    memset(&ec, 0, sizeof(ec));
+    ec.cursor = buf;
+    ec.control = control;
+    ec.remaining = size;
+    ec.data = data;
+    ec.previous_key = control->eac_LastKey;
+    ec.seen_previous = (ec.previous_key == 0);
+    control->eac_Entries = 0;
+
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
+        (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
+                                       &g->log, dir, exall_cb, &ec, &resume);
+    } else
+#endif
+    {
+        (void)odfs_readdir(&g->mount, dir, exall_cb, &ec, &resume);
+
+#if ODFS_FEATURE_CDDA
+        if (!ec.full && g->has_cdda && node_is_mount_root(g, dir) &&
+            (ec.previous_key == 0 || ec.seen_previous) &&
+            ec.previous_key != amiga_node_key(&g->cdda_root))
+            (void)exall_cb(&g->cdda_root, &ec);
+#endif
+    }
+
+    if (ec.last)
+        ec.last->ed_Next = NULL;
+
+    if (control->eac_Entries > 0) {
+        pkt->dp_Res1 = DOSTRUE;
+        return;
+    }
+
+    if (ec.full) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_BUFFER_OVERFLOW;
+        return;
+    }
+
+    control->eac_LastKey = 0;
+    pkt->dp_Res1 = DOSFALSE;
+    pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
+}
+
+static void action_examine_all_end(handler_global_t *g __attribute__((unused)),
+                                   struct DosPacket *pkt)
+{
+    struct ExAllControl *control = (struct ExAllControl *)pkt->dp_Arg5;
+
+    if (control) {
+        control->eac_Entries = 0;
+        control->eac_LastKey = 0;
+    }
+    pkt->dp_Res1 = DOSTRUE;
+}
+
 static void action_examine_fh(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
@@ -1984,6 +2218,8 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
     /* ---- examine ---- */
     case ACTION_EXAMINE_OBJECT: action_examine_object(g, pkt); break;
     case ACTION_EXAMINE_NEXT:   action_examine_next(g, pkt); break;
+    case ACTION_EXAMINE_ALL:    action_examine_all(g, pkt); break;
+    case ACTION_EXAMINE_ALL_END: action_examine_all_end(g, pkt); break;
     case ACTION_EXAMINE_FH:     action_examine_fh(g, pkt); break;
 
     /* ---- file I/O ---- */
@@ -2619,6 +2855,9 @@ void handler_main(void)
     odfs_log_init(&g->log);
     odfs_log_set_sink(&g->log, log_sink, NULL);
     odfs_log_set_level(&g->log, ODFS_LOG_INFO);
+#if ODFS_SERIAL_DEBUG
+    serial_startup_banner();
+#endif
 
     /* reply startup packet */
     pkt->dp_Res1 = DOSTRUE;

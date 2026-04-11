@@ -214,7 +214,17 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     memcpy(ctx->svd.root_dir_record, &svd_sector[ISO_PVD_ROOT_DIR_RECORD], 34);
     ctx->svd.root_dir_lba  = iso_read_le32(&svd_sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_EXTENT_LBA]);
     ctx->svd.root_dir_size = iso_read_le32(&svd_sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_DATA_LENGTH]);
-    ctx->svd.root_dir_lba += session_start;
+
+    /*
+     * Multisession discs may store directory extents as either
+     * session-relative or absolute disc LBAs. Match the ISO backend's
+     * policy: only add the session start when the SVD extent is relative.
+     */
+    if (ctx->svd.root_dir_lba < session_start)
+        ctx->svd.root_dir_lba += session_start;
+
+    if (session_start > 0 && ctx->svd.root_dir_lba >= session_start)
+        ctx->session_start = 0;
 
     ODFS_INFO(log, ODFS_SUB_JOLIET,
                "volume: \"%s\"  root LBA: %" PRIu32,

@@ -11,9 +11,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* session info from TOC */
+/* TOC track/session entry */
 typedef struct odfs_session {
     uint8_t  number;
+    uint8_t  control;    /* SCSI TOC control nibble; bit 2 set = data track */
     uint32_t start_lba;
     uint32_t length;     /* in sectors, 0 if unknown */
 } odfs_session_t;
@@ -23,7 +24,7 @@ typedef struct odfs_toc {
     uint8_t         first_session;
     uint8_t         last_session;
     uint8_t         session_count;
-    odfs_session_t sessions[99]; /* CD max 99 sessions/tracks */
+    odfs_session_t sessions[99]; /* CD max 99 TOC entries */
 } odfs_toc_t;
 
 /* media operations vtable */

@@ -74,7 +74,7 @@ static void cdda_build_wav_header(uint8_t *hdr, uint32_t data_size)
  * Node ID encoding for CDDA:
  *   0          = root (or CDDA/ virtual dir on mixed-mode)
  *   1..99      = track number
- *   extent.lba = track index into tracks[] array (for quick lookup)
+ *   extent.lba = track index + 2 into tracks[] array (for quick lookup)
  */
 
 static void cdda_track_name(int track_num, char *buf, size_t buf_size)
@@ -149,23 +149,12 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     ctx->is_mixed_mode = has_data_session;
     ctx->media = media;
 
-    /* identify audio tracks from TOC */
-    for (int i = 0; i < toc->session_count && i + 1 < toc->session_count; i++) {
-        /* simple heuristic: audio tracks have control field bit 2 = 0
-         * In our simplified TOC, we don't have the control field yet,
-         * so we treat all non-data tracks as audio.
-         * For now, populate from TOC entries. */
-    }
-
-    /*
-     * Since our TOC doesn't distinguish data vs audio yet,
-     * populate tracks from all TOC entries as a placeholder.
-     * On real hardware with SCSI Read TOC, the control byte
-     * (bit 2) distinguishes data (1) from audio (0).
-     */
     for (int i = 0; i < toc->session_count && audio_count < CDDA_MAX_TRACKS; i++) {
         uint32_t start = toc->sessions[i].start_lba;
         uint32_t length = toc->sessions[i].length;
+
+        if ((toc->sessions[i].control & 0x04) != 0)
+            continue;
 
         if (length == 0 && i + 1 < toc->session_count)
             length = toc->sessions[i + 1].start_lba - start;
@@ -256,7 +245,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         node.backend = ODFS_BACKEND_CDDA;
         node.kind = ODFS_NODE_VIRTUAL;
         node.size = ctx->tracks[i].wav_size;
-        node.extent.lba = i; /* track index */
+        node.extent.lba = (uint32_t)(i + 2);
         node.extent.length = (uint32_t)ctx->tracks[i].wav_size;
 
         cdda_track_name(ctx->tracks[i].number, node.name, sizeof(node.name));
@@ -290,7 +279,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
     (void)cache;
     (void)log;
 
-    int track_idx = (int)file->extent.lba;
+    int track_idx = (int)file->extent.lba - 2;
     if (track_idx < 0 || track_idx >= ctx->track_count) {
         *len = 0;
         return ODFS_ERR_NOT_FOUND;
@@ -383,7 +372,7 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
             out->backend = ODFS_BACKEND_CDDA;
             out->kind = ODFS_NODE_VIRTUAL;
             out->size = ctx->tracks[i].wav_size;
-            out->extent.lba = i;
+            out->extent.lba = (uint32_t)(i + 2);
             out->extent.length = (uint32_t)ctx->tracks[i].wav_size;
             memcpy(out->name, tname, strlen(tname) + 1);
             return ODFS_OK;
