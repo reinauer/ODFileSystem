@@ -124,6 +124,7 @@ void odfs_mount_opts_default(odfs_mount_opts_t *opts)
     opts->prefer_udf = 0;
     opts->prefer_hfs = 0;
     opts->lowercase_iso = 0; /* preserve original case */
+    opts->prefer_aiff = 0; /* expose CDDA tracks as WAV by default */
     opts->cache_blocks = 0; /* use default from config.h */
 }
 

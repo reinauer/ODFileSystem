@@ -2529,6 +2529,7 @@ enum {
     CTRL_NOJOLIET,
     CTRL_HFSFIRST,
     CTRL_UDF,
+    CTRL_AIFF,
     CTRL_FILEBUFFERS,
     CTRL__COUNT
 };
@@ -2591,6 +2592,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
                   "NOJ=NOJOLIET/S,"
                   "HF=HFSFIRST/S,"
                   "UDF/S,"
+                  "AIFF/S,"
                   "FB=FILEBUFFERS/K/N",
                   (LONG *)args, rdargs)) {
 
@@ -2604,6 +2606,8 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
             opts->prefer_hfs = 1;
         if (args[CTRL_UDF])
             opts->prefer_udf = 1;
+        if (args[CTRL_AIFF])
+            opts->prefer_aiff = 1;
         if (args[CTRL_FILEBUFFERS])
             opts->cache_blocks = *(LONG *)args[CTRL_FILEBUFFERS];
 
@@ -2649,7 +2653,7 @@ static void mount_volume(handler_global_t *g)
 
         if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
             !toc_has_data_track(&toc)) {
-            err = cdda_mount_from_toc(&toc, 0, &g->media,
+            err = cdda_mount_from_toc(&toc, 0, &opts, &g->media,
                                       &g->cdda_root, &g->cdda_ctx);
             if (err != ODFS_OK) {
                 ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
@@ -2690,7 +2694,7 @@ static void mount_volume(handler_global_t *g)
             odfs_err_t toc_err = odfs_media_read_toc(&g->media, &toc);
             odfs_err_t cdda_err = ODFS_OK;
             if (toc_err == ODFS_OK)
-                cdda_err = cdda_mount_from_toc(&toc, 0, &g->media,
+                cdda_err = cdda_mount_from_toc(&toc, 0, &opts, &g->media,
                                                &g->cdda_root, &g->cdda_ctx);
             if (toc_err == ODFS_OK && cdda_err == ODFS_OK) {
                 g->has_cdda = 1;
@@ -2729,7 +2733,7 @@ static void mount_volume(handler_global_t *g)
             {
                 odfs_toc_t toc;
                 if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-                    cdda_mount_from_toc(&toc, 1, &g->media, &g->cdda_root,
+                    cdda_mount_from_toc(&toc, 1, &opts, &g->media, &g->cdda_root,
                                         &g->cdda_ctx) == ODFS_OK) {
                     g->has_cdda = 1;
                     odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,

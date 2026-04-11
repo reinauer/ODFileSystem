@@ -24,6 +24,7 @@ typedef struct odfs_mount_opts {
     int      prefer_udf;         /* prefer UDF over ISO on bridge discs */
     int      prefer_hfs;         /* prefer HFS on hybrid discs */
     int      lowercase_iso;      /* lowercase plain ISO names */
+    int      prefer_aiff;        /* expose CDDA tracks as AIFF instead of WAV */
     uint32_t cache_blocks;       /* block cache size (0 = use default) */
 } odfs_mount_opts_t;
 

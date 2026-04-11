@@ -33,6 +33,7 @@ StackSize   = 2000
 Priority = 10
 GlobVec     = -1
 DosType     = 0x43443031
+Control     = "AIFF UDF"
 
 /* The Device and Unit fields are controlled by tooltypes in the CD0 
  * icon.

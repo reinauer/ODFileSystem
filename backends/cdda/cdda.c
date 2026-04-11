@@ -3,9 +3,9 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Presents audio CD tracks as virtual WAV files. The WAV header is
- * synthesized on-the-fly; audio data is read via the media layer
- * (SCSI Read CD on Amiga hardware).
+ * Presents audio CD tracks as virtual WAV or AIFF files. The file
+ * header is synthesized on-the-fly; audio data is read via the media
+ * layer (SCSI Read CD on Amiga hardware).
  *
  * On mixed-mode discs (data + audio), tracks appear in a virtual
  * CDDA/ subdirectory so they don't mix with data files. On pure
@@ -26,7 +26,7 @@
 #include <inttypes.h>
 
 /* ------------------------------------------------------------------ */
-/* WAV header generation                                               */
+/* Header generation                                                   */
 /* ------------------------------------------------------------------ */
 
 static void cdda_write_le16(uint8_t *p, uint16_t v)
@@ -41,6 +41,38 @@ static void cdda_write_le32(uint8_t *p, uint32_t v)
     p[1] = (uint8_t)(v >> 8);
     p[2] = (uint8_t)(v >> 16);
     p[3] = (uint8_t)(v >> 24);
+}
+
+static void cdda_write_be16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)(v);
+}
+
+static void cdda_write_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v);
+}
+
+static uint32_t cdda_header_size(cdda_file_format_t format)
+{
+    return (format == CDDA_FILE_FORMAT_AIFF)
+        ? CDDA_AIFF_HEADER_SIZE
+        : CDDA_WAV_HEADER_SIZE;
+}
+
+static void cdda_byteswap_samples(uint8_t *buf, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        uint8_t tmp = buf[i];
+        buf[i] = buf[i + 1];
+        buf[i + 1] = tmp;
+    }
 }
 
 /*
@@ -66,6 +98,39 @@ static void cdda_build_wav_header(uint8_t *hdr, uint32_t data_size)
     cdda_write_le32(&hdr[40], data_size);
 }
 
+static void cdda_build_aiff_header(uint8_t *hdr, uint32_t data_size)
+{
+    static const uint8_t rate_44100[10] = {
+        0x40, 0x0e, 0xac, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    uint32_t sample_frames = data_size /
+                             (CDDA_CHANNELS * (CDDA_BITS_PER_SAMPLE / 8));
+
+    memcpy(&hdr[0], "FORM", 4);
+    cdda_write_be32(&hdr[4], 46 + data_size);
+    memcpy(&hdr[8], "AIFF", 4);
+    memcpy(&hdr[12], "COMM", 4);
+    cdda_write_be32(&hdr[16], 18);
+    cdda_write_be16(&hdr[20], CDDA_CHANNELS);
+    cdda_write_be32(&hdr[22], sample_frames);
+    cdda_write_be16(&hdr[26], CDDA_BITS_PER_SAMPLE);
+    memcpy(&hdr[28], rate_44100, sizeof(rate_44100));
+    memcpy(&hdr[38], "SSND", 4);
+    cdda_write_be32(&hdr[42], 8 + data_size);
+    cdda_write_be32(&hdr[46], 0);
+    cdda_write_be32(&hdr[50], 0);
+}
+
+static void cdda_build_header(cdda_file_format_t format,
+                              uint8_t *hdr,
+                              uint32_t data_size)
+{
+    if (format == CDDA_FILE_FORMAT_AIFF)
+        cdda_build_aiff_header(hdr, data_size);
+    else
+        cdda_build_wav_header(hdr, data_size);
+}
+
 /* ------------------------------------------------------------------ */
 /* node IDs and encoding                                               */
 /* ------------------------------------------------------------------ */
@@ -77,10 +142,16 @@ static void cdda_build_wav_header(uint8_t *hdr, uint32_t data_size)
  *   extent.lba = track index + 2 into tracks[] array (for quick lookup)
  */
 
-static void cdda_track_name(int track_num, char *buf, size_t buf_size)
+static void cdda_track_name(int track_num,
+                            cdda_file_format_t format,
+                            char *buf,
+                            size_t buf_size)
 {
-    /* "Track01.wav" .. "Track99.wav" */
+    const char *ext = (format == CDDA_FILE_FORMAT_AIFF) ? "aiff" : "wav";
     int len = 0;
+
+    (void)buf_size;
+
     buf[len++] = 'T';
     buf[len++] = 'r';
     buf[len++] = 'a';
@@ -89,11 +160,9 @@ static void cdda_track_name(int track_num, char *buf, size_t buf_size)
     buf[len++] = '0' + (track_num / 10);
     buf[len++] = '0' + (track_num % 10);
     buf[len++] = '.';
-    buf[len++] = 'w';
-    buf[len++] = 'a';
-    buf[len++] = 'v';
+    while (*ext)
+        buf[len++] = *ext++;
     buf[len] = '\0';
-    (void)buf_size;
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,20 +203,26 @@ static odfs_err_t cdda_probe(odfs_cache_t *cache,
  * Returns ODFS_OK if audio tracks were found.
  */
 odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
-                                 int has_data_session,
-                                 odfs_media_t *media,
-                                 odfs_node_t *root_out,
-                                 void **backend_ctx)
+                               int has_data_session,
+                               const odfs_mount_opts_t *opts,
+                               odfs_media_t *media,
+                               odfs_node_t *root_out,
+                               void **backend_ctx)
 {
     cdda_context_t *ctx;
     int audio_count = 0;
+    uint32_t header_size;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
     ctx->is_mixed_mode = has_data_session;
+    ctx->file_format = (opts && opts->prefer_aiff)
+        ? CDDA_FILE_FORMAT_AIFF
+        : CDDA_FILE_FORMAT_WAV;
     ctx->media = media;
+    header_size = cdda_header_size(ctx->file_format);
 
     for (int i = 0; i < toc->session_count && audio_count < CDDA_MAX_TRACKS; i++) {
         uint32_t start = toc->sessions[i].start_lba;
@@ -168,8 +243,8 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
         ctx->tracks[audio_count].start_lba = start;
         ctx->tracks[audio_count].length_frames = length;
         ctx->tracks[audio_count].data_size = (uint64_t)length * CDDA_FRAME_SIZE;
-        ctx->tracks[audio_count].wav_size = ctx->tracks[audio_count].data_size
-                                            + CDDA_WAV_HEADER_SIZE;
+        ctx->tracks[audio_count].file_size = ctx->tracks[audio_count].data_size
+                                             + header_size;
         audio_count++;
     }
 
@@ -246,11 +321,12 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         node.parent_id = 0;
         node.backend = ODFS_BACKEND_CDDA;
         node.kind = ODFS_NODE_VIRTUAL;
-        node.size = ctx->tracks[i].wav_size;
+        node.size = ctx->tracks[i].file_size;
         node.extent.lba = (uint32_t)(i + 2);
-        node.extent.length = (uint32_t)ctx->tracks[i].wav_size;
+        node.extent.length = (uint32_t)ctx->tracks[i].file_size;
 
-        cdda_track_name(ctx->tracks[i].number, node.name, sizeof(node.name));
+        cdda_track_name(ctx->tracks[i].number, ctx->file_format,
+                        node.name, sizeof(node.name));
 
         odfs_err_t err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
@@ -266,7 +342,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
-/* read — synthesize WAV header + read audio frames                    */
+/* read — synthesize header + read audio frames                        */
 /* ------------------------------------------------------------------ */
 
 static odfs_err_t cdda_read(void *backend_ctx,
@@ -288,23 +364,24 @@ static odfs_err_t cdda_read(void *backend_ctx,
     }
 
     cdda_track_t *trk = &ctx->tracks[track_idx];
+    uint32_t header_size = cdda_header_size(ctx->file_format);
     size_t want = *len;
     size_t done = 0;
     uint8_t *out = buf;
 
-    if (offset >= trk->wav_size) {
+    if (offset >= trk->file_size) {
         *len = 0;
         return ODFS_OK;
     }
-    if (offset + want > trk->wav_size)
-        want = (size_t)(trk->wav_size - offset);
+    if (offset + want > trk->file_size)
+        want = (size_t)(trk->file_size - offset);
 
-    /* serve WAV header bytes if offset is within header */
-    if (offset < CDDA_WAV_HEADER_SIZE) {
-        uint8_t hdr[CDDA_WAV_HEADER_SIZE];
-        cdda_build_wav_header(hdr, (uint32_t)trk->data_size);
+    /* serve synthesized header bytes if offset is within the header */
+    if (offset < header_size) {
+        uint8_t hdr[CDDA_AIFF_HEADER_SIZE];
+        cdda_build_header(ctx->file_format, hdr, (uint32_t)trk->data_size);
 
-        size_t hdr_avail = CDDA_WAV_HEADER_SIZE - (size_t)offset;
+        size_t hdr_avail = header_size - (size_t)offset;
         size_t chunk = (hdr_avail < want) ? hdr_avail : want;
         memcpy(out, hdr + offset, chunk);
         done += chunk;
@@ -315,7 +392,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
      * to the caller; do not mask it by synthesizing silence.
      */
     while (done < want) {
-        uint64_t audio_pos = (offset + done) - CDDA_WAV_HEADER_SIZE;
+        uint64_t audio_pos = (offset + done) - header_size;
         uint32_t frame_num = (uint32_t)(audio_pos / CDDA_FRAME_SIZE);
         uint32_t frame_off = (uint32_t)(audio_pos % CDDA_FRAME_SIZE);
         uint32_t start_frame = trk->start_lba + frame_num;
@@ -334,6 +411,9 @@ static odfs_err_t cdda_read(void *backend_ctx,
                 *len = 0;
                 return err;
             }
+
+            if (ctx->file_format == CDDA_FILE_FORMAT_AIFF)
+                cdda_byteswap_samples(frame_buf, sizeof(frame_buf));
 
             size_t avail = CDDA_FRAME_SIZE - frame_off;
             size_t chunk = (avail < want - done) ? avail : want - done;
@@ -370,16 +450,17 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
 
     for (int i = 0; i < ctx->track_count; i++) {
         char tname[32];
-        cdda_track_name(ctx->tracks[i].number, tname, sizeof(tname));
+        cdda_track_name(ctx->tracks[i].number, ctx->file_format,
+                        tname, sizeof(tname));
         if (odfs_strcasecmp(name, tname) == 0) {
             memset(out, 0, sizeof(*out));
             out->id = ctx->tracks[i].number;
             out->parent_id = 0;
             out->backend = ODFS_BACKEND_CDDA;
             out->kind = ODFS_NODE_VIRTUAL;
-            out->size = ctx->tracks[i].wav_size;
+            out->size = ctx->tracks[i].file_size;
             out->extent.lba = (uint32_t)(i + 2);
-            out->extent.length = (uint32_t)ctx->tracks[i].wav_size;
+            out->extent.length = (uint32_t)ctx->tracks[i].file_size;
             memcpy(out->name, tname, strlen(tname) + 1);
             return ODFS_OK;
         }
@@ -414,7 +495,7 @@ static uint32_t cdda_get_volume_size(void *backend_ctx)
     uint64_t bytes = 0;
 
     for (int i = 0; i < ctx->track_count; i++)
-        bytes += ctx->tracks[i].wav_size;
+        bytes += ctx->tracks[i].file_size;
 
     uint64_t blocks = (bytes + 2047u) / 2048u;
     return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
