@@ -70,6 +70,36 @@ For bridge and hybrid discs:
 - HFS can be preferred explicitly
 - A specific session or backend can be forced by mount options
 
+UDF and ISO on the same disc are usually a bridge layout, where the ISO-family
+side exists for older systems and the UDF side exists for newer ones. On Amiga,
+the ISO-family view is the safer default because:
+
+- Rock Ridge and Joliet map more naturally to the naming and metadata path the
+  handler already exposes
+- hybrid optical discs historically expected older systems to use the ISO side
+- plain ISO-family trees are generally the least surprising fallback
+- UDF support is newer and more likely to hit edge cases on odd media
+
+So the default is essentially:
+
+- prefer the more traditional, compatibility-oriented view
+- let the user opt into UDF when they actually want that view
+
+That is why the handler has an explicit `UDF` override instead of making UDF
+the default on bridge discs.
+
+To prefer UDF for a bridge disc from the Mountlist, add:
+
+```text
+Control = "UDF"
+```
+
+You can combine that with other control flags, for example:
+
+```text
+Control = "UDF LOWERCASE FILEBUFFERS=128"
+```
+
 ### Name Collision Policy
 
 If multiple on-disc names normalize to the same visible AmigaDOS name, the first
