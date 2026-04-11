@@ -192,7 +192,7 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
 
     /* READ CD (0xBE) CDB */
     cmd[0] = 0xBE;
-    cmd[1] = 0x04 << 2;  /* expected sector type: CD-DA (audio) */
+    cmd[1] = 0x01 << 2;  /* expected sector type: CD-DA (audio) */
     /* starting LBA (big-endian) */
     cmd[2] = (uint8_t)(lba >> 24);
     cmd[3] = (uint8_t)(lba >> 16);
