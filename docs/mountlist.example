@@ -17,6 +17,7 @@ CD0:
     Stacksize = 8192
     Priority  = 5
     GlobVec   = -1
+    DosType   = 0x43443031
     /* Device and unit — adjust for your hardware:
      *
      * Real Amiga SCSI:

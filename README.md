@@ -119,7 +119,19 @@ with serial output enabled, use `make amiga-test`.
 Release builds enforce a default size limit of `60000` bytes. If intentional
 growth needs a higher ceiling, override it with `AMIGA_SIZE_LIMIT=<bytes>`.
 
-Then copy `build/amiga/ODFileSystem` to `L:ODFileSystem` and add a mount entry such as:
+Then copy `build/amiga/ODFileSystem` to `L:ODFileSystem`.
+
+For Workbench-style installation, copy:
+
+- `platform/amiga/dosdrivers/CD0` to `DEVS:DOSDrivers/CD0`
+- `platform/amiga/dosdrivers/CD0.info` to `DEVS:DOSDrivers/CD0.info`
+
+Change `FileSystem` in CD0 to L:ODFileSystem.
+
+Then edit the `Device` and `Unit` tooltypes on the `CD0` icon to match your
+hardware.
+
+If you want a plain Mountlist entry instead, add one such as:
 
 ```text
 CD0:
@@ -127,6 +139,7 @@ CD0:
     Stacksize = 8192
     Priority  = 5
     GlobVec   = -1
+    DosType   = 0x43443031
     Device    = scsi.device
     Unit      = 2
     Flags     = 0
@@ -158,7 +171,10 @@ Supported control flags:
 - `UDF` to prefer UDF on bridge discs
 - `FILEBUFFERS` or `FB` to set the block-cache size
 
-See [docs/mountlist.example](/Users/stepan/git/xcdfs/docs/mountlist.example) for a fuller example with hardware notes.
+See [mountlist.example](/Users/stepan/git/ODFileSystem/docs/mountlist.example)
+for a fuller example with hardware notes, and
+[CD0](/Users/stepan/git/ODFileSystem/platform/amiga/dosdrivers/CD0) for the
+packaged DOSDriver entry used with Workbench.
 
 ## Unit Tests
 

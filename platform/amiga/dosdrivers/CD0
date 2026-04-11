@@ -13,6 +13,9 @@
  * Note that most SCSI drives let you change this number using jumpers.
  */
 
+/* Change to L:ODFileSystem after copying ODFileSystem to
+ * your hard drive!
+ */
 FileSystem  = DF0:L/ODFileSystem
 Flags    = 0
 Surfaces = 1
