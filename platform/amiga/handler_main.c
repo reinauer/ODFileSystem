@@ -62,7 +62,9 @@ static void detach_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
 static int query_media_present(handler_global_t *g, ULONG *status);
+#if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc);
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
@@ -2612,6 +2614,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
 }
 #endif /* !ODFS_PROFILE_ROM */
 
+#if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc)
 {
     uint8_t i;
@@ -2623,6 +2626,7 @@ static int toc_has_data_track(const odfs_toc_t *toc)
 
     return 0;
 }
+#endif
 
 static void mount_volume(handler_global_t *g)
 {
@@ -2670,73 +2674,73 @@ static void mount_volume(handler_global_t *g)
             memcpy(g->volname, "Audio CD", 9);
             ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                       "mounted pure audio CD via CDDA backend");
-            goto mounted;
         }
     }
 #endif
 
-    err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
-    if (err != ODFS_OK) {
-        ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
-                  "primary mount failed: %s",
-                  odfs_err_str(err));
-#if ODFS_FEATURE_CDDA
-        /* no data filesystem — try pure audio CD */
-        odfs_toc_t toc;
-        odfs_err_t toc_err = odfs_media_read_toc(&g->media, &toc);
-        odfs_err_t cdda_err = ODFS_OK;
-        if (toc_err == ODFS_OK)
-            cdda_err = cdda_mount_from_toc(&toc, 0, &g->media,
-                                           &g->cdda_root, &g->cdda_ctx);
-        if (toc_err == ODFS_OK && cdda_err == ODFS_OK) {
-            g->has_cdda = 1;
-            g->mounted = 1;
-            g->mount.root = g->cdda_root;
-            g->mount.backend_ops = &cdda_backend_ops;
-            g->mount.backend_ctx = g->cdda_ctx;
-            g->mount.active_backend = ODFS_BACKEND_CDDA;
-            odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
-                                        &cdda_backend_ops, g->cdda_ctx,
-                                        &g->cdda_root);
-            memcpy(g->volname, "Audio CD", 9);
-            ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
-                      "mounted pure audio CD via CDDA backend");
-        } else if (toc_err != ODFS_OK) {
+    if (!g->mounted) {
+        err = odfs_mount(&g->media, &opts, &g->log, &g->mount);
+        if (err != ODFS_OK) {
             ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
-                      "audio CD fallback failed to read TOC: %s",
-                      odfs_err_str(toc_err));
-        } else {
-            ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
-                      "audio CD fallback found no playable audio: %s",
-                      odfs_err_str(cdda_err));
-        }
-#endif
-        if (!g->mounted)
-            return;
-    } else {
-        g->mounted = 1;
-        memcpy(g->volname, g->mount.volume_name, sizeof(g->volname) - 1);
-        g->volname[sizeof(g->volname) - 1] = '\0';
-        if (g->volname[0] == '\0')
-            memcpy(g->volname, "Unnamed", 8);
-
+                      "primary mount failed: %s",
+                      odfs_err_str(err));
 #if ODFS_FEATURE_CDDA
-        /* check for audio tracks on mixed-mode disc */
-        {
+            /* no data filesystem — try pure audio CD */
             odfs_toc_t toc;
-            if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-                cdda_mount_from_toc(&toc, 1, &g->media, &g->cdda_root,
-                                    &g->cdda_ctx) == ODFS_OK) {
+            odfs_err_t toc_err = odfs_media_read_toc(&g->media, &toc);
+            odfs_err_t cdda_err = ODFS_OK;
+            if (toc_err == ODFS_OK)
+                cdda_err = cdda_mount_from_toc(&toc, 0, &g->media,
+                                               &g->cdda_root, &g->cdda_ctx);
+            if (toc_err == ODFS_OK && cdda_err == ODFS_OK) {
                 g->has_cdda = 1;
+                g->mounted = 1;
+                g->mount.root = g->cdda_root;
+                g->mount.backend_ops = &cdda_backend_ops;
+                g->mount.backend_ctx = g->cdda_ctx;
+                g->mount.active_backend = ODFS_BACKEND_CDDA;
                 odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                             &cdda_backend_ops, g->cdda_ctx,
                                             &g->cdda_root);
+                memcpy(g->volname, "Audio CD", 9);
+                ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                          "mounted pure audio CD via CDDA backend");
+            } else if (toc_err != ODFS_OK) {
+                ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                          "audio CD fallback failed to read TOC: %s",
+                          odfs_err_str(toc_err));
+            } else {
+                ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                          "audio CD fallback found no playable audio: %s",
+                          odfs_err_str(cdda_err));
             }
-        }
 #endif
+            if (!g->mounted)
+                return;
+        } else {
+            g->mounted = 1;
+            memcpy(g->volname, g->mount.volume_name, sizeof(g->volname) - 1);
+            g->volname[sizeof(g->volname) - 1] = '\0';
+            if (g->volname[0] == '\0')
+                memcpy(g->volname, "Unnamed", 8);
+
+#if ODFS_FEATURE_CDDA
+            /* check for audio tracks on mixed-mode disc */
+            {
+                odfs_toc_t toc;
+                if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
+                    cdda_mount_from_toc(&toc, 1, &g->media, &g->cdda_root,
+                                        &g->cdda_ctx) == ODFS_OK) {
+                    g->has_cdda = 1;
+                    odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
+                                                &cdda_backend_ops,
+                                                g->cdda_ctx, &g->cdda_root);
+                }
+            }
+#endif
+        }
     }
 
-mounted:
     g->volnode = create_volume_node(g);
     if (g->volnode) {
         g->current_volume = alloc_volume(g, g->volnode);
