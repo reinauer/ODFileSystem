@@ -65,6 +65,8 @@ typedef struct handler_global {
     struct IOStdReq     *chgreq;        /* media change I/O request */
     LONG                 chgsigbit;     /* signal bit for media change */
     int                  chg_installed; /* TD_CHANGEINT installed? */
+    ULONG                change_count;  /* last observed TD_CHANGENUM */
+    int                  change_count_valid; /* change_count initialized? */
 
     /* volume info */
     char                 volname[128];  /* volume name */

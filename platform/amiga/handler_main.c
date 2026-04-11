@@ -56,6 +56,8 @@ static void cleanup_appicon(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
 static void destroy_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
+static int query_media_change_count(handler_global_t *g, ULONG *count);
+static int query_media_present(handler_global_t *g, ULONG *status);
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
@@ -2629,6 +2631,8 @@ static void install_media_change(handler_global_t *g)
 
     SendIO((struct IORequest *)g->chgreq);
     g->chg_installed = 1;
+    if (query_media_change_count(g, &g->change_count))
+        g->change_count_valid = 1;
 }
 
 static void remove_media_change(handler_global_t *g)
@@ -2655,16 +2659,63 @@ static void remove_media_change(handler_global_t *g)
         FreeSignal(g->chgsigbit);
         g->chgsigbit = -1;
     }
+
+    g->change_count_valid = 0;
+}
+
+static int query_media_change_count(handler_global_t *g, ULONG *count)
+{
+    if (!g || !g->devreq)
+        return 0;
+
+    g->devreq->io_Command = TD_CHANGENUM;
+    if (DoIO((struct IORequest *)g->devreq) != 0)
+        return 0;
+
+    if (count)
+        *count = g->devreq->io_Actual;
+
+    return 1;
+}
+
+static int query_media_present(handler_global_t *g, ULONG *status)
+{
+    ULONG actual;
+
+    if (!g || !g->devreq)
+        return 0;
+
+    g->devreq->io_Command = TD_CHANGESTATE;
+    if (DoIO((struct IORequest *)g->devreq) != 0)
+        return 0;
+
+    actual = g->devreq->io_Actual;
+    if (status)
+        *status = actual;
+
+    return 1;
 }
 
 static void handle_media_change(handler_global_t *g)
 {
+    ULONG change_count;
     ULONG status;
 
-    /* check if disc is present */
-    g->devreq->io_Command = TD_CHANGESTATE;
-    DoIO((struct IORequest *)g->devreq);
-    status = g->devreq->io_Actual;
+    /*
+     * Some drives/controllers deliver an initial or redundant change
+     * interrupt after TD_ADDCHANGEINT. Ignore those unless the device's
+     * change counter actually moved, otherwise we invalidate every
+     * existing lock/filehandle by remounting the same disc.
+     */
+    if (query_media_change_count(g, &change_count)) {
+        if (g->change_count_valid && change_count == g->change_count)
+            return;
+        g->change_count = change_count;
+        g->change_count_valid = 1;
+    }
+
+    if (!query_media_present(g, &status))
+        return;
 
     if (status != 0) {
         /* no disc present */
