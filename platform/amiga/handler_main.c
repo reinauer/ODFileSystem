@@ -2956,8 +2956,36 @@ void handler_main(void)
     g->devnode = (struct DeviceNode *)BADDR(pkt->dp_Arg3);
     fssm = (struct FileSysStartupMsg *)BADDR(pkt->dp_Arg2);
 
+    /* parse FSSM early so startup failures can log device context */
+    {
+        int len = AROS_BSTR_strlen(fssm->fssm_Device);
+        if (len >= (int)sizeof(g->devname))
+            len = sizeof(g->devname) - 1;
+        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
+        g->devname[len] = '\0';
+    }
+    g->devunit = fssm->fssm_Unit;
+    g->devflags = fssm->fssm_Flags;
+
+    de = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+    g->envec = de;
+    g->sector_size = de->de_SizeBlock << 2;
+
+    /* set up logging before any startup error path can fire */
+    odfs_log_init(&g->log);
+    odfs_log_set_sink(&g->log, log_sink, NULL);
+    odfs_log_set_level(&g->log, ODFS_LOG_INFO);
+#if ODFS_PACKET_TRACE
+    odfs_log_set_level(&g->log, ODFS_LOG_TRACE);
+#endif
+    ODFS_INFO(&g->log, ODFS_SUB_NONE,
+              "ODFileSystem v" ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
+              " (" ODFS_AMIGA_DATE ") starting...");
+
     DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library", 36);
     if (!DOSBase) {
+        ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                   "open dos.library failed");
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_INVALID_RESIDENT_LIBRARY;
         return_packet(g, pkt);
@@ -2973,28 +3001,37 @@ void handler_main(void)
     g->iconbase = IconBase;
     g->wbbase = WorkbenchBase;
 
-    /* parse FSSM */
-    {
-        int len = AROS_BSTR_strlen(fssm->fssm_Device);
-        if (len >= (int)sizeof(g->devname))
-            len = sizeof(g->devname) - 1;
-        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
-        g->devname[len] = '\0';
-    }
-    g->devunit = fssm->fssm_Unit;
-    g->devflags = fssm->fssm_Flags;
-
-    de = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
-    g->envec = de;
-    g->sector_size = de->de_SizeBlock << 2;
-
     /* open device */
     g->devport = CreateMsgPort();
+    if (!g->devport) {
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "CreateMsgPort failed for %s unit=%lu",
+                   g->devname, (unsigned long)g->devunit);
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return_packet(g, pkt);
+        goto shutdown;
+    }
+
     g->devreq = (struct IOStdReq *)CreateIORequest(g->devport,
                                                     sizeof(struct IOStdReq));
-    if (!g->devport || !g->devreq ||
-        OpenDevice((CONST_STRPTR)g->devname, g->devunit,
+    if (!g->devreq) {
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "CreateIORequest failed for %s unit=%lu",
+                   g->devname, (unsigned long)g->devunit);
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        return_packet(g, pkt);
+        goto shutdown;
+    }
+
+    if (OpenDevice((CONST_STRPTR)g->devname, g->devunit,
                    (struct IORequest *)g->devreq, g->devflags) != 0) {
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "OpenDevice failed device=%s unit=%lu flags=%lu",
+                   g->devname,
+                   (unsigned long)g->devunit,
+                   (unsigned long)g->devflags);
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_DEVICE_NOT_MOUNTED;
         return_packet(g, pkt);
@@ -3034,6 +3071,10 @@ void handler_main(void)
             g->dma_buf = (uint8_t *)(((ULONG)g->dma_buf_raw + 15) & ~15UL);
             g->dma_buf_size = DMA_BUF_SECTORS * g->sector_size;
         } else {
+            ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                       "AllocMem failed for DMA buffer size=%lu memtype=%lu",
+                       (unsigned long)raw_size,
+                       (unsigned long)memtype);
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_NO_FREE_STORE;
             return_packet(g, pkt);
@@ -3045,17 +3086,6 @@ void handler_main(void)
     amctx.g = g;
     g->media.ops = &amiga_media_ops;
     g->media.ctx = &amctx;
-
-    /* set up logging */
-    odfs_log_init(&g->log);
-    odfs_log_set_sink(&g->log, log_sink, NULL);
-    odfs_log_set_level(&g->log, ODFS_LOG_INFO);
-#if ODFS_PACKET_TRACE
-    odfs_log_set_level(&g->log, ODFS_LOG_TRACE);
-#endif
-    ODFS_INFO(&g->log, ODFS_SUB_NONE,
-              "ODFileSystem v" ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
-              " (" ODFS_AMIGA_DATE ") starting...");
 
     /* reply startup packet */
     pkt->dp_Res1 = DOSTRUE;
