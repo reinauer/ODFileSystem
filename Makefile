@@ -22,6 +22,7 @@ HOSTCC ?= cc
 # ---- common flags ----
 
 AMIGA_DATE ?= $(shell date '+%-d.%-m.%Y')
+ODFS_GIT_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo unknown)
 
 INCLUDES = -I include -I backends
 
@@ -62,6 +63,7 @@ FEATURE_CDDA         ?= 1
 
 FEATURE_DEFS = \
           -DODFS_AMIGA_DATE=\"$(AMIGA_DATE)\" \
+          -DODFS_GIT_VERSION=\"$(ODFS_GIT_VERSION)\" \
           -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
           -DODFS_PACKET_TRACE=$(PACKET_TRACE) \
           -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \

@@ -31,8 +31,13 @@
 
 #include "odfs/string.h"
 
+#ifndef ODFS_GIT_VERSION
+#define ODFS_GIT_VERSION "unknown"
+#endif
+
 static const char version_string[] __attribute__((used)) =
-    "$VER: ODFileSystem " ODFS_HANDLER_VERSION " (" ODFS_AMIGA_DATE ")";
+    "$VER: ODFileSystem " ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
+    " (" ODFS_AMIGA_DATE ")";
 
 /* library bases — set by handler_main() */
 struct ExecBase *SysBase;
@@ -401,6 +406,7 @@ static void serial_puts(const char *s)
 static void serial_startup_banner(void)
 {
     serial_puts("[INFO] ODFileSystem v" ODFS_HANDLER_VERSION
+                " " ODFS_GIT_VERSION
                 " (" ODFS_AMIGA_DATE ") starting...");
     raw_putchar('\n');
 }
