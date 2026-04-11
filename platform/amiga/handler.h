@@ -26,6 +26,12 @@ typedef struct odfs_volume odfs_volume_t;
 typedef struct odfs_entry odfs_entry_t;
 typedef struct odfs_lock odfs_lock_t;
 typedef struct odfs_fh odfs_fh_t;
+typedef struct odfs_changeint_data odfs_changeint_data_t;
+
+struct odfs_changeint_data {
+    struct Task       *task;
+    ULONG              sigmask;
+};
 
 /* ---- handler globals ---- */
 
@@ -63,6 +69,8 @@ typedef struct handler_global {
     /* media change */
     struct MsgPort      *chgport;       /* media change signal port */
     struct IOStdReq     *chgreq;        /* media change I/O request */
+    struct Interrupt     changeint;     /* TD_ADDCHANGEINT callback */
+    odfs_changeint_data_t changeint_data; /* callback payload */
     LONG                 chgsigbit;     /* signal bit for media change */
     int                  chg_installed; /* TD_CHANGEINT installed? */
     ULONG                change_count;  /* last observed TD_CHANGENUM */

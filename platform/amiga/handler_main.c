@@ -58,6 +58,7 @@ static void hide_appicon(handler_global_t *g);
 static void cleanup_appicon(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
 static void destroy_volume_node(struct DeviceList *volnode);
+static void detach_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
 static int query_media_present(handler_global_t *g, ULONG *status);
@@ -91,6 +92,13 @@ static int query_media_present(handler_global_t *g, ULONG *status);
 typedef struct amiga_media_ctx {
     handler_global_t *g;
 } amiga_media_ctx_t;
+
+static LONG changeint_handler(odfs_changeint_data_t *ci asm("a1"))
+{
+    if (ci && ci->task && ci->sigmask)
+        Signal(ci->task, ci->sigmask);
+    return 0;
+}
 
 static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
                                       uint32_t count, void *buf)
@@ -693,10 +701,7 @@ static void destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
         return;
 
     if (volume->volnode) {
-        if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
-            RemDosEntry((struct DosList *)volume->volnode);
-            UnLockDosList(LDF_VOLUMES | LDF_WRITE);
-        }
+        detach_volume_node(volume->volnode);
         destroy_volume_node(volume->volnode);
     }
     if (g->volnode == volume->volnode)
@@ -2468,6 +2473,18 @@ static void destroy_volume_node(struct DeviceList *volnode)
     FreeMem(volnode, sizeof(*volnode));
 }
 
+static void detach_volume_node(struct DeviceList *volnode)
+{
+    if (!volnode || !volnode->dl_Task)
+        return;
+
+    if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
+        RemDosEntry((struct DosList *)volnode);
+        UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+    }
+    volnode->dl_Task = NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* DosEnvec control string parsing                                     */
 /* ------------------------------------------------------------------ */
@@ -2698,8 +2715,8 @@ static void unmount_volume(handler_global_t *g)
         return;
 
     rebuild_volume_locklist(g, volume);
+    detach_volume_node(volume->volnode);
     if (volume->object_count != 0) {
-        volume->volnode->dl_Task = NULL;
         return;
     }
 
@@ -2737,22 +2754,16 @@ static void install_media_change(handler_global_t *g)
     g->chgreq->io_Device = g->devreq->io_Device;
     g->chgreq->io_Unit   = g->devreq->io_Unit;
 
-    /* install changeint */
-    static struct Interrupt chgint;
-    chgint.is_Node.ln_Type = NT_INTERRUPT;
-    chgint.is_Node.ln_Pri  = 0;
-    chgint.is_Node.ln_Name = (char *)"odfs-mediachange";
-    chgint.is_Data          = FindTask(NULL);
-    /* Amiga API requires old-style function pointer cast */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-prototypes"
-    chgint.is_Code          = (void (*)())&Signal;
-#pragma GCC diagnostic pop
-    /* is_Code will be called as: is_Code(is_Data, 1 << chgsigbit) */
-
     g->chgreq->io_Command = TD_ADDCHANGEINT;
-    g->chgreq->io_Data    = (APTR)&chgint;
-    g->chgreq->io_Length  = sizeof(chgint);
+    g->changeint.is_Node.ln_Type = NT_INTERRUPT;
+    g->changeint.is_Node.ln_Pri  = 0;
+    g->changeint.is_Node.ln_Name = (char *)"odfs-mediachange";
+    g->changeint_data.task       = g->dosport->mp_SigTask;
+    g->changeint_data.sigmask    = 1UL << g->chgsigbit;
+    g->changeint.is_Data         = &g->changeint_data;
+    g->changeint.is_Code         = (void (*)(void))(APTR)changeint_handler;
+    g->chgreq->io_Data    = (APTR)&g->changeint;
+    g->chgreq->io_Length  = sizeof(g->changeint);
     g->chgreq->io_Flags   = 0;
 
     SendIO((struct IORequest *)g->chgreq);
