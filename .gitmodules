@@ -1,0 +1,3 @@
+[submodule "3rdparty/libcodesets"]
+	path = 3rdparty/libcodesets
+	url = https://github.com/jens-maus/libcodesets.git
