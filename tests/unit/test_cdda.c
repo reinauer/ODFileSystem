@@ -5,6 +5,7 @@
  */
 
 #include "cdda/cdda.h"
+#include "odfs/alloc.h"
 #include "odfs/error.h"
 #include "test_harness.h"
 
@@ -24,6 +25,33 @@ static odfs_err_t fake_read_audio(void *ctx, uint32_t lba,
     if (lba != 0 || count != 1)
         return ODFS_ERR_INVAL;
     memcpy(dst, src, CDDA_FRAME_SIZE);
+    return ODFS_OK;
+}
+
+static odfs_err_t fake_read_cdtext(void *ctx, uint8_t **buf_out, size_t *len_out)
+{
+    static const uint8_t response[] = {
+        0x00, 0x38, 0x00, 0x00,
+        0x80, 0x00, 0x00, 0x00,
+        'A', 'l', 'b', 'u', 'm', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+        0x81, 0x00, 0x01, 0x00,
+        'A', 'r', 't', 'i', 's', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+        0x80, 0x01, 0x02, 0x00,
+        'S', 'o', 'n', 'g', ' ', '1', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00
+    };
+    uint8_t *buf;
+
+    (void)ctx;
+
+    buf = odfs_malloc(sizeof(response));
+    if (!buf)
+        return ODFS_ERR_NOMEM;
+    memcpy(buf, response, sizeof(response));
+    *buf_out = buf;
+    *len_out = sizeof(response);
     return ODFS_OK;
 }
 
@@ -137,7 +165,6 @@ TEST(cdda_cddb_file_exposes_disc_id_and_query)
     ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root, &backend_ctx));
     ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
                                       "CDDB.txt", &cddb));
-    ASSERT_EQ(cddb.extent.lba, 1);
     ASSERT(cddb.size > 0);
 
     ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &cddb, 0,
@@ -226,6 +253,60 @@ TEST(cdda_aiff_option_changes_names_and_header)
     ASSERT_EQ(hdr[51], 0x00);
     ASSERT_EQ(hdr[52], 0x00);
     ASSERT_EQ(hdr[53], 0x00);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
+TEST(cdda_cdtext_file_exposes_parsed_metadata)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t cdtext;
+    odfs_mount_opts_t opts;
+    void *backend_ctx = NULL;
+    char buf[512];
+    size_t len = sizeof(buf) - 1;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    uint8_t frame[CDDA_FRAME_SIZE];
+    collect_ctx_t collect;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 1;
+
+    memset(frame, 0, sizeof(frame));
+    memset(&media_ops, 0, sizeof(media_ops));
+    media_ops.read_audio = fake_read_audio;
+    media_ops.read_cdtext = fake_read_cdtext;
+    media.ops = &media_ops;
+    media.ctx = frame;
+
+    odfs_mount_opts_default(&opts);
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, &opts, &media,
+                                  &root, &backend_ctx));
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
+                                       collect_entry, &collect, NULL));
+    ASSERT_EQ(collect.count, 3);
+    ASSERT_STR_EQ(collect.entries[0].name, "CDDB.txt");
+    ASSERT_STR_EQ(collect.entries[1].name, "CD-TEXT.txt");
+    ASSERT_STR_EQ(collect.entries[2].name, "Track01.wav");
+
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "CD-TEXT.txt", &cdtext));
+    ASSERT(cdtext.size > 0);
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &cdtext, 0,
+                                    buf, &len));
+    buf[len] = '\0';
+    ASSERT(strstr(buf, "DISC.TITLE=Album\n") != NULL);
+    ASSERT(strstr(buf, "DISC.PERFORMER=Artist\n") != NULL);
+    ASSERT(strstr(buf, "TRACK01.TITLE=Song 1\n") != NULL);
 
     cdda_backend_ops.unmount(backend_ctx);
 }

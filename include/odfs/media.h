@@ -63,6 +63,14 @@ typedef struct odfs_media_ops {
     odfs_err_t (*read_audio)(void *ctx, uint32_t lba, uint32_t count, void *buf);
 
     /*
+     * Read raw CD-Text packs via READ TOC/PMA/ATIP format 0x05.
+     * Returns ODFS_ERR_UNSUPPORTED if not available or unsupported
+     * by the drive/media. On success, allocates a buffer containing
+     * the full MMC response, and transfers ownership to the caller.
+     */
+    odfs_err_t (*read_cdtext)(void *ctx, uint8_t **buf_out, size_t *len_out);
+
+    /*
      * Close / release media.  May be NULL.
      */
     void (*close)(void *ctx);
@@ -108,6 +116,15 @@ static inline odfs_err_t odfs_media_read_audio(odfs_media_t *m,
     if (!m->ops->read_audio)
         return ODFS_ERR_UNSUPPORTED;
     return m->ops->read_audio(m->ctx, lba, count, buf);
+}
+
+static inline odfs_err_t odfs_media_read_cdtext(odfs_media_t *m,
+                                                uint8_t **buf_out,
+                                                size_t *len_out)
+{
+    if (!m->ops->read_cdtext)
+        return ODFS_ERR_UNSUPPORTED;
+    return m->ops->read_cdtext(m->ctx, buf_out, len_out);
 }
 
 static inline void odfs_media_close(odfs_media_t *m)

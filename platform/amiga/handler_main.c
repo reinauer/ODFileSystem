@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "odfs/error.h"
+#include "odfs/alloc.h"
 #include "odfs/string.h"
 
 #ifndef ODFS_GIT_VERSION
@@ -385,6 +386,118 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     return ODFS_OK;
 }
 
+static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
+                                    size_t *len_out)
+{
+    amiga_media_ctx_t *am = ctx;
+    handler_global_t *g = am->g;
+    uint8_t cmd[10];
+    uint8_t hdr[4];
+    uint8_t sense[32];
+    uint8_t *buf;
+    struct SCSICmd scsi;
+    uint16_t data_len;
+    size_t total_len;
+    LONG io_rc;
+
+    if (!buf_out || !len_out)
+        return ODFS_ERR_INVAL;
+
+    *buf_out = NULL;
+    *len_out = 0;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(hdr, 0, sizeof(hdr));
+    memset(sense, 0, sizeof(sense));
+    memset(&scsi, 0, sizeof(scsi));
+
+    cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
+    cmd[1] = 0x00;  /* MSF=0 */
+    cmd[2] = 0x05;  /* format: CD-Text */
+    cmd[7] = 0x00;
+    cmd[8] = sizeof(hdr);
+
+    scsi.scsi_Data = (UWORD *)hdr;
+    scsi.scsi_Length = sizeof(hdr);
+    scsi.scsi_CmdLength = 10;
+    scsi.scsi_Command = cmd;
+    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        ODFS_INFO(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC CD-Text header unavailable io_rc=%ld "
+                  "io_Error=%ld scsi_Status=%lu sense=%02x/%02x/%02x",
+                  (long)io_rc,
+                  (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status,
+                  (unsigned int)(sense[2] & 0x0f),
+                  (unsigned int)sense[12],
+                  (unsigned int)sense[13]);
+        return ODFS_ERR_UNSUPPORTED;
+    }
+
+    data_len = ((uint16_t)hdr[0] << 8) | hdr[1];
+    total_len = (size_t)data_len + 2u;
+    if (total_len <= sizeof(hdr))
+        return ODFS_ERR_BAD_FORMAT;
+    if (total_len > 65535u)
+        return ODFS_ERR_BAD_FORMAT;
+
+    buf = odfs_malloc(total_len);
+    if (!buf)
+        return ODFS_ERR_NOMEM;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(sense, 0, sizeof(sense));
+    memset(&scsi, 0, sizeof(scsi));
+
+    cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
+    cmd[1] = 0x00;  /* MSF=0 */
+    cmd[2] = 0x05;  /* format: CD-Text */
+    cmd[7] = (uint8_t)(total_len >> 8);
+    cmd[8] = (uint8_t)(total_len);
+
+    scsi.scsi_Data = (UWORD *)buf;
+    scsi.scsi_Length = (ULONG)total_len;
+    scsi.scsi_CmdLength = 10;
+    scsi.scsi_Command = cmd;
+    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
+        scsi.scsi_Actual < sizeof(hdr)) {
+        ODFS_INFO(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC CD-Text unavailable io_rc=%ld io_Error=%ld "
+                  "scsi_Status=%lu actual=%lu sense=%02x/%02x/%02x",
+                  (long)io_rc,
+                  (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status,
+                  (unsigned long)scsi.scsi_Actual,
+                  (unsigned int)(sense[2] & 0x0f),
+                  (unsigned int)sense[12],
+                  (unsigned int)sense[13]);
+        odfs_free(buf);
+        return ODFS_ERR_UNSUPPORTED;
+    }
+
+    *buf_out = buf;
+    *len_out = (size_t)scsi.scsi_Actual;
+    return ODFS_OK;
+}
+
 /* ------------------------------------------------------------------ */
 /* SCSI helper commands                                                */
 /* ------------------------------------------------------------------ */
@@ -494,6 +607,7 @@ static const odfs_media_ops_t amiga_media_ops = {
     .sector_count = amiga_sector_count,
     .read_toc     = amiga_read_toc,
     .read_audio   = amiga_read_audio,
+    .read_cdtext  = amiga_read_cdtext,
     .close        = amiga_close,
 };
 

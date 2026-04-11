@@ -29,7 +29,10 @@
 
 #define CDDA_CDDB_NAME "CDDB.txt"
 #define CDDA_CDDB_NODE_ID 0x43444442u
-#define CDDA_CDDB_LBA 1u
+#define CDDA_CDDB_LBA 0xfffffffeu
+#define CDDA_CDTEXT_NAME "CD-TEXT.txt"
+#define CDDA_CDTEXT_NODE_ID 0x43445458u
+#define CDDA_CDTEXT_LBA 0xfffffffdu
 
 /* ------------------------------------------------------------------ */
 /* Header generation                                                   */
@@ -219,6 +222,274 @@ static int cdda_fill_cddb_node(const cdda_context_t *ctx, odfs_node_t *node)
     node->extent.length = (uint32_t)ctx->cddb_size;
     memcpy(node->name, CDDA_CDDB_NAME, sizeof(CDDA_CDDB_NAME));
     return 1;
+}
+
+static const char *cdda_cdtext_type_name(uint8_t type, uint8_t track)
+{
+    switch (type) {
+    case 0x80: return "TITLE";
+    case 0x81: return "PERFORMER";
+    case 0x82: return "SONGWRITER";
+    case 0x83: return "COMPOSER";
+    case 0x84: return "ARRANGER";
+    case 0x85: return "MESSAGE";
+    case 0x86: return "DISC_ID";
+    case 0x87: return "GENRE";
+    case 0x88: return "TOC_INFO";
+    case 0x89: return "TOC_INFO2";
+    case 0x8e: return track == 0 ? "UPC_EAN" : "ISRC";
+    case 0x8f: return "SIZE_INFO";
+    default:   return "UNKNOWN";
+    }
+}
+
+static size_t cdda_sanitize_ascii(char *dst, size_t dst_size,
+                                  const uint8_t *src, size_t src_size)
+{
+    size_t used = 0;
+
+    if (dst_size == 0)
+        return 0;
+
+    for (size_t i = 0; i < src_size && used + 1 < dst_size; i++) {
+        uint8_t ch = src[i];
+
+        if (ch == '\r' || ch == '\n' || ch == '\t')
+            ch = ' ';
+        if (ch < 0x20 || ch > 0x7e)
+            ch = '?';
+        dst[used++] = (char)ch;
+    }
+
+    dst[used] = '\0';
+    return used;
+}
+
+static size_t cdda_hex_encode(char *dst, size_t dst_size,
+                              const uint8_t *src, size_t src_size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t used = 0;
+
+    if (dst_size == 0)
+        return 0;
+
+    for (size_t i = 0; i < src_size && used + 2 < dst_size; i++) {
+        dst[used++] = hex[src[i] >> 4];
+        dst[used++] = hex[src[i] & 0x0f];
+    }
+
+    dst[used] = '\0';
+    return used;
+}
+
+static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
+                                     uint8_t type, uint8_t track, uint8_t block,
+                                     int is_dbcs, const uint8_t *data,
+                                     size_t data_size)
+{
+    char value[256];
+    size_t start = 0;
+    int value_count = 0;
+
+    if (track == 0) {
+        if (block != 0) {
+            if (!cdda_appendf(buf, buf_size, used, "BLOCK%02u.", block))
+                return 0;
+        }
+        if (!cdda_appendf(buf, buf_size, used, "DISC.%s=",
+                          cdda_cdtext_type_name(type, track)))
+            return 0;
+    } else {
+        if (block != 0) {
+            if (!cdda_appendf(buf, buf_size, used, "BLOCK%02u.", block))
+                return 0;
+        }
+        if (!cdda_appendf(buf, buf_size, used, "TRACK%02u.%s=",
+                          track, cdda_cdtext_type_name(type, track)))
+            return 0;
+    }
+
+    if (is_dbcs) {
+        return cdda_appendf(buf, buf_size, used, "<DBCS>\n");
+    }
+
+    if (type >= 0x80 && type <= 0x85) {
+        while (start < data_size) {
+            size_t end = start;
+            while (end < data_size && data[end] != 0)
+                end++;
+            if (end > start) {
+                if (value_count > 0) {
+                    if (!cdda_appendf(buf, buf_size, used, "; "))
+                        return 0;
+                }
+                cdda_sanitize_ascii(value, sizeof(value),
+                                    data + start, end - start);
+                if (!cdda_appendf(buf, buf_size, used, "%s", value))
+                    return 0;
+                value_count++;
+            }
+            start = end + 1;
+        }
+        if (value_count == 0)
+            return cdda_appendf(buf, buf_size, used, "\n");
+        return cdda_appendf(buf, buf_size, used, "\n");
+    }
+
+    if (type == 0x8e) {
+        cdda_sanitize_ascii(value, sizeof(value), data, data_size);
+        return cdda_appendf(buf, buf_size, used, "%s\n", value);
+    }
+
+    cdda_hex_encode(value, sizeof(value), data, data_size);
+    return cdda_appendf(buf, buf_size, used, "%s\n", value);
+}
+
+static void cdda_generate_cdtext(cdda_context_t *ctx)
+{
+    uint8_t *raw = NULL;
+    size_t raw_size = 0;
+    char *text = NULL;
+    uint8_t current_type = 0;
+    uint8_t current_track = 0;
+    uint8_t current_block = 0;
+    int current_dbcs = 0;
+    int have_current = 0;
+    size_t field_used = 0;
+    size_t used = 0;
+    size_t pack_count;
+    uint8_t *field_buf = NULL;
+    size_t field_cap;
+    odfs_err_t err;
+
+    if (!ctx->media)
+        return;
+
+    err = odfs_media_read_cdtext(ctx->media, &raw, &raw_size);
+    if (err != ODFS_OK || !raw || raw_size <= 4)
+        return;
+
+    pack_count = (raw_size - 4u) / 18u;
+    if (pack_count == 0) {
+        odfs_free(raw);
+        return;
+    }
+
+    field_cap = pack_count * 12u;
+    field_buf = odfs_malloc(field_cap ? field_cap : 1u);
+    text = odfs_malloc(128u + raw_size * 4u);
+    if (!field_buf || !text) {
+        odfs_free(field_buf);
+        odfs_free(text);
+        odfs_free(raw);
+        return;
+    }
+
+    if (!cdda_appendf(text, 128u + raw_size * 4u, &used,
+                      "# Generated by ODFileSystem from CD-Text packs\n")) {
+        odfs_free(field_buf);
+        odfs_free(text);
+        odfs_free(raw);
+        return;
+    }
+
+    for (size_t i = 0; i < pack_count; i++) {
+        const uint8_t *pack = raw + 4u + i * 18u;
+        uint8_t type = pack[0];
+        uint8_t track = pack[1];
+        uint8_t bncp = pack[3];
+        uint8_t block = (bncp >> 4) & 0x07;
+        int is_dbcs = (bncp & 0x80) != 0;
+
+        if (!have_current ||
+            type != current_type ||
+            track != current_track ||
+            block != current_block ||
+            is_dbcs != current_dbcs) {
+            if (have_current &&
+                !cdda_append_cdtext_record(text, 128u + raw_size * 4u, &used,
+                                           current_type, current_track,
+                                           current_block, current_dbcs,
+                                           field_buf, field_used)) {
+                odfs_free(field_buf);
+                odfs_free(text);
+                odfs_free(raw);
+                return;
+            }
+            have_current = 1;
+            current_type = type;
+            current_track = track;
+            current_block = block;
+            current_dbcs = is_dbcs;
+            field_used = 0;
+        }
+
+        if (field_used + 12u <= field_cap) {
+            memcpy(field_buf + field_used, pack + 4, 12u);
+            field_used += 12u;
+        }
+    }
+
+    if (have_current &&
+        !cdda_append_cdtext_record(text, 128u + raw_size * 4u, &used,
+                                   current_type, current_track,
+                                   current_block, current_dbcs,
+                                   field_buf, field_used)) {
+        odfs_free(field_buf);
+        odfs_free(text);
+        odfs_free(raw);
+        return;
+    }
+
+    ctx->cdtext_text = text;
+    ctx->cdtext_size = used;
+
+    odfs_free(field_buf);
+    odfs_free(raw);
+}
+
+static int cdda_fill_cdtext_node(const cdda_context_t *ctx, odfs_node_t *node)
+{
+    if (!ctx->cdtext_text || ctx->cdtext_size == 0)
+        return 0;
+
+    memset(node, 0, sizeof(*node));
+    node->id = CDDA_CDTEXT_NODE_ID;
+    node->parent_id = 0;
+    node->backend = ODFS_BACKEND_CDDA;
+    node->kind = ODFS_NODE_VIRTUAL;
+    node->size = ctx->cdtext_size;
+    node->extent.lba = CDDA_CDTEXT_LBA;
+    node->extent.length = (uint32_t)ctx->cdtext_size;
+    memcpy(node->name, CDDA_CDTEXT_NAME, sizeof(CDDA_CDTEXT_NAME));
+    return 1;
+}
+
+static int cdda_metadata_count(const cdda_context_t *ctx)
+{
+    int count = 0;
+
+    if (ctx->cddb_text && ctx->cddb_size != 0)
+        count++;
+    if (ctx->cdtext_text && ctx->cdtext_size != 0)
+        count++;
+    return count;
+}
+
+static int cdda_fill_metadata_node(const cdda_context_t *ctx, int index,
+                                   odfs_node_t *node)
+{
+    if (ctx->cddb_text && ctx->cddb_size != 0) {
+        if (index == 0)
+            return cdda_fill_cddb_node(ctx, node);
+        index--;
+    }
+    if (ctx->cdtext_text && ctx->cdtext_size != 0) {
+        if (index == 0)
+            return cdda_fill_cdtext_node(ctx, node);
+    }
+    return 0;
 }
 
 static void cdda_byteswap_samples(uint8_t *buf, size_t len)
@@ -413,6 +684,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     }
 
     cdda_generate_cddb(ctx);
+    cdda_generate_cdtext(ctx);
 
     /* build root node */
     memset(root_out, 0, sizeof(*root_out));
@@ -454,6 +726,7 @@ static void cdda_unmount(void *backend_ctx)
 
     if (ctx) {
         odfs_free(ctx->cddb_text);
+        odfs_free(ctx->cdtext_text);
         odfs_free(ctx);
     }
 }
@@ -476,23 +749,26 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
     (void)dir;
 
     int start = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
+    int metadata_count = cdda_metadata_count(ctx);
 
-    if (start == 0) {
+    for (int i = start; i < metadata_count; i++) {
         odfs_node_t node;
 
-        if (cdda_fill_cddb_node(ctx, &node)) {
-            odfs_err_t err = callback(&node, cb_ctx);
-            if (err != ODFS_OK) {
-                if (resume_offset)
-                    *resume_offset = 1;
-                return err;
-            }
+        if (!cdda_fill_metadata_node(ctx, i, &node))
+            continue;
+
+        odfs_err_t err = callback(&node, cb_ctx);
+        if (err != ODFS_OK) {
+            if (resume_offset)
+                *resume_offset = (uint32_t)i;
+            return err;
         }
-        start = 1;
     }
 
-    for (int i = start - 1; i < ctx->track_count; i++) {
+    for (int i = start - metadata_count; i < ctx->track_count; i++) {
         odfs_node_t node;
+        if (i < 0)
+            continue;
         memset(&node, 0, sizeof(node));
 
         node.id = ctx->tracks[i].number;
@@ -509,13 +785,13 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         odfs_err_t err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
-                *resume_offset = (uint32_t)(i + 2);
+                *resume_offset = (uint32_t)(metadata_count + i);
             return err;
         }
     }
 
     if (resume_offset)
-        *resume_offset = (uint32_t)(ctx->track_count + 1);
+        *resume_offset = (uint32_t)(metadata_count + ctx->track_count);
     return ODFS_OK;
 }
 
@@ -535,7 +811,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
     (void)cache;
     (void)log;
 
-    if (file->extent.lba == CDDA_CDDB_LBA) {
+    if (file->id == CDDA_CDDB_NODE_ID) {
         size_t want = *len;
 
         if (!ctx->cddb_text || offset >= ctx->cddb_size) {
@@ -546,6 +822,21 @@ static odfs_err_t cdda_read(void *backend_ctx,
             want = ctx->cddb_size - (size_t)offset;
 
         memcpy(buf, ctx->cddb_text + (size_t)offset, want);
+        *len = want;
+        return ODFS_OK;
+    }
+
+    if (file->id == CDDA_CDTEXT_NODE_ID) {
+        size_t want = *len;
+
+        if (!ctx->cdtext_text || offset >= ctx->cdtext_size) {
+            *len = 0;
+            return ODFS_OK;
+        }
+        if (offset + want > ctx->cdtext_size)
+            want = ctx->cdtext_size - (size_t)offset;
+
+        memcpy(buf, ctx->cdtext_text + (size_t)offset, want);
         *len = want;
         return ODFS_OK;
     }
@@ -647,6 +938,12 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
         return ODFS_ERR_NOT_FOUND;
     }
 
+    if (odfs_strcasecmp(name, CDDA_CDTEXT_NAME) == 0) {
+        if (cdda_fill_cdtext_node(ctx, out))
+            return ODFS_OK;
+        return ODFS_ERR_NOT_FOUND;
+    }
+
     for (int i = 0; i < ctx->track_count; i++) {
         char tname[32];
         cdda_track_name(ctx->tracks[i].number, ctx->file_format,
@@ -694,6 +991,7 @@ static uint32_t cdda_get_volume_size(void *backend_ctx)
     uint64_t bytes = 0;
 
     bytes += ctx->cddb_size;
+    bytes += ctx->cdtext_size;
     for (int i = 0; i < ctx->track_count; i++)
         bytes += ctx->tracks[i].file_size;
 

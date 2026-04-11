@@ -47,6 +47,8 @@ typedef struct cdda_context {
     cdda_file_format_t file_format;
     char               *cddb_text;
     size_t             cddb_size;
+    char               *cdtext_text;
+    size_t             cdtext_size;
     odfs_media_t       *media;          /* for read_audio calls */
 } cdda_context_t;
 
