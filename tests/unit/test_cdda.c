@@ -66,13 +66,14 @@ TEST(cdda_mixed_mode_exports_only_audio_tracks)
     ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
                                        collect_entry, &collect, NULL));
 
-    ASSERT_EQ(collect.count, 2);
-    ASSERT_STR_EQ(collect.entries[0].name, "Track01.wav");
-    ASSERT_STR_EQ(collect.entries[1].name, "Track02.wav");
-    ASSERT_EQ(collect.entries[0].id, 1);
-    ASSERT_EQ(collect.entries[1].id, 2);
-    ASSERT_EQ(collect.entries[0].extent.lba, 2);
-    ASSERT_EQ(collect.entries[1].extent.lba, 3);
+    ASSERT_EQ(collect.count, 3);
+    ASSERT_STR_EQ(collect.entries[0].name, "CDDB.txt");
+    ASSERT_STR_EQ(collect.entries[1].name, "Track01.wav");
+    ASSERT_STR_EQ(collect.entries[2].name, "Track02.wav");
+    ASSERT_EQ(collect.entries[1].id, 1);
+    ASSERT_EQ(collect.entries[2].id, 2);
+    ASSERT_EQ(collect.entries[1].extent.lba, 2);
+    ASSERT_EQ(collect.entries[2].extent.lba, 3);
 
     cdda_backend_ops.unmount(backend_ctx);
 }
@@ -105,9 +106,51 @@ TEST(cdda_pure_audio_uses_leadout_for_last_track)
     ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
                                        collect_entry, &collect, NULL));
 
-    ASSERT_EQ(collect.count, 2);
-    ASSERT_STR_EQ(collect.entries[0].name, "Track01.wav");
-    ASSERT_STR_EQ(collect.entries[1].name, "Track02.wav");
+    ASSERT_EQ(collect.count, 3);
+    ASSERT_STR_EQ(collect.entries[0].name, "CDDB.txt");
+    ASSERT_STR_EQ(collect.entries[1].name, "Track01.wav");
+    ASSERT_STR_EQ(collect.entries[2].name, "Track02.wav");
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
+TEST(cdda_cddb_file_exposes_disc_id_and_query)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t cddb;
+    void *backend_ctx = NULL;
+    char buf[512];
+    size_t len = sizeof(buf) - 1;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 2;
+    toc.leadout_lba = 300;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 100;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x00;
+    toc.sessions[1].start_lba = 100;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "CDDB.txt", &cddb));
+    ASSERT_EQ(cddb.extent.lba, 1);
+    ASSERT(cddb.size > 0);
+
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &cddb, 0,
+                                    buf, &len));
+    buf[len] = '\0';
+
+    ASSERT(strstr(buf, "DISCID=05000402\n") != NULL);
+    ASSERT(strstr(buf, "TRACKS=2\n") != NULL);
+    ASSERT(strstr(buf, "TOTAL_SECONDS=4\n") != NULL);
+    ASSERT(strstr(buf, "TOTAL_FRAMES=300\n") != NULL);
+    ASSERT(strstr(buf, "OFFSET01=150\n") != NULL);
+    ASSERT(strstr(buf, "OFFSET02=250\n") != NULL);
+    ASSERT(strstr(buf, "QUERY=cddb query 05000402 2 150 250 4\n") != NULL);
 
     cdda_backend_ops.unmount(backend_ctx);
 }

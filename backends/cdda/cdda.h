@@ -45,6 +45,8 @@ typedef struct cdda_context {
     cdda_track_t       tracks[CDDA_MAX_TRACKS];
     int                is_mixed_mode;   /* has both data and audio tracks */
     cdda_file_format_t file_format;
+    char               *cddb_text;
+    size_t             cddb_size;
     odfs_media_t       *media;          /* for read_audio calls */
 } cdda_context_t;
 
