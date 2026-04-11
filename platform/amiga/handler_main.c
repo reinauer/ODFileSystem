@@ -25,6 +25,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/icon.h>
+#include <proto/utility.h>
 #include <proto/wb.h>
 
 #include <string.h>
@@ -42,6 +43,7 @@ static const char version_string[] __attribute__((used)) =
 /* library bases — set by handler_main() */
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
+struct Library *UtilityBase;
 struct Library *IconBase;
 struct Library *WorkbenchBase;
 
@@ -718,6 +720,15 @@ static odfs_err_t find_node_by_id(handler_global_t *g,
                                   uint32_t target_id,
                                   odfs_node_t *out,
                                   odfs_node_t *parent_out);
+static odfs_err_t lookup_child_node(handler_global_t *g,
+                                    const odfs_node_t *dir,
+                                    const char *name,
+                                    odfs_node_t *out);
+static odfs_err_t read_file_node(handler_global_t *g,
+                                 const odfs_node_t *file,
+                                 uint64_t offset,
+                                 void *buf,
+                                 size_t *len);
 
 static odfs_err_t find_node_cb(const odfs_node_t *entry, void *ctx)
 {
@@ -797,6 +808,35 @@ static odfs_err_t resolve_parent_node(handler_global_t *g,
 
     return find_node_by_id(g, &root, &root, node->parent_id,
                            parent_out, grandparent_out);
+}
+
+static odfs_err_t lookup_child_node(handler_global_t *g,
+                                    const odfs_node_t *dir,
+                                    const char *name,
+                                    odfs_node_t *out)
+{
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA)
+        return cdda_backend_ops.lookup(g->cdda_ctx, &g->mount.cache,
+                                       &g->log, dir, name, out);
+#endif
+
+    return odfs_lookup(&g->mount, dir, name, out);
+}
+
+static odfs_err_t read_file_node(handler_global_t *g,
+                                 const odfs_node_t *file,
+                                 uint64_t offset,
+                                 void *buf,
+                                 size_t *len)
+{
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && file->backend == ODFS_BACKEND_CDDA)
+        return cdda_backend_ops.read(g->cdda_ctx, &g->mount.cache,
+                                     &g->log, file, offset, buf, len);
+#endif
+
+    return odfs_read(&g->mount, file, offset, buf, len);
 }
 
 static void free_volume(odfs_volume_t *volume)
@@ -1044,7 +1084,7 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         }
 #endif
 
-        err = odfs_lookup(&g->mount, &cur, comp, &cur);
+        err = lookup_child_node(g, &cur, comp, &cur);
         if (err != ODFS_OK)
             return err;
 
@@ -1662,8 +1702,13 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 #if ODFS_FEATURE_CDDA
         /* data entries exhausted — inject CDDA virtual dir if at root */
         if (g->has_cdda && node_is_mount_root(g, dir) &&
-            (ec.first || ec.seen_previous)) {
+            ec.previous_key != amiga_node_key(&g->cdda_root)) {
             fill_fib(fib, &g->cdda_root);
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+            serial_trace_kv("[trace] exnext-inject-cdda key",
+                            (ULONG)fib->fib_DiskKey);
+            raw_putchar('\n');
+#endif
             pkt->dp_Res1 = DOSTRUE;
             return;
         }
@@ -1772,6 +1817,8 @@ static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
     exall_ctx_t *ec = ctx;
     ULONG key = amiga_node_key(entry);
     struct ExAllData *slot;
+    struct ExAllData *cursor_before;
+    LONG remaining_before;
 
     if (ec->previous_key != 0 && !ec->seen_previous) {
         if (key == ec->previous_key)
@@ -1784,10 +1831,19 @@ static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
                             (STRPTR)entry->name))
         return ODFS_OK;
 
+    cursor_before = ec->cursor;
+    remaining_before = ec->remaining;
     slot = ec->cursor;
     if (!exall_fill_entry(&ec->cursor, &ec->remaining, ec->data, entry)) {
         ec->full = 1;
         return ODFS_ERR_EOF;
+    }
+
+    if (UtilityBase && ec->control->eac_MatchFunc &&
+        !CallHookPkt(ec->control->eac_MatchFunc, slot, &ec->data)) {
+        ec->cursor = cursor_before;
+        ec->remaining = remaining_before;
+        return ODFS_OK;
     }
 
     ec->last = slot;
@@ -1816,12 +1872,6 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
     if (data < ED_NAME || data > ED_OWNER) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_BAD_NUMBER;
-        return;
-    }
-
-    if (control->eac_MatchFunc) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;
         return;
     }
 
@@ -1864,7 +1914,6 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
 
 #if ODFS_FEATURE_CDDA
         if (!ec.full && g->has_cdda && node_is_mount_root(g, dir) &&
-            (ec.previous_key == 0 || ec.seen_previous) &&
             ec.previous_key != amiga_node_key(&g->cdda_root))
             (void)exall_cb(&g->cdda_root, &ec);
 #endif
@@ -2042,7 +2091,7 @@ static void action_read(handler_global_t *g, struct DosPacket *pkt)
     }
 
     size_t actual = (size_t)len;
-    odfs_err_t err = odfs_read(&g->mount, fh_node(fh), fh->pos, buf, &actual);
+    odfs_err_t err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
     if (err != ODFS_OK && actual == 0) {
         pkt->dp_Res1 = -1;
         pkt->dp_Res2 = odfs_err_to_dos(err);
@@ -2828,6 +2877,7 @@ void handler_main(void)
         return;
     }
     g->dosbase = DOSBase;
+    UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
 
     /* open optional libraries for Workbench integration */
     IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 36);
@@ -3007,6 +3057,8 @@ shutdown:
         CloseLibrary(WorkbenchBase);
     if (IconBase)
         CloseLibrary(IconBase);
+    if (UtilityBase)
+        CloseLibrary(UtilityBase);
 
     CloseLibrary((struct Library *)DOSBase);
     FreeMem(g, sizeof(*g));
