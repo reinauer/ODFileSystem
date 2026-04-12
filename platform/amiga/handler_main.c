@@ -19,14 +19,13 @@
 #include <devices/trackdisk.h>
 #include <devices/scsidisk.h>
 #include <devices/input.h>
+#include <devices/inputevent.h>
 #include <dos/dostags.h>
 #include <dos/exall.h>
 
 #include <proto/exec.h>
 #include <proto/dos.h>
-#include <proto/icon.h>
 #include <proto/utility.h>
-#include <proto/wb.h>
 
 #include <string.h>
 
@@ -46,23 +45,20 @@ static const char version_string[] __attribute__((used)) =
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
 struct Library *UtilityBase;
-struct Library *IconBase;
-struct Library *WorkbenchBase;
 
 /* forward declarations */
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
 static void mount_volume(handler_global_t *g);
 static void unmount_volume(handler_global_t *g);
-static void show_appicon(handler_global_t *g);
-static void hide_appicon(handler_global_t *g);
-static void cleanup_appicon(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
 static void destroy_volume_node(struct DeviceList *volnode);
 static void detach_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
 static int query_media_present(handler_global_t *g, ULONG *status);
+static void fill_volume_date(handler_global_t *g, struct DateStamp *stamp);
+static void notify_workbench_disk_change(BOOL inserted);
 #if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc);
 #endif
@@ -111,6 +107,91 @@ static LONG changeint_handler(odfs_changeint_data_t *ci asm("a1"))
     if (ci && ci->task && ci->sigmask)
         Signal(ci->task, ci->sigmask);
     return 0;
+}
+
+static int odfs_timestamp_to_datestamp(const odfs_timestamp_t *ts,
+                                       struct DateStamp *stamp)
+{
+    static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+    LONG days = 0;
+    int y;
+    int m;
+
+    if (!ts || !stamp || ts->year < 1978 || ts->month < 1 || ts->month > 12 ||
+        ts->day < 1 || ts->day > 31 || ts->hour > 23 || ts->minute > 59 ||
+        ts->second > 59)
+        return 0;
+
+    for (y = 1978; y < ts->year; y++) {
+        days += 365;
+        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
+            days++;
+    }
+
+    for (m = 1; m < ts->month; m++) {
+        days += mdays[m];
+        if (m == 2 && ((ts->year % 4 == 0 && ts->year % 100 != 0) ||
+            ts->year % 400 == 0))
+            days++;
+    }
+
+    days += ts->day - 1;
+    stamp->ds_Days = days;
+    stamp->ds_Minute = ts->hour * 60 + ts->minute;
+    stamp->ds_Tick = ts->second * TICKS_PER_SECOND;
+    return 1;
+}
+
+static void fill_volume_date(handler_global_t *g, struct DateStamp *stamp)
+{
+    if (!stamp)
+        return;
+
+    memset(stamp, 0, sizeof(*stamp));
+
+    /* Workbench keys mounted volumes by name plus dl_VolumeDate. Prefer
+     * on-disc timestamps when the active backend provides them. */
+    if (odfs_timestamp_to_datestamp(&g->mount.root.ctime, stamp))
+        return;
+    if (odfs_timestamp_to_datestamp(&g->mount.root.mtime, stamp))
+        return;
+
+    /* Synthetic backends like pure-audio CDDA have no on-disc root date.
+     * Use the current time so each inserted medium still gets a fresh
+     * identity instead of reusing a stale zero stamp. */
+    DateStamp(stamp);
+}
+
+static void notify_workbench_disk_change(BOOL inserted)
+{
+    struct MsgPort *port;
+    struct IOStdReq *req;
+    struct InputEvent event;
+
+    port = CreateMsgPort();
+    if (!port)
+        return;
+
+    req = (struct IOStdReq *)CreateIORequest(port, sizeof(*req));
+    if (!req) {
+        DeleteMsgPort(port);
+        return;
+    }
+
+    if (OpenDevice((CONST_STRPTR)"input.device", 0,
+                   (struct IORequest *)req, 0) == 0) {
+        memset(&event, 0, sizeof(event));
+        event.ie_Class = inserted ? IECLASS_DISKINSERTED
+                                  : IECLASS_DISKREMOVED;
+        req->io_Command = IND_WRITEEVENT;
+        req->io_Data = (APTR)&event;
+        req->io_Length = sizeof(event);
+        DoIO((struct IORequest *)req);
+        CloseDevice((struct IORequest *)req);
+    }
+
+    DeleteIORequest((struct IORequest *)req);
+    DeleteMsgPort(port);
 }
 
 static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
@@ -2624,33 +2705,23 @@ static void return_packet(handler_global_t *g, struct DosPacket *pkt)
 static struct DeviceList *create_volume_node(handler_global_t *g)
 {
     struct DeviceList *dl;
+    char namebuf[31];
     int namelen;
-    UBYTE *bname;
-
-    dl = (struct DeviceList *)AllocMem(sizeof(*dl), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!dl)
-        return NULL;
 
     namelen = strlen(g->volname);
     if (namelen > 30)
         namelen = 30;
-    bname = AllocMem(namelen + 2, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!bname) {
-        FreeMem(dl, sizeof(*dl));
-        return NULL;
-    }
-    /* BCPL string format: length byte + chars + NUL.
-     * This is used for dl_Name in the DOS volume list and is the
-     * same convention on both classic AmigaOS and AROS. */
-    bname[0] = namelen;
-    memcpy(bname + 1, g->volname, namelen);
-    bname[namelen + 1] = '\0';
+    memcpy(namebuf, g->volname, namelen);
+    namebuf[namelen] = '\0';
 
-    dl->dl_Type     = DLT_VOLUME;
+    dl = (struct DeviceList *)MakeDosEntry((STRPTR)namebuf, DLT_VOLUME);
+    if (!dl)
+        return NULL;
+
     dl->dl_Task     = g->dosport;
     dl->dl_Lock     = 0;
     dl->dl_DiskType = ID_DOS_DISK;
-    dl->dl_Name     = MKBADDR(bname);
+    fill_volume_date(g, &dl->dl_VolumeDate);
 
     return dl;
 }
@@ -2659,13 +2730,7 @@ static void destroy_volume_node(struct DeviceList *volnode)
 {
     if (!volnode)
         return;
-
-    {
-        UBYTE *bname = (UBYTE *)BADDR(volnode->dl_Name);
-        if (bname)
-            FreeMem(bname, bname[0] + 2);
-    }
-    FreeMem(volnode, sizeof(*volnode));
+    FreeDosEntry((struct DosList *)volnode);
 }
 
 static void detach_volume_node(struct DeviceList *volnode)
@@ -2936,9 +3001,9 @@ static void mount_volume(handler_global_t *g)
             AddDosEntry((struct DosList *)g->volnode);
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
         }
+        notify_workbench_disk_change(TRUE);
     }
 
-    show_appicon(g);
 }
 
 static void unmount_volume(handler_global_t *g)
@@ -2948,7 +3013,6 @@ static void unmount_volume(handler_global_t *g)
     if (!g->mounted)
         return;
 
-    hide_appicon(g);
     volume = g->current_volume;
 
     odfs_unmount(&g->mount);
@@ -2966,6 +3030,7 @@ static void unmount_volume(handler_global_t *g)
 
     rebuild_volume_locklist(g, volume);
     detach_volume_node(volume->volnode);
+    notify_workbench_disk_change(FALSE);
     if (volume->object_count != 0) {
         return;
     }
@@ -3116,51 +3181,6 @@ static void handle_media_change(handler_global_t *g)
 }
 
 /* ------------------------------------------------------------------ */
-/* Workbench AppIcon                                                   */
-/* ------------------------------------------------------------------ */
-
-static void show_appicon(handler_global_t *g)
-{
-    (void)g;
-    /*
-     * The mounted DLT_VOLUME is already visible to Workbench through the
-     * DOS list. Adding a separate AppIcon creates a second, unrelated icon.
-     */
-}
-
-static void hide_appicon(handler_global_t *g)
-{
-    struct Message *msg;
-
-    if (!IconBase || !WorkbenchBase)
-        return;
-
-    if (g->appicon) {
-        RemoveAppIcon(g->appicon);
-        g->appicon = NULL;
-    }
-
-    if (g->appport) {
-        while ((msg = GetMsg(g->appport)) != NULL)
-            ReplyMsg(msg);
-    }
-}
-
-static void cleanup_appicon(handler_global_t *g)
-{
-    hide_appicon(g);
-
-    if (g->appport) {
-        DeleteMsgPort(g->appport);
-        g->appport = NULL;
-    }
-    if (g->diskobj) {
-        FreeDiskObject(g->diskobj);
-        g->diskobj = NULL;
-    }
-}
-
-/* ------------------------------------------------------------------ */
 /* handler main entry point                                            */
 /* ------------------------------------------------------------------ */
 
@@ -3247,12 +3267,6 @@ void handler_main(void)
     }
     g->dosbase = DOSBase;
     UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
-
-    /* open optional libraries for Workbench integration */
-    IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 36);
-    WorkbenchBase = OpenLibrary((CONST_STRPTR)"workbench.library", 36);
-    g->iconbase = IconBase;
-    g->wbbase = WorkbenchBase;
 
     /* open device */
     g->devport = CreateMsgPort();
@@ -3354,10 +3368,7 @@ void handler_main(void)
     /* ---- main packet loop ---- */
     dossig = 1UL << g->dosport->mp_SigBit;
     chgsig = (g->chgsigbit >= 0) ? (1UL << g->chgsigbit) : 0;
-    {
-        ULONG appsig = g->appport ? (1UL << g->appport->mp_SigBit) : 0;
-        waitmask = dossig | chgsig | appsig;
-    }
+    waitmask = dossig | chgsig;
 
     while (running) {
         ULONG sigs = Wait(waitmask);
@@ -3367,13 +3378,6 @@ void handler_main(void)
             handle_media_change(g);
             /* re-init media adapter after remount */
             amctx.g = g;
-        }
-
-        /* AppIcon double-click — drain messages */
-        if (g->appport) {
-            struct Message *appmsg;
-            while ((appmsg = GetMsg(g->appport)) != NULL)
-                ReplyMsg(appmsg);
         }
 
         /* DOS packets */
@@ -3426,11 +3430,6 @@ shutdown:
     if (g->devnode)
         g->devnode->dn_Task = NULL;
 
-    cleanup_appicon(g);
-    if (WorkbenchBase)
-        CloseLibrary(WorkbenchBase);
-    if (IconBase)
-        CloseLibrary(IconBase);
     if (UtilityBase)
         CloseLibrary(UtilityBase);
 

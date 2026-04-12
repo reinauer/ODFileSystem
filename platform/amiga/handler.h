@@ -14,8 +14,6 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
-#include <workbench/startup.h>
-#include <workbench/workbench.h>
 
 #include "aros_compat.h"
 #include "odfs/api.h"
@@ -86,13 +84,6 @@ typedef struct handler_global {
     void                *cdda_ctx;      /* cdda_context_t* if audio tracks present */
     odfs_node_t         cdda_root;     /* CDDA virtual dir node */
     int                  has_cdda;      /* audio tracks detected */
-
-    /* Workbench AppIcon */
-    struct Library      *iconbase;      /* icon.library */
-    struct Library      *wbbase;        /* workbench.library */
-    struct MsgPort      *appport;       /* AppIcon message port */
-    struct AppIcon      *appicon;       /* active AppIcon (or NULL) */
-    struct DiskObject   *diskobj;       /* icon image */
 
     /* lock list */
     struct MinList       locklist;      /* active locks */
