@@ -22,6 +22,7 @@
 #define CDDA_FRAMES_PER_SEC  75     /* CD frames per second */
 #define CDDA_WAV_HEADER_SIZE 44     /* PCM WAV header */
 #define CDDA_AIFF_HEADER_SIZE 54    /* AIFF COMM + SSND header */
+#define CDDA_READAHEAD_FRAMES 16    /* streaming read-ahead window */
 
 #define CDDA_MAX_TRACKS      99
 
@@ -50,6 +51,9 @@ typedef struct cdda_context {
     char               *cdtext_text;
     size_t             cdtext_size;
     odfs_media_t       *media;          /* for read_audio calls */
+    uint8_t            *audio_cache;    /* read-ahead audio frames */
+    uint32_t            audio_cache_lba;
+    uint32_t            audio_cache_frames;
 } cdda_context_t;
 
 extern const odfs_backend_ops_t cdda_backend_ops;
