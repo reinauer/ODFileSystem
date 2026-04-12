@@ -48,13 +48,13 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
     err = odfs_media_read_last_session_lba(media, last_lba_out);
     if (err == ODFS_OK) {
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                  "multisession: explicit last session starts at LBA %" PRIu32,
+                  "explicit last session starts at LBA %" PRIu32,
                   *last_lba_out);
         return ODFS_OK;
     }
     if (err != ODFS_ERR_UNSUPPORTED) {
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                  "multisession: explicit last-session query unavailable "
+                  "explicit last-session query unavailable "
                   "(%s); falling back to TOC heuristics",
                   odfs_err_str(err));
     }
@@ -85,7 +85,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
             *last_lba_out = toc.sessions[last].start_lba;
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                       "multisession: TOC heuristic picked last data track "
+                       "TOC heuristic picked last data track "
                        "from %" PRIu32 " track(s) at LBA %" PRIu32,
                        (uint32_t)toc.session_count, *last_lba_out);
             return ODFS_OK;
@@ -135,7 +135,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         if (best_lba > 0) {
             *last_lba_out = best_lba;
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                       "multisession: PVD scan found last session at LBA %" PRIu32,
+                       "PVD scan found last session at LBA %" PRIu32,
                        best_lba);
         }
     }
