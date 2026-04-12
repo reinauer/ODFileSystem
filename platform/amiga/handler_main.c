@@ -38,7 +38,7 @@
 #endif
 
 static const char version_string[] __attribute__((used)) =
-    "$VER: ODFileSystem " ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
+    "$VER: ODFileSystem " ODFS_GIT_VERSION
     " (" ODFS_AMIGA_DATE ")";
 
 /* library bases — set by handler_main() */
@@ -3252,7 +3252,7 @@ void handler_main(void)
     odfs_log_set_level(&g->log, ODFS_LOG_TRACE);
 #endif
     ODFS_INFO(&g->log, ODFS_SUB_NONE,
-              "ODFileSystem v" ODFS_HANDLER_VERSION " " ODFS_GIT_VERSION
+              "ODFileSystem " ODFS_GIT_VERSION
               " (" ODFS_AMIGA_DATE ") starting...");
 
     DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library", 36);

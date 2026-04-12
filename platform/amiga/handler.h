@@ -18,8 +18,6 @@
 #include "aros_compat.h"
 #include "odfs/api.h"
 
-#define ODFS_HANDLER_VERSION  "0.9"
-
 typedef struct odfs_volume odfs_volume_t;
 typedef struct odfs_entry odfs_entry_t;
 typedef struct odfs_lock odfs_lock_t;

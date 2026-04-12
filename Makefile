@@ -22,7 +22,7 @@ HOSTCC ?= cc
 # ---- common flags ----
 
 AMIGA_DATE ?= $(shell date '+%-d.%-m.%Y')
-ODFS_GIT_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo unknown)
+ODFS_GIT_VERSION ?= $(shell desc=$$(git describe --tags --match "v*" --dirty --always 2>/dev/null || echo unknown); printf '%s\n' "$$desc" | grep -q '^v' && printf '%s' "$$desc" || printf 'early-0-g%s' "$$desc")
 
 INCLUDES = -I include -I backends
 
