@@ -66,6 +66,7 @@ static int query_media_present(handler_global_t *g, ULONG *status);
 #if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc);
 #endif
+static int scsi_is_unsupported_command(const uint8_t *sense);
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
@@ -96,6 +97,14 @@ static int toc_has_data_track(const odfs_toc_t *toc);
 typedef struct amiga_media_ctx {
     handler_global_t *g;
 } amiga_media_ctx_t;
+
+static int scsi_is_unsupported_command(const uint8_t *sense)
+{
+    if (!sense)
+        return 0;
+
+    return ((sense[2] & 0x0f) == 0x05 && sense[12] == 0x20);
+}
 
 static LONG changeint_handler(odfs_changeint_data_t *ci asm("a1"))
 {
@@ -202,6 +211,9 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     memset(sense, 0, sizeof(sense));
     memset(&scsi, 0, sizeof(scsi));
 
+    if (g->read_cd_audio == 0)
+        return ODFS_ERR_UNSUPPORTED;
+
     /* READ CD (0xBE) CDB */
     cmd[0] = 0xBE;
     cmd[1] = 0x01 << 2;  /* expected sector type: CD-DA (audio) */
@@ -231,6 +243,15 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     io_rc = DoIO((struct IORequest *)g->devreq);
     if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
         scsi.scsi_Actual != scsi.scsi_Length) {
+        if (scsi_is_unsupported_command(sense)) {
+            if (g->read_cd_audio != 0) {
+                g->read_cd_audio = 0;
+                ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                          "READ CD (0xBE) unsupported on this device path; "
+                          "disabling CDDA audio reads");
+            }
+            return ODFS_ERR_UNSUPPORTED;
+        }
         ODFS_ERROR(&g->log, ODFS_SUB_CDDA,
                    "READ CD (0xBE) failed io_rc=%ld io_Error=%ld "
                    "scsi_Status=%lu scsi_Actual=%lu scsi_Length=%lu "
@@ -248,6 +269,9 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
                    (unsigned int)scsi.scsi_SenseActual);
         return ODFS_ERR_IO;
     }
+
+    if (g->read_cd_audio < 1)
+        g->read_cd_audio = 1;
 
     return ODFS_OK;
 }
@@ -278,6 +302,9 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     memset(sense, 0, sizeof(sense));
     memset(&scsi, 0, sizeof(scsi));
 
+    if (g->toc_passthrough == 0)
+        return ODFS_ERR_UNSUPPORTED;
+
     /* SCSI Read TOC, format 0x00 (TOC) */
     cmd[0] = 0x43;              /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;              /* MSF=0 (LBA format) */
@@ -300,6 +327,15 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
 
     io_rc = DoIO((struct IORequest *)g->devreq);
     if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        if (scsi_is_unsupported_command(sense)) {
+            if (g->toc_passthrough != 0) {
+                g->toc_passthrough = 0;
+                ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                          "READ TOC (0x43) unsupported on this device path; "
+                          "disabling TOC-based audio features");
+            }
+            return ODFS_ERR_UNSUPPORTED;
+        }
         ODFS_WARN(&g->log, ODFS_SUB_CDDA,
                   "READ TOC (0x43) failed io_rc=%ld io_Error=%ld "
                   "scsi_Status=%lu sense=%02x/%02x/%02x sense_actual=%u",
@@ -383,6 +419,9 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
         return ODFS_ERR_BAD_FORMAT;
     }
 
+    if (g->toc_passthrough < 1)
+        g->toc_passthrough = 1;
+
     return ODFS_OK;
 }
 
@@ -405,6 +444,9 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 
     *buf_out = NULL;
     *len_out = 0;
+
+    if (g->cdtext_passthrough == 0)
+        return ODFS_ERR_UNSUPPORTED;
 
     memset(cmd, 0, sizeof(cmd));
     memset(hdr, 0, sizeof(hdr));
@@ -431,6 +473,15 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 
     io_rc = DoIO((struct IORequest *)g->devreq);
     if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        if (scsi_is_unsupported_command(sense)) {
+            if (g->cdtext_passthrough != 0) {
+                g->cdtext_passthrough = 0;
+                ODFS_INFO(&g->log, ODFS_SUB_CDDA,
+                          "READ TOC CD-Text unsupported on this device path; "
+                          "disabling CD-Text queries");
+            }
+            return ODFS_ERR_UNSUPPORTED;
+        }
         ODFS_INFO(&g->log, ODFS_SUB_CDDA,
                   "READ TOC CD-Text header unavailable io_rc=%ld "
                   "io_Error=%ld scsi_Status=%lu sense=%02x/%02x/%02x",
@@ -479,6 +530,16 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     io_rc = DoIO((struct IORequest *)g->devreq);
     if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
         scsi.scsi_Actual < sizeof(hdr)) {
+        if (scsi_is_unsupported_command(sense)) {
+            if (g->cdtext_passthrough != 0) {
+                g->cdtext_passthrough = 0;
+                ODFS_INFO(&g->log, ODFS_SUB_CDDA,
+                          "READ TOC CD-Text unsupported on this device path; "
+                          "disabling CD-Text queries");
+            }
+            odfs_free(buf);
+            return ODFS_ERR_UNSUPPORTED;
+        }
         ODFS_INFO(&g->log, ODFS_SUB_CDDA,
                   "READ TOC CD-Text unavailable io_rc=%ld io_Error=%ld "
                   "scsi_Status=%lu actual=%lu sense=%02x/%02x/%02x",
@@ -493,6 +554,8 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
         return ODFS_ERR_UNSUPPORTED;
     }
 
+    if (g->cdtext_passthrough < 1)
+        g->cdtext_passthrough = 1;
     *buf_out = buf;
     *len_out = (size_t)scsi.scsi_Actual;
     return ODFS_OK;
@@ -3129,6 +3192,9 @@ void handler_main(void)
     g->fhlist.mlh_TailPred   = (struct MinNode *)&g->fhlist.mlh_Head;
     g->next_volume_id = 1;
     g->chgsigbit = -1;
+    g->toc_passthrough = -1;
+    g->read_cd_audio = -1;
+    g->cdtext_passthrough = -1;
 
     {
         struct Process *proc = (struct Process *)FindTask(NULL);
