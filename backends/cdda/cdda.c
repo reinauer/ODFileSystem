@@ -332,8 +332,6 @@ static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
             }
             start = end + 1;
         }
-        if (value_count == 0)
-            return cdda_appendf(buf, buf_size, used, "\n");
         return cdda_appendf(buf, buf_size, used, "\n");
     }
 
@@ -377,7 +375,7 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
     }
 
     field_cap = pack_count * 12u;
-    field_buf = odfs_malloc(field_cap ? field_cap : 1u);
+    field_buf = odfs_malloc(field_cap);
     text = odfs_malloc(128u + raw_size * 4u);
     if (!field_buf || !text) {
         odfs_free(field_buf);
