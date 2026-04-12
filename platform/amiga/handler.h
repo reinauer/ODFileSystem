@@ -62,6 +62,7 @@ typedef struct handler_global {
     int                  mounted;       /* filesystem mounted? */
     int                  inhibited;     /* ACTION_INHIBIT active? */
     int                  toc_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
+    int                  last_session_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  read_cd_audio;   /* -1 unknown, 0 unsupported, 1 ok */
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
 

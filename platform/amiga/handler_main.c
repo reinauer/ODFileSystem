@@ -271,6 +271,94 @@ static uint32_t amiga_sector_count(void *ctx)
     return 0; /* unknown — CD media doesn't reliably report size */
 }
 
+static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
+{
+    amiga_media_ctx_t *am = ctx;
+    handler_global_t *g = am->g;
+    uint8_t cmd[10];
+    uint8_t buf[12];
+    uint8_t sense[32];
+    struct SCSICmd scsi;
+    LONG io_rc;
+
+    if (!lba_out)
+        return ODFS_ERR_INVAL;
+
+    *lba_out = 0;
+
+    if (g->last_session_passthrough == 0)
+        return ODFS_ERR_UNSUPPORTED;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(buf, 0, sizeof(buf));
+    memset(sense, 0, sizeof(sense));
+    memset(&scsi, 0, sizeof(scsi));
+
+    cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
+    cmd[1] = 0x00;  /* MSF=0 (LBA) */
+    cmd[2] = 0x01;  /* format: multisession info */
+    cmd[7] = 0x00;
+    cmd[8] = sizeof(buf);
+
+    scsi.scsi_Data = (UWORD *)buf;
+    scsi.scsi_Length = sizeof(buf);
+    scsi.scsi_CmdLength = 10;
+    scsi.scsi_Command = cmd;
+    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
+
+    g->devreq->io_Command = HD_SCSICMD;
+    g->devreq->io_Data    = &scsi;
+    g->devreq->io_Length  = sizeof(scsi);
+
+    io_rc = DoIO((struct IORequest *)g->devreq);
+    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+        if (scsi_is_unsupported_command(sense)) {
+            if (g->last_session_passthrough != 0) {
+                g->last_session_passthrough = 0;
+                ODFS_INFO(&g->log, ODFS_SUB_MULTISESSION,
+                          "READ TOC multisession info unsupported on this "
+                          "device path; falling back to TOC heuristics");
+            }
+            return ODFS_ERR_UNSUPPORTED;
+        }
+        ODFS_WARN(&g->log, ODFS_SUB_MULTISESSION,
+                  "READ TOC multisession info failed io_rc=%ld io_Error=%ld "
+                  "scsi_Status=%lu sense=%02x/%02x/%02x",
+                  (long)io_rc,
+                  (long)g->devreq->io_Error,
+                  (unsigned long)scsi.scsi_Status,
+                  (unsigned int)(sense[2] & 0x0f),
+                  (unsigned int)sense[12],
+                  (unsigned int)sense[13]);
+        return ODFS_ERR_IO;
+    }
+
+    if (scsi.scsi_Actual < sizeof(buf)) {
+        ODFS_WARN(&g->log, ODFS_SUB_MULTISESSION,
+                  "READ TOC multisession info short response actual=%lu",
+                  (unsigned long)scsi.scsi_Actual);
+        return ODFS_ERR_BAD_FORMAT;
+    }
+
+    if ((buf[5] & 0x04) == 0) {
+        if (g->last_session_passthrough < 1)
+            g->last_session_passthrough = 1;
+        return ODFS_OK;
+    }
+
+    *lba_out = ((uint32_t)buf[8] << 24) |
+               ((uint32_t)buf[9] << 16) |
+               ((uint32_t)buf[10] << 8) |
+                (uint32_t)buf[11];
+
+    if (g->last_session_passthrough < 1)
+        g->last_session_passthrough = 1;
+
+    return ODFS_OK;
+}
+
 /*
  * Read raw audio CD frames via SCSI Read CD (0xBE).
  *
@@ -746,13 +834,14 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
 }
 
 static const odfs_media_ops_t amiga_media_ops = {
-    .read_sectors = amiga_read_sectors,
-    .sector_size  = amiga_sector_size,
-    .sector_count = amiga_sector_count,
-    .read_toc     = amiga_read_toc,
-    .read_audio   = amiga_read_audio,
-    .read_cdtext  = amiga_read_cdtext,
-    .close        = amiga_close,
+    .read_sectors          = amiga_read_sectors,
+    .sector_size           = amiga_sector_size,
+    .sector_count          = amiga_sector_count,
+    .read_toc              = amiga_read_toc,
+    .read_last_session_lba = amiga_read_last_session_lba,
+    .read_audio            = amiga_read_audio,
+    .read_cdtext           = amiga_read_cdtext,
+    .close                 = amiga_close,
 };
 
 /* ------------------------------------------------------------------ */
@@ -3213,6 +3302,7 @@ void handler_main(void)
     g->next_volume_id = 1;
     g->chgsigbit = -1;
     g->toc_passthrough = -1;
+    g->last_session_passthrough = -1;
     g->read_cd_audio = -1;
     g->cdtext_passthrough = -1;
 

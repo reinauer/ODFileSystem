@@ -54,6 +54,12 @@ typedef struct odfs_media_ops {
     odfs_err_t (*read_toc)(void *ctx, odfs_toc_t *toc);
 
     /*
+     * Read the start LBA of the last session.
+     * Returns ODFS_ERR_UNSUPPORTED if not available.
+     */
+    odfs_err_t (*read_last_session_lba)(void *ctx, uint32_t *lba_out);
+
+    /*
      * Read raw audio CD frames (2352 bytes each).
      * Returns ODFS_ERR_UNSUPPORTED if not available (host images).
      *   lba    — starting frame LBA
@@ -106,6 +112,14 @@ static inline odfs_err_t odfs_media_read_toc(odfs_media_t *m, odfs_toc_t *toc)
     if (!m->ops->read_toc)
         return ODFS_ERR_UNSUPPORTED;
     return m->ops->read_toc(m->ctx, toc);
+}
+
+static inline odfs_err_t odfs_media_read_last_session_lba(odfs_media_t *m,
+                                                          uint32_t *lba_out)
+{
+    if (!m->ops->read_last_session_lba)
+        return ODFS_ERR_UNSUPPORTED;
+    return m->ops->read_last_session_lba(m->ctx, lba_out);
 }
 
 static inline odfs_err_t odfs_media_read_audio(odfs_media_t *m,

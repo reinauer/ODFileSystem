@@ -3,9 +3,10 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Two strategies for finding the last session:
- *   1. TOC from device (Amiga SCSI): read_toc() media op
- *   2. PVD scan (host images): scan backwards for CD001 signatures
+ * Three strategies for finding the last session:
+ *   1. explicit last-session query from device (Amiga SCSI)
+ *   2. TOC from device (heuristic: last data track)
+ *   3. PVD scan (host images): scan backwards for CD001 signatures
  */
 
 #include "odfs/api.h"
@@ -22,8 +23,9 @@
 /*
  * Find the last session start LBA.
  *
- * First tries the media TOC (works on real CD hardware).
- * Falls back to scanning the image for PVD signatures.
+ * First tries the explicit media last-session query.
+ * Falls back to the historical TOC heuristic, then to scanning
+ * the image for PVD signatures.
  *
  *   media        — media handle
  *   log          — log state (may be NULL)
@@ -42,7 +44,22 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
     *last_lba_out = 0;
 
-    /* strategy 1: device TOC */
+    /* strategy 1: explicit last-session query */
+    err = odfs_media_read_last_session_lba(media, last_lba_out);
+    if (err == ODFS_OK) {
+        ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                  "multisession: explicit last session starts at LBA %" PRIu32,
+                  *last_lba_out);
+        return ODFS_OK;
+    }
+    if (err != ODFS_ERR_UNSUPPORTED) {
+        ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                  "multisession: explicit last-session query unavailable "
+                  "(%s); falling back to TOC heuristics",
+                  odfs_err_str(err));
+    }
+
+    /* strategy 2: device TOC heuristic */
     {
         odfs_toc_t toc;
         memset(&toc, 0, sizeof(toc));
@@ -68,13 +85,14 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
             *last_lba_out = toc.sessions[last].start_lba;
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                       "TOC: %" PRIu32 " track(s), data starts at LBA %" PRIu32,
+                       "multisession: TOC heuristic picked last data track "
+                       "from %" PRIu32 " track(s) at LBA %" PRIu32,
                        (uint32_t)toc.session_count, *last_lba_out);
             return ODFS_OK;
         }
     }
 
-    /* strategy 2: scan for PVD signatures (host images) */
+    /* strategy 3: scan for PVD signatures (host images) */
     {
         uint32_t total = odfs_media_sector_count(media);
         uint32_t best_lba = 0;
@@ -117,7 +135,8 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         if (best_lba > 0) {
             *last_lba_out = best_lba;
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                       "PVD scan: last session at LBA %" PRIu32, best_lba);
+                       "multisession: PVD scan found last session at LBA %" PRIu32,
+                       best_lba);
         }
     }
 
