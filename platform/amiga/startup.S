@@ -38,15 +38,23 @@ _entrypoint:
 	lea	8192(a5),a0
 	move.l	a0,4(sp)		/* stk_Upper */
 	move.l	a0,8(sp)		/* stk_Pointer (top of stack) */
-	move.l	sp,a0
+	move.l	sp,a2			/* save StackSwap struct addr */
+	move.l	a2,a0
 	jsr	-0x2dc(a6)		/* StackSwap */
 
 	jsr	_handler_main		/* C entry point */
 
-	/* Swap stack back */
+	/* Swap stack back to original */
 	move.l	4.w,a6
-	/* We can't easily swap back — just exit. The handler runs
-	   until ACTION_DIE, at which point the process terminates. */
+	move.l	a2,a0			/* StackSwap struct on old stack */
+	jsr	-0x2dc(a6)		/* StackSwap — restore original stack */
+
+	/* Free the allocated stack */
+	move.l	a5,a1			/* stack memory base */
+	move.l	#8192,d0
+	jsr	-0xd2(a6)		/* FreeMem */
+
+	lea	12(sp),sp		/* remove StackSwap struct */
 	bra.s	.done
 
 .stack_ok:
