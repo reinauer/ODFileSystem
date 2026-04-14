@@ -448,4 +448,70 @@ TEST(cdda_audio_reads_use_readahead_cache)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_audio_reads_prefetch_one_second_on_small_reads)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t track;
+    void *backend_ctx = NULL;
+    uint8_t *frames;
+    uint8_t audio[4096];
+    size_t len = sizeof(audio);
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    fake_audio_ctx_t audio_ctx;
+    size_t frame_bytes = 80u * CDDA_FRAME_SIZE;
+
+    frames = odfs_malloc(frame_bytes);
+    ASSERT(frames != NULL);
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 80;
+
+    for (size_t i = 0; i < frame_bytes; i++)
+        frames[i] = (uint8_t)i;
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    memset(&audio_ctx, 0, sizeof(audio_ctx));
+    audio_ctx.data = frames;
+    audio_ctx.base_lba = 0;
+    media_ops.read_audio = fake_read_audio_counted;
+    media.ops = &media_ops;
+    media.ctx = &audio_ctx;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &media, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track01.wav", &track));
+
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track,
+                                    CDDA_WAV_HEADER_SIZE, audio, &len));
+    ASSERT_EQ(len, sizeof(audio));
+    ASSERT_EQ(audio_ctx.calls, 1);
+    ASSERT_EQ(audio_ctx.last_lba, 0);
+    ASSERT_EQ(audio_ctx.last_count, 75);
+
+    len = 512;
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track,
+                                    CDDA_WAV_HEADER_SIZE + 50000u,
+                                    audio, &len));
+    ASSERT_EQ(len, 512);
+    ASSERT_EQ(audio_ctx.calls, 1);
+
+    len = 512;
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track,
+                                    CDDA_WAV_HEADER_SIZE + 176500u,
+                                    audio, &len));
+    ASSERT_EQ(len, 512);
+    ASSERT_EQ(audio_ctx.calls, 2);
+    ASSERT_EQ(audio_ctx.last_lba, 75);
+    ASSERT_EQ(audio_ctx.last_count, 5);
+
+    cdda_backend_ops.unmount(backend_ctx);
+    odfs_free(frames);
+}
+
 TEST_MAIN()

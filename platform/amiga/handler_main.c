@@ -1018,6 +1018,22 @@ static int lock_is_active(handler_global_t *g, odfs_lock_t *needle)
     return 0;
 }
 
+static int fh_is_active(handler_global_t *g, odfs_fh_t *needle)
+{
+    odfs_fh_t *fh;
+
+    if (!g || !needle)
+        return 0;
+
+    for (fh = (odfs_fh_t *)g->fhlist.mlh_Head;
+         fh->node.mln_Succ != NULL;
+         fh = (odfs_fh_t *)fh->node.mln_Succ) {
+        if (fh == needle)
+            return 1;
+    }
+    return 0;
+}
+
 static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
 {
     odfs_volume_t *volume;
@@ -1792,10 +1808,20 @@ static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
         }
         ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
     } else {
+        if (!fh_is_active(g, fh)) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+            return;
+        }
         LONG err_dos = validate_object_volume(g, fh_volume(fh));
         if (err_dos != 0) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = err_dos;
+            return;
+        }
+        if (fh_node(fh)->kind != ODFS_NODE_DIR) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
             return;
         }
         ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), fh->access);
@@ -1912,6 +1938,12 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
             return;
         }
         pkt->dp_Res1 = 0;
+        return;
+    }
+
+    if (!fh_is_active(g, fh)) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
         return;
     }
 
@@ -2392,6 +2424,12 @@ static void action_examine_fh(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
+    if (!fh_is_active(g, fh)) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
     {
         LONG err_dos = validate_object_volume(g, fh_volume(fh));
         if (err_dos != 0) {
@@ -2581,6 +2619,13 @@ static void action_seek(handler_global_t *g __attribute__((unused)),
 static void action_end(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+
+    if (fh && !fh_is_active(g, fh)) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
     free_fh(g, fh);
     pkt->dp_Res1 = DOSTRUE;
 }

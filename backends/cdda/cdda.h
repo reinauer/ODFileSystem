@@ -22,7 +22,7 @@
 #define CDDA_FRAMES_PER_SEC  75     /* CD frames per second */
 #define CDDA_WAV_HEADER_SIZE 44     /* PCM WAV header */
 #define CDDA_AIFF_HEADER_SIZE 54    /* AIFF COMM + SSND header */
-#define CDDA_READAHEAD_FRAMES 16    /* streaming read-ahead window */
+#define CDDA_READAHEAD_FRAMES 75    /* one second of audio for smoother streaming */
 
 #define CDDA_MAX_TRACKS      99
 

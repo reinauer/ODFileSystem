@@ -39,14 +39,50 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                                     uint32_t *last_lba_out)
 {
     odfs_err_t err;
+    odfs_toc_t toc;
+    int have_toc = 0;
 
     (void)log;
 
     *last_lba_out = 0;
 
+    memset(&toc, 0, sizeof(toc));
+
     /* strategy 1: explicit last-session query */
     err = odfs_media_read_last_session_lba(media, last_lba_out);
     if (err == ODFS_OK) {
+        uint32_t explicit_lba = *last_lba_out;
+
+        err = odfs_media_read_toc(media, &toc);
+        if (err == ODFS_OK && toc.session_count > 0) {
+            have_toc = 1;
+
+            /*
+             * The last session can start with audio tracks on mixed-mode
+             * discs. For filesystem probing we want the first data track in
+             * that session, not necessarily the session's first track.
+             */
+            for (uint8_t i = 0; i < toc.session_count; i++) {
+                if ((toc.sessions[i].control & 0x04) == 0)
+                    continue;
+                if (toc.sessions[i].start_lba < explicit_lba)
+                    continue;
+
+                *last_lba_out = toc.sessions[i].start_lba;
+                if (*last_lba_out != explicit_lba) {
+                    ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                              "explicit last session starts at LBA %" PRIu32
+                              "; first data track in session at LBA %" PRIu32,
+                              explicit_lba, *last_lba_out);
+                } else {
+                    ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                              "explicit last session starts at LBA %" PRIu32,
+                              *last_lba_out);
+                }
+                return ODFS_OK;
+            }
+        }
+
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                   "explicit last session starts at LBA %" PRIu32,
                   *last_lba_out);
@@ -60,36 +96,34 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
     }
 
     /* strategy 2: device TOC heuristic */
-    {
-        odfs_toc_t toc;
-        memset(&toc, 0, sizeof(toc));
+    if (!have_toc) {
         err = odfs_media_read_toc(media, &toc);
-        if (err == ODFS_OK && toc.session_count > 0) {
-            int found_data = 0;
-            uint8_t last = 0;
+    }
+    if (err == ODFS_OK && toc.session_count > 0) {
+        int found_data = 0;
+        uint8_t last = 0;
 
-            for (uint8_t i = 0; i < toc.session_count; i++) {
-                if ((toc.sessions[i].control & 0x04) != 0) {
-                    last = i;
-                    found_data = 1;
-                }
+        for (uint8_t i = 0; i < toc.session_count; i++) {
+            if ((toc.sessions[i].control & 0x04) != 0) {
+                last = i;
+                found_data = 1;
             }
+        }
 
-            if (!found_data) {
-                ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                          "TOC: %" PRIu32
-                          " track(s), no data track found; using LBA 0",
-                          (uint32_t)toc.session_count);
-                return ODFS_OK;
-            }
-
-            *last_lba_out = toc.sessions[last].start_lba;
+        if (!found_data) {
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                       "TOC heuristic picked last data track "
-                       "from %" PRIu32 " track(s) at LBA %" PRIu32,
-                       (uint32_t)toc.session_count, *last_lba_out);
+                      "TOC: %" PRIu32
+                      " track(s), no data track found; using LBA 0",
+                      (uint32_t)toc.session_count);
             return ODFS_OK;
         }
+
+        *last_lba_out = toc.sessions[last].start_lba;
+        ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                   "TOC heuristic picked last data track "
+                   "from %" PRIu32 " track(s) at LBA %" PRIu32,
+                   (uint32_t)toc.session_count, *last_lba_out);
+        return ODFS_OK;
     }
 
     /* strategy 3: scan for PVD signatures (host images) */

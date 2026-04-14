@@ -87,7 +87,7 @@ TEST(find_last_session_prefers_explicit_last_session_query)
     fake.toc.sessions[0].start_lba = 0;
     fake.toc.sessions[1].number = 2;
     fake.toc.sessions[1].control = 0x04;
-    fake.toc.sessions[1].start_lba = 1234;
+    fake.toc.sessions[1].start_lba = 452;
     fake.toc.sessions[2].number = 3;
     fake.toc.sessions[2].control = 0x00;
     fake.toc.sessions[2].start_lba = 5678;
@@ -97,6 +97,59 @@ TEST(find_last_session_prefers_explicit_last_session_query)
 
     ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
     ASSERT_EQ(lba, 452);
+}
+
+TEST(find_last_session_uses_first_data_track_in_explicit_session)
+{
+    fake_session_media_t fake;
+    odfs_media_t media;
+    uint32_t lba = 999;
+
+    memset(&fake, 0, sizeof(fake));
+    fake.toc_err = ODFS_OK;
+    fake.last_session_err = ODFS_OK;
+    fake.last_session_lba = 0;
+    fake.toc.session_count = 3;
+    fake.toc.sessions[0].number = 1;
+    fake.toc.sessions[0].control = 0x00;
+    fake.toc.sessions[0].start_lba = 0;
+    fake.toc.sessions[1].number = 2;
+    fake.toc.sessions[1].control = 0x04;
+    fake.toc.sessions[1].start_lba = 1234;
+    fake.toc.sessions[2].number = 3;
+    fake.toc.sessions[2].control = 0x00;
+    fake.toc.sessions[2].start_lba = 5678;
+
+    media.ops = &fake_media_ops;
+    media.ctx = &fake;
+
+    ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
+    ASSERT_EQ(lba, 1234);
+}
+
+TEST(find_last_session_keeps_track_one_data_for_kodak_style_disc)
+{
+    fake_session_media_t fake;
+    odfs_media_t media;
+    uint32_t lba = 999;
+
+    memset(&fake, 0, sizeof(fake));
+    fake.toc_err = ODFS_OK;
+    fake.last_session_err = ODFS_OK;
+    fake.last_session_lba = 0;
+    fake.toc.session_count = 2;
+    fake.toc.sessions[0].number = 1;
+    fake.toc.sessions[0].control = 0x04;
+    fake.toc.sessions[0].start_lba = 0;
+    fake.toc.sessions[1].number = 2;
+    fake.toc.sessions[1].control = 0x04;
+    fake.toc.sessions[1].start_lba = 452;
+
+    media.ops = &fake_media_ops;
+    media.ctx = &fake;
+
+    ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
+    ASSERT_EQ(lba, 0);
 }
 
 TEST(find_last_session_falls_back_to_last_data_track_heuristic)
