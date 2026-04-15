@@ -123,6 +123,7 @@ CORE_SRCS = \
     core/namefix.c \
     core/cache_block.c \
     core/charset.c \
+    core/ancestry.c \
     core/mount.c \
     core/session.c \
     backends/iso9660/iso9660.c \
@@ -176,6 +177,7 @@ TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 
 HANDLER      = $(AMIGA_BUILD)/ODFileSystem
 TEST_HANDLER = $(AMIGA_TEST_BUILD)/ODFileSystem
+AMIGA_TEST_TOOL = $(AMIGA_TEST_BUILD)/test_handler
 ADF          = $(AMIGA_TEST_BUILD)/ODFileSystem.adf
 ADF_VOLUME   = ODFileSystem
 ADF_DOSDRIVER      = platform/amiga/dosdrivers/CD0
@@ -209,14 +211,16 @@ amiga-test:
 		SERIAL_DEBUG=1 \
 		amiga
 
-adf: amiga-test $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
+adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
 	@mkdir -p $(dir $(ADF))
 	@echo "  ADF   $(ADF)"
 	@$(XDFTOOL) -f $(ADF) \
 		create + \
 		format "$(ADF_VOLUME)" + \
 		makedir L + \
+		makedir C + \
 		write $(TEST_HANDLER) L + \
+		write $(AMIGA_TEST_TOOL) C/test_handler + \
 		write $(ADF_DOSDRIVER) + \
 		write $(ADF_DOSDRIVER_ICON)
 	@echo "  ADF image ready: $(ADF)"
@@ -373,6 +377,20 @@ $(AMIGA_BUILD)/%.o: %.S
 	@mkdir -p $(@D)
 	@echo "  AS    $<"
 	@$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+# ---- Amiga test tools ----
+
+$(AMIGA_TEST_BUILD)/tests/amiga/%.o: tests/amiga/%.c
+	@mkdir -p $(@D)
+	@echo "  CC    $<"
+	@$(CC) $(CPPFLAGS) $(INCLUDES) $(CFLAGS) -c -o $@ $<
+
+$(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
+	@mkdir -p $(@D)
+	@echo "  LINK  $@"
+	@$(CC) $(LDFLAGS) -o $@ $< -lc -lamiga -lgcc
+	@echo "  STRIP $@"
+	@$(STRIP) $@
 
 # ---- Amiga handler ----
 

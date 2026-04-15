@@ -47,5 +47,13 @@ make integration-check  # local-only AmiFUSE test using the amiga-test handler
 AMIGAOS32_ISO=/path/to/AmigaOS3.2CD.iso make integration-check  # local-only AmiFUSE handler test
 ```
 
+`make adf` also places `C/test_handler` on the test disk. It can be used on a
+real Amiga to exercise lock/filehandle parent semantics, for example:
+
+```
+test_handler CD0:some/deep/directory REL=///sibling
+test_handler CD0:CDDA/Track01.wav FILE=CD0:CDDA/Track01.wav
+```
+
 ## CI Requirements
 Per push: build, unit tests, golden image tests, malformed-image tests, parser fuzz smoke tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
