@@ -5,6 +5,7 @@
  */
 
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <proto/dos.h>
 
 #include <stdlib.h>
@@ -32,6 +33,72 @@ static int print_lock_path(const char *label, BPTR lock)
 
     Printf((CONST_STRPTR)"%s%s\n", (LONG)label, (LONG)buf);
     return 1;
+}
+
+static int print_bstr(const char *label, BSTR bstr)
+{
+    UBYTE buf[160];
+    UBYTE *raw;
+    int len;
+
+    if (!bstr) {
+        Printf((CONST_STRPTR)"%s<none>\n", (LONG)label);
+        return 1;
+    }
+
+    raw = (UBYTE *)BADDR(bstr);
+    len = raw[0];
+    if (len >= (int)sizeof(buf))
+        len = (int)sizeof(buf) - 1;
+    memcpy(buf, raw + 1, (size_t)len);
+    buf[len] = '\0';
+
+    Printf((CONST_STRPTR)"%s%s\n", (LONG)label, (LONG)buf);
+    return 1;
+}
+
+static int print_fib_name(const char *label, const struct FileInfoBlock *fib)
+{
+    UBYTE buf[160];
+    int len;
+
+    len = fib->fib_FileName[0];
+    if (len >= (int)sizeof(buf))
+        len = (int)sizeof(buf) - 1;
+    memcpy(buf, &fib->fib_FileName[1], (size_t)len);
+    buf[len] = '\0';
+
+    Printf((CONST_STRPTR)"%s%s\n", (LONG)label, (LONG)buf);
+    return 1;
+}
+
+static int print_lock_metadata(BPTR lock)
+{
+    struct InfoData info;
+    struct FileInfoBlock fib;
+    struct DeviceList *volnode;
+
+    memset(&info, 0, sizeof(info));
+    if (!Info(lock, &info)) {
+        PutStr((CONST_STRPTR)"INFO:   <error> ");
+        print_fault("Info");
+        return 0;
+    }
+
+    volnode = info.id_VolumeNode
+        ? (struct DeviceList *)BADDR(info.id_VolumeNode)
+        : NULL;
+    if (!print_bstr("INFO:   ", volnode ? volnode->dl_Name : 0))
+        return 0;
+
+    memset(&fib, 0, sizeof(fib));
+    if (!Examine(lock, &fib)) {
+        PutStr((CONST_STRPTR)"EXAM:   <error> ");
+        print_fault("Examine");
+        return 0;
+    }
+
+    return print_fib_name("EXAM:   ", &fib);
 }
 
 static int print_fh_path(const char *label, BPTR fh)
@@ -179,6 +246,8 @@ int main(int argc, char **argv)
     }
 
     if (!print_lock_path("LOCK:   ", lock))
+        rc = RETURN_FAIL;
+    if (rc == RETURN_OK && !print_lock_metadata(lock))
         rc = RETURN_FAIL;
 
     if (rc == RETURN_OK && run_parent_chain(lock, up_limit) != RETURN_OK)

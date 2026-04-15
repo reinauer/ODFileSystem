@@ -62,6 +62,7 @@ static void fill_volume_date(handler_global_t *g, struct DateStamp *stamp);
 static void notify_workbench_disk_change(BOOL inserted);
 #if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc);
+static void copy_pure_audio_volume_name(handler_global_t *g);
 #endif
 static int scsi_is_unsupported_command(const uint8_t *sense);
 
@@ -2760,22 +2761,36 @@ static void return_packet(handler_global_t *g, struct DosPacket *pkt)
 static struct DeviceList *create_volume_node(handler_global_t *g)
 {
     struct DeviceList *dl;
-    char namebuf[31];
+    UBYTE *namebuf;
     int namelen;
+    size_t alloc_size;
 
     namelen = strlen(g->volname);
     if (namelen > 30)
         namelen = 30;
-    memcpy(namebuf, g->volname, namelen);
-    namebuf[namelen] = '\0';
 
-    dl = (struct DeviceList *)MakeDosEntry((STRPTR)namebuf, DLT_VOLUME);
+    /*
+     * Build the volume DosList entry directly instead of routing the name
+     * through MakeDosEntry(), which may normalize names containing AmigaDOS
+     * metacharacters such as parentheses.
+     */
+    alloc_size = sizeof(*dl) + 32u;
+    dl = AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
     if (!dl)
         return NULL;
 
+    namebuf = (UBYTE *)(dl + 1);
+    namebuf[0] = (UBYTE)namelen;
+    memcpy(namebuf + 1, g->volname, (size_t)namelen);
+
+    dl->dl_Next     = 0;
+    dl->dl_Type     = DLT_VOLUME;
     dl->dl_Task     = g->dosport;
     dl->dl_Lock     = 0;
+    dl->dl_LockList = 0;
     dl->dl_DiskType = ID_DOS_DISK;
+    dl->dl_unused   = 0;
+    dl->dl_Name     = MKBADDR(namebuf);
     fill_volume_date(g, &dl->dl_VolumeDate);
 
     return dl;
@@ -2785,7 +2800,7 @@ static void destroy_volume_node(struct DeviceList *volnode)
 {
     if (!volnode)
         return;
-    FreeDosEntry((struct DosList *)volnode);
+    FreeMem(volnode, sizeof(*volnode) + 32u);
 }
 
 static void detach_volume_node(struct DeviceList *volnode)
@@ -2927,6 +2942,25 @@ static int toc_has_data_track(const odfs_toc_t *toc)
 
     return 0;
 }
+
+static void copy_pure_audio_volume_name(handler_global_t *g)
+{
+    const cdda_context_t *ctx = (const cdda_context_t *)g->cdda_ctx;
+
+    if (!ctx || ctx->volume_name[0] == '\0') {
+        memcpy(g->mount.volume_name, "Audio CD", 9);
+        memcpy(g->volname, "Audio CD", 9);
+        g->mount.volume_name[sizeof(g->mount.volume_name) - 1] = '\0';
+        g->volname[sizeof(g->volname) - 1] = '\0';
+        return;
+    }
+
+    memcpy(g->mount.volume_name, ctx->volume_name,
+           sizeof(g->mount.volume_name) - 1);
+    g->mount.volume_name[sizeof(g->mount.volume_name) - 1] = '\0';
+    memcpy(g->volname, ctx->volume_name, sizeof(g->volname) - 1);
+    g->volname[sizeof(g->volname) - 1] = '\0';
+}
 #endif
 
 static void mount_volume(handler_global_t *g)
@@ -2972,7 +3006,7 @@ static void mount_volume(handler_global_t *g)
             odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                         &cdda_backend_ops, g->cdda_ctx,
                                         &g->cdda_root);
-            memcpy(g->volname, "Audio CD", 9);
+            copy_pure_audio_volume_name(g);
             ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                       "mounted pure audio CD via CDDA backend");
         }
@@ -3003,7 +3037,7 @@ static void mount_volume(handler_global_t *g)
                 odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                             &cdda_backend_ops, g->cdda_ctx,
                                             &g->cdda_root);
-                memcpy(g->volname, "Audio CD", 9);
+                copy_pure_audio_volume_name(g);
                 ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                           "mounted pure audio CD via CDDA backend");
             } else if (toc_err != ODFS_OK) {

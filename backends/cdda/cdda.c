@@ -119,6 +119,34 @@ static uint32_t cdda_disc_id(const cdda_context_t *ctx)
            (uint32_t)ctx->track_count;
 }
 
+static void cdda_format_hex32(char *buf, uint32_t value)
+{
+    static const char hex[] = "0123456789abcdef";
+
+    for (int i = 7; i >= 0; i--) {
+        buf[i] = hex[value & 0x0fu];
+        value >>= 4;
+    }
+    buf[8] = '\0';
+}
+
+static void cdda_set_volume_name(cdda_context_t *ctx)
+{
+    if (ctx->is_mixed_mode) {
+        memcpy(ctx->volume_name, "CDDA", 5);
+        return;
+    }
+
+    /*
+     * Keep the pure-audio label simple so it survives the Amiga DOS
+     * volume-node path unchanged.
+     */
+    memcpy(ctx->volume_name, "Audio CD (", 10);
+    cdda_format_hex32(ctx->volume_name + 10, cdda_disc_id(ctx));
+    ctx->volume_name[18] = ')';
+    ctx->volume_name[19] = '\0';
+}
+
 static int cdda_appendf(char *buf, size_t buf_size, size_t *used,
                         const char *fmt, ...)
 {
@@ -723,6 +751,8 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
         return ODFS_ERR_BAD_FORMAT;
     }
 
+    cdda_set_volume_name(ctx);
+
     ctx->audio_cache = odfs_malloc((size_t)CDDA_READAHEAD_FRAMES *
                                    CDDA_FRAME_SIZE);
 
@@ -1046,11 +1076,17 @@ static odfs_err_t cdda_get_volume_name(void *backend_ctx,
                                          char *buf, size_t buf_size)
 {
     cdda_context_t *ctx = backend_ctx;
-    const char *name = ctx->is_mixed_mode ? "CDDA" : "Audio CD";
-    size_t len = strlen(name);
-    if (len >= buf_size) len = buf_size - 1;
-    memcpy(buf, name, len);
+    size_t len;
+
+    if (buf_size == 0)
+        return ODFS_ERR_RANGE;
+
+    len = strlen(ctx->volume_name);
+    if (len >= buf_size)
+        len = buf_size - 1;
+    memcpy(buf, ctx->volume_name, len);
     buf[len] = '\0';
+
     return ODFS_OK;
 }
 

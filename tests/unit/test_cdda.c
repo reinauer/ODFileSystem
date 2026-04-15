@@ -204,6 +204,57 @@ TEST(cdda_cddb_file_exposes_disc_id_and_query)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_volume_name_uses_disc_id_for_pure_audio)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    char name[32];
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 2;
+    toc.leadout_lba = 300;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 100;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x00;
+    toc.sessions[1].start_lba = 100;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.get_volume_name(backend_ctx, name,
+                                               sizeof(name)));
+    ASSERT_STR_EQ(name, "Audio CD (05000402)");
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
+TEST(cdda_volume_name_keeps_cdda_for_mixed_mode)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    char name[32];
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 2;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 100;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x04;
+    toc.sessions[1].start_lba = 100;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 1, NULL, NULL, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.get_volume_name(backend_ctx, name,
+                                               sizeof(name)));
+    ASSERT_STR_EQ(name, "CDDA");
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST(cdda_aiff_option_changes_names_and_header)
 {
     odfs_toc_t toc;
