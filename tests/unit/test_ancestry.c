@@ -264,4 +264,20 @@ TEST(resolve_parent_node_supports_multi_ascent_then_lookup)
     ASSERT_STR_EQ(child.name, "x");
 }
 
+TEST(resolve_parent_node_backtracks_to_later_sibling_without_grandparent)
+{
+    fake_tree_ctx_t ctx;
+    odfs_mount_t mnt;
+    odfs_node_t probe;
+    odfs_node_t parent;
+
+    fake_init_mount(&mnt, &ctx);
+
+    probe = ctx.x;
+    probe.id = 9005;
+
+    ASSERT_OK(odfs_resolve_parent_node(&mnt, &probe, &parent, NULL));
+    ASSERT_STR_EQ(parent.name, "a");
+}
+
 TEST_MAIN()

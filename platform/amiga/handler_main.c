@@ -1400,10 +1400,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
                     parent = g->mount.root;
 #endif
                 } else {
-                    odfs_node_t grandparent;
-
                     err = odfs_resolve_parent_node(&g->mount, &cur,
-                                                   &parent, &grandparent);
+                                                   &parent, NULL);
                     if (err != ODFS_OK)
                         return err;
                 }
@@ -1570,11 +1568,7 @@ static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnod
     if (!g || !fnode)
         return 0;
 
-    return fnode->kind == ODFS_NODE_DIR &&
-           fnode->backend == g->mount.root.backend &&
-           fnode->id == g->mount.root.id &&
-           fnode->extent.lba == g->mount.root.extent.lba &&
-           fnode->extent.length == g->mount.root.extent.length;
+    return odfs_node_matches_identity(fnode, &g->mount.root);
 }
 
 static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
@@ -1804,10 +1798,8 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
         new_parent = g->mount.root;
 #endif
     } else {
-        odfs_node_t new_grandparent;
-
         err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
-                                       &new_grandparent);
+                                       NULL);
         if (err != ODFS_OK) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = odfs_err_to_dos(err);
@@ -1881,10 +1873,8 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
         new_parent = g->mount.root;
 #endif
     } else {
-        odfs_node_t new_grandparent;
-
         err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
-                                       &new_grandparent);
+                                       NULL);
         if (err != ODFS_OK) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = odfs_err_to_dos(err);

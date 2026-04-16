@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* backend type that produced this node */
 typedef enum odfs_backend_type {
@@ -81,6 +82,20 @@ typedef struct odfs_node {
     /* backend-private opaque data */
     void                *backend_data;
 } odfs_node_t;
+
+static inline int odfs_node_matches_identity(const odfs_node_t *a,
+                                             const odfs_node_t *b)
+{
+    if (!a || !b)
+        return 0;
+
+    return a->backend == b->backend &&
+           a->kind == b->kind &&
+           a->size == b->size &&
+           a->extent.lba == b->extent.lba &&
+           a->extent.length == b->extent.length &&
+           strcmp(a->name, b->name) == 0;
+}
 
 const char *odfs_backend_type_name(odfs_backend_type_t type);
 const char *odfs_node_kind_name(odfs_node_kind_t kind);

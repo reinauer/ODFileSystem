@@ -234,11 +234,7 @@ static int mount_is_root(const odfs_mount_t *mnt, const odfs_node_t *node)
     if (!mnt || !node)
         return 0;
 
-    return node->kind == mnt->root.kind &&
-           node->backend == mnt->root.backend &&
-           node->id == mnt->root.id &&
-           node->extent.lba == mnt->root.extent.lba &&
-           node->extent.length == mnt->root.extent.length;
+    return odfs_node_matches_identity(node, &mnt->root);
 }
 
 static int mount_backend_for_type(const odfs_mount_t *mnt,
@@ -399,6 +395,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
                       candidate);
         }
 
+        /* Retries probe different LBAs, and the block cache is keyed by LBA. */
         err = mount_try_session_start(mnt, candidate);
         if (err == ODFS_OK) {
             session_start = candidate;

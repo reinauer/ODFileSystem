@@ -15,8 +15,9 @@ typedef struct odfs_mount odfs_mount_t;
 /*
  * Resolve the parent of a node by walking the mounted directory tree.
  *
- * parent_out receives the containing directory. grandparent_out receives the
- * parent of that directory, or the mount root when parent_out is the root.
+ * parent_out receives the containing directory. When grandparent_out is
+ * non-NULL, it receives the parent of that directory, or the mount root when
+ * parent_out is the root.
  */
 odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
                                     const odfs_node_t *node,

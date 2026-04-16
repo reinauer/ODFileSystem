@@ -28,31 +28,14 @@ static int ancestry_is_root(const odfs_mount_t *mnt, const odfs_node_t *node)
     if (!mnt || !node)
         return 0;
 
-    return node->kind == mnt->root.kind &&
-           node->backend == mnt->root.backend &&
-           node->id == mnt->root.id &&
-           node->extent.lba == mnt->root.extent.lba &&
-           node->extent.length == mnt->root.extent.length;
-}
-
-static int ancestry_matches_identity(const odfs_node_t *a, const odfs_node_t *b)
-{
-    if (!a || !b)
-        return 0;
-
-    return a->backend == b->backend &&
-           a->kind == b->kind &&
-           a->size == b->size &&
-           a->extent.lba == b->extent.lba &&
-           a->extent.length == b->extent.length &&
-           strcmp(a->name, b->name) == 0;
+    return odfs_node_matches_identity(node, &mnt->root);
 }
 
 static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
 {
     ancestry_search_ctx_t *asc = ctx;
 
-    if (ancestry_matches_identity(entry, asc->target)) {
+    if (odfs_node_matches_identity(entry, asc->target)) {
         asc->found = 1;
         return ODFS_ERR_EOF;
     }
@@ -77,7 +60,7 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
     size_t depth = 1;
     odfs_err_t err = ODFS_ERR_NOT_FOUND;
 
-    if (!mnt || !node || !parent_out || !grandparent_out)
+    if (!mnt || !node || !parent_out)
         return ODFS_ERR_INVAL;
 
     if (ancestry_is_root(mnt, node))
@@ -117,10 +100,12 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
                            &asc, &frames[depth - 1].resume);
         if (asc.found) {
             *parent_out = frames[depth - 1].dir;
-            if (depth > 1)
-                *grandparent_out = frames[depth - 2].dir;
-            else
-                *grandparent_out = mnt->root;
+            if (grandparent_out) {
+                if (depth > 1)
+                    *grandparent_out = frames[depth - 2].dir;
+                else
+                    *grandparent_out = mnt->root;
+            }
             err = ODFS_OK;
             break;
         }
