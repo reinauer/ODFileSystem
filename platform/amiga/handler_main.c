@@ -2946,10 +2946,10 @@ static void copy_pure_audio_volume_name(handler_global_t *g)
     }
 
     memcpy(g->mount.volume_name, ctx->volume_name,
-           sizeof(g->mount.volume_name) - 1);
-    g->mount.volume_name[sizeof(g->mount.volume_name) - 1] = '\0';
-    memcpy(g->volname, ctx->volume_name, sizeof(g->volname) - 1);
-    g->volname[sizeof(g->volname) - 1] = '\0';
+           sizeof(ctx->volume_name));
+    g->mount.volume_name[sizeof(ctx->volume_name) - 1] = '\0';
+    memcpy(g->volname, ctx->volume_name, sizeof(ctx->volume_name));
+    g->volname[sizeof(ctx->volume_name) - 1] = '\0';
 }
 #endif
 
