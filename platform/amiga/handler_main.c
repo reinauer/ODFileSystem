@@ -1379,12 +1379,16 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
     char comp[256];
     odfs_err_t err;
 
-    /* Handle colons in the path (e.g., "CD0:foo" or "CD0:") */
+    /* Handle colons in the path (e.g., "CD0:foo" or "LIBS:foo").
+     *
+     * DOS may already have resolved the prefix to a handler plus starting
+     * lock via GetDeviceProc()/assign processing, while still passing the
+     * original colon-prefixed name to the filesystem. In that case we must
+     * keep resolving relative to the supplied start lock after stripping the
+     * prefix instead of forcing the lookup back to the volume root.
+     */
     const char *colon = strchr(p, ':');
     if (colon) {
-        /* A colon resets the path to the root of the volume */
-        cur = g->mount.root;
-        parent = cur;
         p = colon + 1;
     }
 
