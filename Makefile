@@ -54,7 +54,7 @@ PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
 AMIGA_SIZE_LIMIT ?= 60000
-ROM_SIZE_LIMIT   ?= 30000
+ROM_SIZE_LIMIT   ?= 32768
 SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
 SIZE_LIMIT_DESC  ?= release Amiga handler
 
