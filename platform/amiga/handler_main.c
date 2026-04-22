@@ -1729,12 +1729,8 @@ static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
             pkt->dp_Res2 = err_dos;
             return;
         }
-        if (fh_node(fh)->kind != ODFS_NODE_DIR) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
-            return;
-        }
-        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), fh->access);
+        /* DupLockFromFH duplicates the file's lock, not just directory FHs. */
+        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), SHARED_LOCK);
     }
 
     if (!ol) {

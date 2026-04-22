@@ -51,10 +51,12 @@ def main() -> int:
             ("/Libs", "workbench.library", "LIBS"),
         ]
 
+        found_case = False
         for dir_path, leaf, prefix in candidates:
             ok, info = open_via_findinput(bridge, dir_path, leaf)
             if ok is None:
                 continue
+            found_case = True
             if ok is not True:
                 print(f"FAIL: control open {dir_path}/{leaf} failed ({info})")
                 return 1
@@ -67,7 +69,8 @@ def main() -> int:
                 )
                 return 1
 
-            print(f"assign-prefix check passed for {dir_path}/{prefix}:{leaf}")
+        if found_case:
+            print("assign-prefix checks passed")
             return 0
 
         print("SKIP: no assign-prefix regression target found in image")
