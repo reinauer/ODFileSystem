@@ -7,12 +7,15 @@ import sys
 
 from amifuse.fuse_fs import FileHandleStruct, HandlerBridge
 from amifuse.rdb_inspect import detect_iso
-from amitools.vamos.libstructs.dos import FileInfoBlockStruct
+from amitools.vamos.libstructs.dos import FileInfoBlockStruct, FileLockStruct
 
 
 ACTION_COPY_DIR_FH = 1030
 ACTION_PARENT_FH = 1031
 ACTION_EXAMINE_FH = 1034
+ACTION_EXAMINE_OBJECT = 23
+ACTION_PARENT = 29
+FILE_LOCK_SIZE = FileLockStruct.get_size()
 
 
 def fib_name(bridge: HandlerBridge, fib_addr: int) -> str:
@@ -28,6 +31,10 @@ def send_and_wait(bridge: HandlerBridge, pkt_type: int, args):
     if not replies:
         return None, "no-reply"
     return replies[-1][2], replies[-1][3]
+
+
+def lock_examined_word(bridge: HandlerBridge, lock_bptr: int) -> int:
+    return bridge.mem.r32((lock_bptr << 2) + FILE_LOCK_SIZE + 4)
 
 
 def main() -> int:
@@ -106,7 +113,7 @@ def main() -> int:
                 parent_lock = res1
 
                 res1, res2 = send_and_wait(
-                    bridge, 23, [parent_lock, fib_mem.addr >> 2]
+                    bridge, ACTION_EXAMINE_OBJECT, [parent_lock, fib_mem.addr >> 2]
                 )
                 if res1 != -1 or fib_name(bridge, fib_mem.addr) != parent_name:
                     print(
@@ -123,7 +130,9 @@ def main() -> int:
                     return 1
                 dup_lock = res1
 
-                res1, res2 = send_and_wait(bridge, 23, [dup_lock, fib_mem.addr >> 2])
+                res1, res2 = send_and_wait(
+                    bridge, ACTION_EXAMINE_OBJECT, [dup_lock, fib_mem.addr >> 2]
+                )
                 if res1 != -1:
                     print(
                         f"FAIL: EXAMINE_OBJECT on COPY_DIR_FH lock failed for "
@@ -136,8 +145,39 @@ def main() -> int:
                         f"{dir_path}/{leaf}"
                     )
                     return 1
+                if lock_examined_word(bridge, dup_lock) != 0xFFFFFFFF:
+                    print(
+                        "FAIL: EXAMINE_OBJECT did not mark the lock examined for "
+                        f"{dir_path}/{leaf}"
+                    )
+                    return 1
+
+                res1, res2 = send_and_wait(bridge, ACTION_PARENT, [dup_lock])
+                if res1 in (None, 0):
+                    print(
+                        "FAIL: COPY_DIR_FH lock stopped working after "
+                        f"EXAMINE_OBJECT for {dir_path}/{leaf} ({res2})"
+                    )
+                    return 1
+                bridge.free_lock(res1)
 
                 print(f"file-handle packet check passed for {dir_path}/{leaf}")
                 return 0
             finally:
                 if dup_lock:
+                    bridge.free_lock(dup_lock)
+                if parent_lock:
+                    bridge.free_lock(parent_lock)
+                if fh_addr:
+                    bridge.close_file(fh_addr)
+                for lock in reversed(locks):
+                    bridge.free_lock(lock)
+
+        print("SKIP: no file-handle regression target found in image")
+        return 0
+    finally:
+        bridge.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

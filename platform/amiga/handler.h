@@ -116,9 +116,18 @@ struct odfs_entry {
 struct odfs_lock {
     struct MinNode  node;           /* for locklist */
     struct FileLock lock;           /* DOS lock (MUST be at known offset) */
+    ULONG           dos_private[2]; /* reserve fl_SIZEOF..fl_SIZEOF+7 for DOS */
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
 };
+
+typedef char odfs_lock_private_offset_must_match[
+    (offsetof(odfs_lock_t, dos_private) ==
+     offsetof(odfs_lock_t, lock) + sizeof(struct FileLock)) ? 1 : -1
+];
+typedef char odfs_lock_private_size_must_match[
+    (sizeof(((odfs_lock_t *)0)->dos_private) == 8) ? 1 : -1
+];
 
 /* ---- file handle wrapper ---- */
 

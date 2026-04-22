@@ -1272,6 +1272,8 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
     }
     ol->entry = entry;
     ol->key = amiga_node_key(fnode);
+    ol->dos_private[0] = 0;
+    ol->dos_private[1] = 0;
 
     ol->lock.fl_Link   = 0;
     ol->lock.fl_Key    = ol->key;
@@ -1309,6 +1311,8 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 
     ol->entry = retain_entry(src->entry);
     ol->key = src->key;
+    ol->dos_private[0] = 0;
+    ol->dos_private[1] = 0;
     ol->lock.fl_Link = 0;
     ol->lock.fl_Key = ol->key;
     ol->lock.fl_Access = src->lock.fl_Access;
@@ -1384,16 +1388,14 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 
     /* Handle colons in the path (e.g., "CD0:foo" or "LIBS:foo").
      *
-     * DOS may already have resolved the prefix to a handler plus starting
-     * lock via GetDeviceProc()/assign processing, while still passing the
-     * original colon-prefixed name to the filesystem. In that case we must
-     * keep resolving relative to the supplied start lock after stripping the
-     * prefix instead of forcing the lookup back to the volume root.
+     * DOS resolves device/assign prefixes before the packet reaches the
+     * handler, but some callers still preserve the original colon-prefixed
+     * name. Match stock filesystems and keep resolving relative to the start
+     * lock DOS chose after stripping the prefix text.
      */
     const char *colon = strchr(p, ':');
-    if (colon) {
+    if (colon)
         p = colon + 1;
-    }
 
     while (*p) {
         /* "/" at current position = go to parent */
@@ -1987,6 +1989,8 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
         fill_root_fib(g, fib, fnode);
     else
         fill_fib(fib, fnode);
+    if (ol)
+        ol->dos_private[1] = (ULONG)-1;
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
     trace_node(g, "examine-node", fnode);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
