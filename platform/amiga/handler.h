@@ -33,7 +33,10 @@ struct odfs_changeint_data {
 
 typedef struct handler_global {
     struct MsgPort      *dosport;       /* DOS message port */
-    struct DeviceNode   *devnode;       /* our device node */
+    struct DeviceNode   *devnode;       /* startup packet device node */
+    struct FileSysStartupMsg *fssm;     /* startup packet FSSM */
+    struct DeviceNode   *published_devnode; /* DOS device-list entry */
+    int                  published_devnode_owned; /* published_devnode allocated by us */
     struct DeviceList   *volnode;       /* DOS volume node (or NULL) */
     odfs_volume_t       *current_volume;/* current mounted volume state */
 

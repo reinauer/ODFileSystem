@@ -50,9 +50,12 @@ struct Library *UtilityBase;
 /* forward declarations */
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
+static void publish_device_node(handler_global_t *g);
+static void unpublish_device_node(handler_global_t *g);
 static void mount_volume(handler_global_t *g);
 static void unmount_volume(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
+static void destroy_device_node(struct DeviceNode *devnode);
 static void destroy_volume_node(struct DeviceList *volnode);
 static void detach_volume_node(struct DeviceList *volnode);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
@@ -2749,6 +2752,192 @@ static void return_packet(handler_global_t *g, struct DosPacket *pkt)
 }
 
 /* ------------------------------------------------------------------ */
+/* device node publication                                             */
+/* ------------------------------------------------------------------ */
+
+static void trim_trailing_colon(char *name)
+{
+    size_t len;
+
+    if (!name)
+        return;
+
+    len = strlen(name);
+    if (len != 0 && name[len - 1] == ':')
+        name[len - 1] = '\0';
+}
+
+static int ascii_tolower_char(int ch)
+{
+    if (ch >= 'A' && ch <= 'Z')
+        return ch + ('a' - 'A');
+    return ch;
+}
+
+static int ascii_strieq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        if (ascii_tolower_char((unsigned char)*a) !=
+            ascii_tolower_char((unsigned char)*b))
+            return 0;
+        a++;
+        b++;
+    }
+
+    return *a == '\0' && *b == '\0';
+}
+
+static void device_node_name_from_bstr(BSTR bstr, char *buf, int bufsize)
+{
+    bstr_to_cstr(bstr, buf, bufsize);
+    trim_trailing_colon(buf);
+}
+
+static void sync_device_node(handler_global_t *g, struct DeviceNode *devnode)
+{
+    if (!g || !g->devnode || !devnode)
+        return;
+
+    devnode->dn_Type = DLT_DEVICE;
+    devnode->dn_Task = g->dosport;
+    devnode->dn_Handler = g->devnode->dn_Handler;
+    devnode->dn_StackSize = g->devnode->dn_StackSize;
+    devnode->dn_Priority = g->devnode->dn_Priority;
+    devnode->dn_Startup = g->fssm ? MKBADDR(g->fssm) : g->devnode->dn_Startup;
+    devnode->dn_SegList = g->devnode->dn_SegList;
+    devnode->dn_GlobalVec = g->devnode->dn_GlobalVec;
+}
+
+static struct DeviceNode *create_device_node(handler_global_t *g)
+{
+    struct DeviceNode *devnode;
+    UBYTE *namebuf;
+    char name[32];
+    int namelen;
+    size_t alloc_size;
+
+    device_node_name_from_bstr(g->devnode ? g->devnode->dn_Name : 0,
+                               name, sizeof(name));
+    if (name[0] == '\0')
+        memcpy(name, "ODFS0", 6);
+
+    namelen = strlen(name);
+    if (namelen > 30)
+        namelen = 30;
+
+    alloc_size = sizeof(*devnode) + 32u;
+    devnode = AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!devnode)
+        return NULL;
+
+    namebuf = (UBYTE *)(devnode + 1);
+    namebuf[0] = (UBYTE)namelen;
+    memcpy(namebuf + 1, name, (size_t)namelen);
+
+    devnode->dn_Next = 0;
+    devnode->dn_Lock = g->devnode ? g->devnode->dn_Lock : 0;
+    devnode->dn_Name = MKBADDR(namebuf);
+    sync_device_node(g, devnode);
+
+    return devnode;
+}
+
+static void destroy_device_node(struct DeviceNode *devnode)
+{
+    if (!devnode)
+        return;
+    FreeMem(devnode, sizeof(*devnode) + 32u);
+}
+
+static void publish_device_node(handler_global_t *g)
+{
+    struct DeviceNode *iter;
+    struct DeviceNode *name_match = NULL;
+    struct DeviceNode *shadow;
+    char want[32];
+    char have[32];
+
+    if (!g->devnode || g->published_devnode)
+        return;
+
+    iter = (struct DeviceNode *)AttemptLockDosList(LDF_DEVICES | LDF_WRITE);
+    if (!iter) {
+        ODFS_WARN(&g->log, ODFS_SUB_CORE,
+                  "device node not published: devices list lock unavailable");
+        return;
+    }
+
+    device_node_name_from_bstr(g->devnode->dn_Name, want, sizeof(want));
+
+    while ((iter = (struct DeviceNode *)NextDosEntry((struct DosList *)iter,
+                                                     LDF_DEVICES)) != NULL) {
+        if (iter == g->devnode) {
+            g->published_devnode = iter;
+            break;
+        }
+
+        if (!name_match) {
+            device_node_name_from_bstr(iter->dn_Name, have, sizeof(have));
+            if (ascii_strieq(have, want))
+                name_match = iter;
+        }
+    }
+
+    if (!g->published_devnode && name_match)
+        g->published_devnode = name_match;
+
+    if (g->published_devnode) {
+        sync_device_node(g, g->published_devnode);
+        ODFS_INFO(&g->log, ODFS_SUB_CORE,
+                  "device node ready: %s (existing)",
+                  want[0] ? want : "<unnamed>");
+        UnLockDosList(LDF_DEVICES | LDF_WRITE);
+        return;
+    }
+
+    shadow = create_device_node(g);
+    if (shadow && AddDosEntry((struct DosList *)shadow)) {
+        g->published_devnode = shadow;
+        g->published_devnode_owned = 1;
+        ODFS_INFO(&g->log, ODFS_SUB_CORE,
+                  "device node ready: %s (shadow)",
+                  want[0] ? want : "<unnamed>");
+    } else {
+        ODFS_WARN(&g->log, ODFS_SUB_CORE,
+                  "device node not published: AddDosEntry failed for %s",
+                  want[0] ? want : "<unnamed>");
+        destroy_device_node(shadow);
+    }
+
+    UnLockDosList(LDF_DEVICES | LDF_WRITE);
+}
+
+static void unpublish_device_node(handler_global_t *g)
+{
+    struct DeviceNode *devnode;
+
+    devnode = g->published_devnode;
+    if (!devnode)
+        return;
+
+    devnode->dn_Task = NULL;
+
+    if (g->published_devnode_owned) {
+        if (AttemptLockDosList(LDF_DEVICES | LDF_WRITE)) {
+            if (RemDosEntry((struct DosList *)devnode))
+                destroy_device_node(devnode);
+            UnLockDosList(LDF_DEVICES | LDF_WRITE);
+        } else {
+            ODFS_WARN(&g->log, ODFS_SUB_CORE,
+                      "device node removal skipped: devices list lock unavailable");
+        }
+    }
+
+    g->published_devnode = NULL;
+    g->published_devnode_owned = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* volume mount / unmount                                              */
 /* ------------------------------------------------------------------ */
 
@@ -3312,6 +3501,7 @@ void handler_main(void)
 
     g->devnode = (struct DeviceNode *)BADDR(pkt->dp_Arg3);
     fssm = (struct FileSysStartupMsg *)BADDR(pkt->dp_Arg2);
+    g->fssm = fssm;
 
     /* parse FSSM early so startup failures can log device context */
     {
@@ -3389,6 +3579,7 @@ void handler_main(void)
         goto shutdown;
     }
 
+    g->devnode->dn_Startup = MKBADDR(fssm);
     g->devnode->dn_Task = g->dosport;
 
     /*
@@ -3443,7 +3634,8 @@ void handler_main(void)
     pkt->dp_Res2 = 0;
     return_packet(g, pkt);
 
-    /* mount after replying so DOS has released the device list lock */
+    /* publish nodes after replying so DOS has released the device list lock */
+    publish_device_node(g);
     mount_volume(g);
 
     /* install media change interrupt */
@@ -3497,6 +3689,7 @@ void handler_main(void)
     remove_media_change(g);
     unmount_volume(g);
     drain_all_objects(g);
+    unpublish_device_node(g);
 
 shutdown:
     if (g->devreq) {
