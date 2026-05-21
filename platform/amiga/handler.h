@@ -199,5 +199,6 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
 
 /* handler entry point (called from startup.S) */
 void handler_main(void);
+void handler_main_startup(struct Message *startup_msg);
 
 #endif /* ODFS_HANDLER_H */

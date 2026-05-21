@@ -3452,7 +3452,7 @@ static void handle_media_change(handler_global_t *g)
 /* handler main entry point                                            */
 /* ------------------------------------------------------------------ */
 
-void handler_main(void)
+void handler_main_startup(struct Message *startup_msg)
 {
     handler_global_t *g;
     struct Message *msg;
@@ -3491,8 +3491,12 @@ void handler_main(void)
     }
 
     /* wait for startup packet */
-    WaitPort(g->dosport);
-    msg = GetMsg(g->dosport);
+    if (startup_msg) {
+        msg = startup_msg;
+    } else {
+        WaitPort(g->dosport);
+        msg = GetMsg(g->dosport);
+    }
     pkt = (struct DosPacket *)msg->mn_Node.ln_Name;
 
     g->devnode = (struct DeviceNode *)BADDR(pkt->dp_Arg3);
@@ -3704,4 +3708,9 @@ shutdown:
 
     odfs_amiga_close_libraries();
     odfs_amiga_free_mem(g, sizeof(*g));
+}
+
+void handler_main(void)
+{
+    handler_main_startup(NULL);
 }
