@@ -136,7 +136,7 @@ struct odfs_fh {
     struct MinNode  node;           /* for tracking */
     odfs_entry_t  *entry;          /* shared object metadata */
     LONG            access;         /* originating DOS access mode */
-    ULONG           pos;            /* current read position */
+    uint64_t        pos;            /* current read position */
 };
 
 /* ---- helper macros ---- */
@@ -149,6 +149,15 @@ struct odfs_fh {
 /* Convert odfs_lock_t to BPTR for DOS */
 #define LOCK_TO_BPTR(ol) \
     ((ol) ? MKBADDR(&(ol)->lock) : 0)
+
+/* Convert a direct DOS lock pointer to our odfs_lock_t */
+#define LOCK_FROM_PTR(ptr) \
+    ((ptr) ? (odfs_lock_t *)((UBYTE *)(ptr) - \
+     offsetof(odfs_lock_t, lock)) : NULL)
+
+/* Convert odfs_lock_t to a direct DOS lock pointer */
+#define LOCK_TO_PTR(ol) \
+    ((ol) ? &(ol)->lock : NULL)
 
 /* BCPL string to C string (AROS-compatible) */
 static inline void bstr_to_cstr(BSTR bstr, char *buf, int bufsize)
@@ -196,6 +205,71 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
     default:                    return ERROR_NOT_A_DOS_DISK;
     }
 }
+
+/* shared operations used by packet and OS4 vector frontends */
+LONG odfs_handler_lock_object(handler_global_t *g,
+                              odfs_lock_t *parent_lock,
+                              const char *path,
+                              LONG access,
+                              odfs_lock_t **out);
+LONG odfs_handler_free_lock_object(handler_global_t *g, odfs_lock_t *ol);
+LONG odfs_handler_dup_lock_object(handler_global_t *g,
+                                  odfs_lock_t *src,
+                                  odfs_lock_t **out);
+LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   odfs_lock_t **out);
+LONG odfs_handler_parent_lock_object(handler_global_t *g,
+                                     odfs_lock_t *ol,
+                                     odfs_lock_t **out);
+LONG odfs_handler_parent_fh_object(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   odfs_lock_t **out);
+LONG odfs_handler_same_lock_object(handler_global_t *g,
+                                   odfs_lock_t *l1,
+                                   odfs_lock_t *l2,
+                                   LONG *same_result);
+LONG odfs_handler_same_file_object(handler_global_t *g,
+                                   odfs_fh_t *fh1,
+                                   odfs_fh_t *fh2,
+                                   LONG *same_result);
+LONG odfs_handler_open_object(handler_global_t *g,
+                              odfs_lock_t *dirlock,
+                              const char *path,
+                              LONG mode,
+                              odfs_fh_t **out);
+LONG odfs_handler_open_from_lock_object(handler_global_t *g,
+                                        odfs_lock_t *ol,
+                                        odfs_fh_t **out);
+LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh);
+LONG odfs_handler_read_object(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              void *buf,
+                              LONG len,
+                              LONG *actual_out);
+LONG odfs_handler_seek_object(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              int64_t offset,
+                              LONG mode,
+                              int64_t *oldpos_out);
+LONG odfs_handler_get_file_position(handler_global_t *g,
+                                    odfs_fh_t *fh,
+                                    int64_t *pos_out);
+LONG odfs_handler_get_file_size(handler_global_t *g,
+                                odfs_fh_t *fh,
+                                int64_t *size_out);
+LONG odfs_handler_fill_info(handler_global_t *g,
+                            odfs_lock_t *ol,
+                            struct InfoData *info);
+LONG odfs_handler_get_lock_node(handler_global_t *g,
+                                odfs_lock_t *ol,
+                                const odfs_node_t **node_out);
+LONG odfs_handler_get_fh_node(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              const odfs_node_t **node_out);
+ULONG odfs_handler_node_key(const odfs_node_t *node);
+ULONG odfs_handler_node_protection(const odfs_node_t *node);
+void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds);
 
 /* handler entry point (called from startup.S) */
 void handler_main(void);

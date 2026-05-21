@@ -1154,6 +1154,104 @@ static ULONG amiga_node_key(const odfs_node_t *node)
     return key;
 }
 
+ULONG odfs_handler_node_key(const odfs_node_t *node)
+{
+    return amiga_node_key(node);
+}
+
+ULONG odfs_handler_node_protection(const odfs_node_t *node)
+{
+    ULONG prot = 0;
+
+    if (!node)
+        return 0;
+
+    if (node->amiga_as.has_protection) {
+        prot = node->amiga_as.protection[3];
+    } else if (node->mode != 0) {
+        /* MakeCD table 6 default mapping from PX to classic Amiga bits. */
+        if ((node->mode & 0200) == 0)
+            prot |= FIBF_DELETE | FIBF_WRITE;
+        if ((node->mode & 0100) == 0)
+            prot |= FIBF_EXECUTE;
+        if ((node->mode & 0400) == 0)
+            prot |= FIBF_READ;
+#ifdef FIBF_GRP_DELETE
+        if (node->mode & 0020)
+            prot |= FIBF_GRP_DELETE;
+#endif
+#ifdef FIBF_GRP_EXECUTE
+        if (node->mode & 0010)
+            prot |= FIBF_GRP_EXECUTE;
+#endif
+#ifdef FIBF_GRP_WRITE
+        if (node->mode & 0020)
+            prot |= FIBF_GRP_WRITE;
+#endif
+#ifdef FIBF_GRP_READ
+        if (node->mode & 0040)
+            prot |= FIBF_GRP_READ;
+#endif
+#ifdef FIBF_OTR_DELETE
+        if (node->mode & 0002)
+            prot |= FIBF_OTR_DELETE;
+#endif
+#ifdef FIBF_OTR_EXECUTE
+        if (node->mode & 0001)
+            prot |= FIBF_OTR_EXECUTE;
+#endif
+#ifdef FIBF_OTR_WRITE
+        if (node->mode & 0002)
+            prot |= FIBF_OTR_WRITE;
+#endif
+#ifdef FIBF_OTR_READ
+        if (node->mode & 0004)
+            prot |= FIBF_OTR_READ;
+#endif
+    } else {
+        prot = FIBF_WRITE | FIBF_DELETE;
+    }
+
+    return prot;
+}
+
+void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds)
+{
+    if (!ds)
+        return;
+
+    memset(ds, 0, sizeof(*ds));
+    if (!node || node->mtime.year < 1978)
+        return;
+
+    {
+        LONG days = 0;
+        int y;
+
+        for (y = 1978; y < node->mtime.year; y++) {
+            days += 365;
+            if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
+                days++;
+        }
+        {
+            static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+            int m;
+            for (m = 1; m < node->mtime.month && m <= 12; m++) {
+                days += mdays[m];
+                if (m == 2 && ((node->mtime.year % 4 == 0 &&
+                    node->mtime.year % 100 != 0) ||
+                    node->mtime.year % 400 == 0))
+                    days++;
+            }
+        }
+        days += node->mtime.day - 1;
+
+        ds->ds_Days   = days;
+        ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
+        ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
+    }
+}
+
 static odfs_err_t lookup_child_node(handler_global_t *g,
                                     const odfs_node_t *dir,
                                     const char *name,
@@ -1595,203 +1693,171 @@ static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
 }
 
 /* ------------------------------------------------------------------ */
-/* packet handlers                                                     */
+/* shared frontend operations                                          */
 /* ------------------------------------------------------------------ */
 
-static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_lock_object(handler_global_t *g,
+                              odfs_lock_t *parent_lock,
+                              const char *path,
+                              LONG access,
+                              odfs_lock_t **out)
 {
-    odfs_lock_t *parent_lock = LOCK_FROM_BPTR(pkt->dp_Arg1);
-    LONG access = pkt->dp_Arg3;
-    char path[512];
     odfs_node_t result, parent_node;
     odfs_err_t err;
     const odfs_node_t *start;
     const odfs_node_t *start_parent;
+    odfs_lock_t *ol;
 
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    trace_pkt(g, "locate-enter", pkt);
-#endif
-    bstr_to_cstr(pkt->dp_Arg2, path, sizeof(path));
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    ODFS_TRACE(&g->log, ODFS_SUB_DOS, "locate-path path=%s", path);
-#endif
+    if (out)
+        *out = NULL;
+    if (!g || !path || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
 
     if (parent_lock) {
-        LONG err_dos = validate_object_volume(g, parent_lock->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
+        LONG err_dos;
+
+        if (!lock_is_active(g, parent_lock))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, parent_lock->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
         start = lock_node(parent_lock);
         start_parent = lock_parent_node(parent_lock);
     } else {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
+        if (!g->mounted)
+            return ERROR_NO_DISK;
         start = &g->mount.root;
         start_parent = &g->mount.root;
     }
 
     err = resolve_amiga_path(g, start, start_parent, path, &result,
                              &parent_node);
-    if (err != ODFS_OK) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = odfs_err_to_dos(err);
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        trace_pkt(g, "locate-resolve-fail", pkt);
-#endif
-        return;
-    }
+    if (err != ODFS_OK)
+        return odfs_err_to_dos(err);
 
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    trace_node(g, "locate-node", &result);
-    trace_node(g, "locate-parent", &parent_node);
-#endif
+    if (result.kind == ODFS_NODE_DIR)
+        access = SHARED_LOCK;
 
-    odfs_lock_t *ol = alloc_lock(g, &result, &parent_node, access);
-    if (!ol) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        trace_pkt(g, "locate-alloc-fail", pkt);
-#endif
-        return;
-    }
+    ol = alloc_lock(g, &result, &parent_node, access);
+    if (!ol)
+        return ERROR_NO_FREE_STORE;
 
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    trace_pkt(g, "locate-exit", pkt);
-#endif
+    *out = ol;
+    return 0;
 }
 
-static void action_free_lock(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_free_lock_object(handler_global_t *g, odfs_lock_t *ol)
 {
-    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    if (!ol)
+        return 0;
+    if (!lock_is_active(g, ol))
+        return ERROR_INVALID_LOCK;
+
     free_lock(g, ol);
-    pkt->dp_Res1 = DOSTRUE;
+    return 0;
 }
 
-static void action_copy_dir(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_dup_lock_object(handler_global_t *g,
+                                  odfs_lock_t *src,
+                                  odfs_lock_t **out)
 {
-    odfs_lock_t *src = LOCK_FROM_BPTR(pkt->dp_Arg1);
     odfs_lock_t *ol;
 
+    if (out)
+        *out = NULL;
+    if (!g || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
     if (!src) {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
+        if (!g->mounted)
+            return ERROR_NO_DISK;
         ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
     } else {
-        LONG err_dos = validate_object_volume(g, src->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
+        LONG err_dos;
+
+        if (!lock_is_active(g, src))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, src->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
         ol = dup_lock(g, src);
     }
 
-    if (!ol) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-        return;
-    }
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+    if (!ol)
+        return ERROR_NO_FREE_STORE;
+
+    *out = ol;
+    return 0;
 }
 
-static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   odfs_lock_t **out)
 {
-    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
     odfs_lock_t *ol;
 
+    if (out)
+        *out = NULL;
+    if (!g || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
     if (!fh) {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
+        if (!g->mounted)
+            return ERROR_NO_DISK;
         ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
     } else {
-        if (!fh_is_active(g, fh)) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
-            return;
-        }
-        LONG err_dos = validate_object_volume(g, fh_volume(fh));
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-        /* DupLockFromFH duplicates the file's lock, not just directory FHs. */
+        LONG err_dos;
+
+        if (!fh_is_active(g, fh))
+            return ERROR_OBJECT_NOT_FOUND;
+
+        err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
         ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), SHARED_LOCK);
     }
 
-    if (!ol) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-        return;
-    }
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+    if (!ol)
+        return ERROR_NO_FREE_STORE;
+
+    *out = ol;
+    return 0;
 }
 
-static void action_parent(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_parent_lock_object(handler_global_t *g,
+                                     odfs_lock_t *ol,
+                                     odfs_lock_t **out)
 {
-    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     const odfs_node_t *parent_node;
     odfs_node_t new_parent;
     odfs_err_t err;
     odfs_lock_t *parent;
 
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
-               "parent-enter arg1=%08lx lock=%08lx",
-               (unsigned long)pkt->dp_Arg1, (unsigned long)ol);
-#endif
+    if (out)
+        *out = NULL;
+    if (!g || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
 
     if (!ol) {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
-        /* NULL lock = root — root has no parent */
-        pkt->dp_Res1 = 0;
-        return;
+        if (!g->mounted)
+            return ERROR_NO_DISK;
+        return 0;
     }
 
-    if (!lock_is_active(g, ol)) {
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-        ODFS_TRACE(&g->log, ODFS_SUB_DOS,
-                   "parent-invalid-lock lock=%08lx",
-                   (unsigned long)ol);
-#endif
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_INVALID_LOCK;
-        return;
-    }
+    if (!lock_is_active(g, ol))
+        return ERROR_INVALID_LOCK;
 
     {
         LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
+        if (err_dos != 0)
+            return err_dos;
     }
 
-    /* already at root? */
-    if (node_is_mount_root(g, lock_node(ol))) {
-        pkt->dp_Res1 = 0;
-        return;
-    }
+    if (node_is_mount_root(g, lock_node(ol)))
+        return 0;
 
-    /* Reconstruct the returned lock's immediate parent exactly. */
     parent_node = lock_parent_node(ol);
     if (node_is_mount_root(g, parent_node)) {
         new_parent = g->mount.root;
@@ -1802,70 +1868,49 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     } else {
         err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
                                        NULL);
-        if (err != ODFS_OK) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = odfs_err_to_dos(err);
-            return;
-        }
+        if (err != ODFS_OK)
+            return odfs_err_to_dos(err);
     }
-
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    trace_node(g, "parent-node", lock_node(ol));
-    trace_node(g, "parent-result", parent_node);
-    trace_node(g, "parent-parent", &new_parent);
-#endif
 
     parent = alloc_lock(g, parent_node, &new_parent, SHARED_LOCK);
-    if (!parent) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-        return;
-    }
-    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+    if (!parent)
+        return ERROR_NO_FREE_STORE;
+
+    *out = parent;
+    return 0;
 }
 
-static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
+LONG odfs_handler_parent_fh_object(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   odfs_lock_t **out)
 {
-    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
     const odfs_node_t *parent_node;
     odfs_node_t new_parent;
     odfs_err_t err;
     odfs_lock_t *parent;
 
-#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
-               "parentfh-enter fh=%08lx", (unsigned long)fh);
-#endif
+    if (out)
+        *out = NULL;
+    if (!g || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
 
     if (!fh) {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
-        pkt->dp_Res1 = 0;
-        return;
+        if (!g->mounted)
+            return ERROR_NO_DISK;
+        return 0;
     }
 
-    if (!fh_is_active(g, fh)) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
-        return;
-    }
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
 
     {
         LONG err_dos = validate_object_volume(g, fh_volume(fh));
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
+        if (err_dos != 0)
+            return err_dos;
     }
 
-    if (node_is_mount_root(g, fh_node(fh))) {
-        pkt->dp_Res1 = 0;
-        return;
-    }
+    if (node_is_mount_root(g, fh_node(fh)))
+        return 0;
 
     parent_node = fh_parent_node(fh);
     if (node_is_mount_root(g, parent_node)) {
@@ -1877,24 +1922,531 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
     } else {
         err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
                                        NULL);
-        if (err != ODFS_OK) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = odfs_err_to_dos(err);
-            return;
-        }
+        if (err != ODFS_OK)
+            return odfs_err_to_dos(err);
+    }
+
+    parent = alloc_lock(g, parent_node, &new_parent, SHARED_LOCK);
+    if (!parent)
+        return ERROR_NO_FREE_STORE;
+
+    *out = parent;
+    return 0;
+}
+
+LONG odfs_handler_same_lock_object(handler_global_t *g,
+                                   odfs_lock_t *l1,
+                                   odfs_lock_t *l2,
+                                   LONG *same_result)
+{
+    odfs_volume_t *v1;
+    odfs_volume_t *v2;
+    int same = 0;
+
+    if (!g || !same_result)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    *same_result = LOCK_DIFFERENT;
+
+    if (l1 && !lock_is_active(g, l1))
+        return ERROR_INVALID_LOCK;
+    if (l2 && !lock_is_active(g, l2))
+        return ERROR_INVALID_LOCK;
+
+    if (!g->mounted && (!l1 || !l2))
+        return ERROR_DEVICE_NOT_MOUNTED;
+
+    v1 = l1 ? l1->entry->volume : g->current_volume;
+    v2 = l2 ? l2->entry->volume : g->current_volume;
+    if (v1 != v2)
+        return 0;
+
+    *same_result = LOCK_SAME_VOLUME;
+    if (!l1 && !l2) {
+        same = 1;
+    } else if (!l1) {
+        same = node_is_mount_root(g, lock_node(l2));
+    } else if (!l2) {
+        same = node_is_mount_root(g, lock_node(l1));
+    } else {
+        same = nodes_same(lock_node(l1), lock_node(l2));
+    }
+
+    if (same)
+        *same_result = LOCK_SAME;
+    return 0;
+}
+
+LONG odfs_handler_same_file_object(handler_global_t *g,
+                                   odfs_fh_t *fh1,
+                                   odfs_fh_t *fh2,
+                                   LONG *same_result)
+{
+    odfs_volume_t *v1;
+    odfs_volume_t *v2;
+    int same;
+
+    if (!g || !fh1 || !fh2 || !same_result)
+        return ERROR_OBJECT_NOT_FOUND;
+
+    *same_result = LOCK_DIFFERENT;
+
+    if (!fh_is_active(g, fh1) || !fh_is_active(g, fh2))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    v1 = fh_volume(fh1);
+    v2 = fh_volume(fh2);
+    if (v1 != v2)
+        return 0;
+
+    *same_result = LOCK_SAME_VOLUME;
+    same = nodes_same(fh_node(fh1), fh_node(fh2));
+    if (same)
+        *same_result = LOCK_SAME;
+    return 0;
+}
+
+LONG odfs_handler_open_object(handler_global_t *g,
+                              odfs_lock_t *dirlock,
+                              const char *path,
+                              LONG mode,
+                              odfs_fh_t **out)
+{
+    odfs_node_t result, parent_node;
+    odfs_err_t err;
+    const odfs_node_t *start;
+    const odfs_node_t *start_parent;
+    odfs_entry_t *entry;
+    odfs_fh_t *fh;
+
+    if (out)
+        *out = NULL;
+    if (!g || !path || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    if (mode != MODE_OLDFILE)
+        return ERROR_DISK_WRITE_PROTECTED;
+
+    if (dirlock) {
+        LONG err_dos;
+
+        if (!lock_is_active(g, dirlock))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, dirlock->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+        start = lock_node(dirlock);
+        start_parent = lock_parent_node(dirlock);
+    } else {
+        if (!g->mounted)
+            return ERROR_NO_DISK;
+        start = &g->mount.root;
+        start_parent = &g->mount.root;
+    }
+
+    err = resolve_amiga_path(g, start, start_parent, path, &result,
+                             &parent_node);
+    if (err != ODFS_OK)
+        return odfs_err_to_dos(err);
+
+    if (result.kind == ODFS_NODE_DIR)
+        return ERROR_OBJECT_WRONG_TYPE;
+
+    entry = alloc_entry(g->current_volume, &result, &parent_node);
+    if (!entry)
+        return ERROR_NO_FREE_STORE;
+
+    fh = alloc_fh(g, entry, SHARED_LOCK);
+    release_entry(entry);
+    if (!fh)
+        return ERROR_NO_FREE_STORE;
+
+    *out = fh;
+    return 0;
+}
+
+LONG odfs_handler_open_from_lock_object(handler_global_t *g,
+                                        odfs_lock_t *ol,
+                                        odfs_fh_t **out)
+{
+    odfs_fh_t *fh;
+
+    if (out)
+        *out = NULL;
+    if (!g || !ol || !out)
+        return ERROR_OBJECT_NOT_FOUND;
+
+    if (!lock_is_active(g, ol))
+        return ERROR_INVALID_LOCK;
+
+    {
+        LONG err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    fh = alloc_fh(g, ol->entry, ol->lock.fl_Access);
+    if (!fh)
+        return ERROR_NO_FREE_STORE;
+
+    free_lock(g, ol);
+    *out = fh;
+    return 0;
+}
+
+LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh)
+{
+    if (!fh)
+        return 0;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    free_fh(g, fh);
+    return 0;
+}
+
+LONG odfs_handler_read_object(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              void *buf,
+                              LONG len,
+                              LONG *actual_out)
+{
+    size_t actual;
+    odfs_err_t err;
+
+    if (actual_out)
+        *actual_out = 0;
+    if (!g || !fh || !buf || !actual_out)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (len < 0)
+        return ERROR_BAD_NUMBER;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    actual = (size_t)len;
+    err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
+    if (err != ODFS_OK && actual == 0)
+        return odfs_err_to_dos(err);
+
+    fh->pos += actual;
+    *actual_out = (LONG)actual;
+    return 0;
+}
+
+LONG odfs_handler_seek_object(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              int64_t offset,
+                              LONG mode,
+                              int64_t *oldpos_out)
+{
+    int64_t oldpos;
+    int64_t newpos;
+    uint64_t size;
+
+    if (oldpos_out)
+        *oldpos_out = -1;
+    if (!g || !fh || !oldpos_out)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    oldpos = (int64_t)fh->pos;
+    size = fh_node(fh)->size;
+
+    switch (mode) {
+    case OFFSET_BEGINNING: newpos = offset; break;
+    case OFFSET_CURRENT:   newpos = oldpos + offset; break;
+    case OFFSET_END:       newpos = (int64_t)size + offset; break;
+    default:
+        return ERROR_SEEK_ERROR;
+    }
+
+    if (newpos < 0 || (uint64_t)newpos > size)
+        return ERROR_SEEK_ERROR;
+
+    fh->pos = (uint64_t)newpos;
+    *oldpos_out = oldpos;
+    return 0;
+}
+
+LONG odfs_handler_get_file_position(handler_global_t *g,
+                                    odfs_fh_t *fh,
+                                    int64_t *pos_out)
+{
+    if (pos_out)
+        *pos_out = -1;
+    if (!g || !fh || !pos_out)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    *pos_out = (int64_t)fh->pos;
+    return 0;
+}
+
+LONG odfs_handler_get_file_size(handler_global_t *g,
+                                odfs_fh_t *fh,
+                                int64_t *size_out)
+{
+    if (size_out)
+        *size_out = -1;
+    if (!g || !fh || !size_out)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    *size_out = (int64_t)fh_node(fh)->size;
+    return 0;
+}
+
+LONG odfs_handler_fill_info(handler_global_t *g,
+                            odfs_lock_t *ol,
+                            struct InfoData *info)
+{
+    if (!g || !info)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    if (ol) {
+        LONG err_dos;
+
+        if (!lock_is_active(g, ol))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->id_NumSoftErrors = 0;
+    info->id_UnitNumber    = g->devunit;
+    info->id_DiskState     = ID_WRITE_PROTECTED;
+    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
+    info->id_NumBlocksUsed = info->id_NumBlocks;
+    info->id_BytesPerBlock = g->sector_size;
+    info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
+    info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
+    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
+                              g->current_volume->volnode->dl_LockList) ?
+                             DOSTRUE : DOSFALSE;
+    return 0;
+}
+
+LONG odfs_handler_get_lock_node(handler_global_t *g,
+                                odfs_lock_t *ol,
+                                const odfs_node_t **node_out)
+{
+    if (node_out)
+        *node_out = NULL;
+    if (!g || !node_out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    if (ol) {
+        LONG err_dos;
+
+        if (!lock_is_active(g, ol))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+        *node_out = lock_node(ol);
+    } else {
+        if (!g->mounted)
+            return ERROR_NO_DISK;
+        *node_out = &g->mount.root;
+    }
+
+    return 0;
+}
+
+LONG odfs_handler_get_fh_node(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              const odfs_node_t **node_out)
+{
+    if (node_out)
+        *node_out = NULL;
+    if (!g || !fh || !node_out)
+        return ERROR_OBJECT_NOT_FOUND;
+
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    *node_out = fh_node(fh);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* packet handlers                                                     */
+/* ------------------------------------------------------------------ */
+
+static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *parent_lock = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    LONG access = pkt->dp_Arg3;
+    char path[512];
+    odfs_lock_t *ol;
+    LONG err_dos;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    trace_pkt(g, "locate-enter", pkt);
+#endif
+    bstr_to_cstr(pkt->dp_Arg2, path, sizeof(path));
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS, "locate-path path=%s", path);
+#endif
+
+    err_dos = odfs_handler_lock_object(g, parent_lock, path, access, &ol);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+        trace_pkt(g, "locate-resolve-fail", pkt);
+#endif
+        return;
     }
 
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
-    trace_node(g, "parentfh-node", fh_node(fh));
-    trace_node(g, "parentfh-result", parent_node);
+    trace_node(g, "locate-node", lock_node(ol));
+    trace_node(g, "locate-parent", lock_parent_node(ol));
 #endif
 
-    parent = alloc_lock(g, parent_node, &new_parent, SHARED_LOCK);
-    if (!parent) {
+    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    trace_pkt(g, "locate-exit", pkt);
+#endif
+}
+
+static void action_free_lock(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    LONG err_dos = odfs_handler_free_lock_object(g, ol);
+
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        pkt->dp_Res2 = err_dos;
         return;
     }
+    pkt->dp_Res1 = DOSTRUE;
+}
+
+static void action_copy_dir(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *src = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    odfs_lock_t *ol;
+    LONG err_dos;
+
+    err_dos = odfs_handler_dup_lock_object(g, src, &ol);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+}
+
+static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    odfs_lock_t *ol;
+    LONG err_dos;
+
+    err_dos = odfs_handler_dup_lock_from_fh(g, fh, &ol);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
+    }
+    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+}
+
+static void action_parent(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    odfs_lock_t *parent;
+    LONG err_dos;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "parent-enter arg1=%08lx lock=%08lx",
+               (unsigned long)pkt->dp_Arg1, (unsigned long)ol);
+#endif
+
+    err_dos = odfs_handler_parent_lock_object(g, ol, &parent);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
+    }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    if (ol)
+        trace_node(g, "parent-node", lock_node(ol));
+    if (parent) {
+        trace_node(g, "parent-result", lock_node(parent));
+        trace_node(g, "parent-parent", lock_parent_node(parent));
+    }
+#endif
+
+    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+}
+
+static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    odfs_lock_t *parent;
+    LONG err_dos;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "parentfh-enter fh=%08lx", (unsigned long)fh);
+#endif
+
+    err_dos = odfs_handler_parent_fh_object(g, fh, &parent);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
+    }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    if (fh)
+        trace_node(g, "parentfh-node", fh_node(fh));
+    if (parent)
+        trace_node(g, "parentfh-result", lock_node(parent));
+#endif
+
     pkt->dp_Res1 = LOCK_TO_BPTR(parent);
 }
 
@@ -1902,40 +2454,18 @@ static void action_same_lock(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *l1 = LOCK_FROM_BPTR(pkt->dp_Arg1);
     odfs_lock_t *l2 = LOCK_FROM_BPTR(pkt->dp_Arg2);
-    odfs_volume_t *v1;
-    odfs_volume_t *v2;
-    int same = 0;
+    LONG same_result;
+    LONG err_dos;
 
-    if (!g->mounted && (!pkt->dp_Arg1 || !pkt->dp_Arg2)) {
+    err_dos = odfs_handler_same_lock_object(g, l1, l2, &same_result);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_DEVICE_NOT_MOUNTED;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
-    v1 = l1 ? l1->entry->volume : g->current_volume;
-    v2 = l2 ? l2->entry->volume : g->current_volume;
-
-    pkt->dp_Res1 = DOSFALSE;
-    pkt->dp_Res2 = LOCK_DIFFERENT;
-
-    if (v1 != v2)
-        return;
-
-    pkt->dp_Res2 = LOCK_SAME_VOLUME;
-    if (!pkt->dp_Arg1 && !pkt->dp_Arg2) {
-        same = 1;
-    } else if (!pkt->dp_Arg1) {
-        same = node_is_mount_root(g, lock_node(l2));
-    } else if (!pkt->dp_Arg2) {
-        same = node_is_mount_root(g, lock_node(l1));
-    } else {
-        same = nodes_same(lock_node(l1), lock_node(l2));
-    }
-
-    if (same) {
-        pkt->dp_Res1 = DOSTRUE;
-        pkt->dp_Res2 = LOCK_SAME;
-    }
+    pkt->dp_Res1 = (same_result == LOCK_SAME) ? DOSTRUE : DOSFALSE;
+    pkt->dp_Res2 = same_result;
 }
 
 /* ---- examine ---- */
@@ -2362,29 +2892,19 @@ static void action_examine_fh(handler_global_t *g, struct DosPacket *pkt)
 static void action_fh_from_lock(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg2);
+    struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
+    odfs_fh_t *fh;
+    LONG err_dos;
 
-    if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
-        odfs_fh_t *fh;
-
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-
-        fh = alloc_fh(g, ol->entry, ol->lock.fl_Access);
-        if (fh) {
-            fhandle->fh_Arg1 = (LONG)fh;
-            free_lock(g, ol);
-            pkt->dp_Res1 = DOSTRUE;
-        } else {
-            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-        }
-    } else {
-        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+    err_dos = odfs_handler_open_from_lock_object(g, ol, &fh);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
     }
+
+    fhandle->fh_Arg1 = (LONG)fh;
+    pkt->dp_Res1 = DOSTRUE;
 }
 
 /* ---- file I/O ---- */
@@ -2394,60 +2914,15 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
     struct FileHandle *fhandle = (struct FileHandle *)BADDR(pkt->dp_Arg1);
     odfs_lock_t *dirlock = LOCK_FROM_BPTR(pkt->dp_Arg2);
     char path[512];
-    odfs_node_t result, parent_node;
-    odfs_err_t err;
-    const odfs_node_t *start;
-    const odfs_node_t *start_parent;
+    odfs_fh_t *fh;
+    LONG err_dos;
 
     bstr_to_cstr(pkt->dp_Arg3, path, sizeof(path));
 
-    if (dirlock) {
-        LONG err_dos = validate_object_volume(g, dirlock->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-        start = lock_node(dirlock);
-        start_parent = lock_parent_node(dirlock);
-    } else {
-        if (!g->mounted) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
-        }
-        start = &g->mount.root;
-        start_parent = &g->mount.root;
-    }
-
-    err = resolve_amiga_path(g, start, start_parent, path, &result,
-                             &parent_node);
-    if (err != ODFS_OK) {
+    err_dos = odfs_handler_open_object(g, dirlock, path, MODE_OLDFILE, &fh);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = odfs_err_to_dos(err);
-        return;
-    }
-
-    if (result.kind == ODFS_NODE_DIR) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
-        return;
-    }
-
-    odfs_entry_t *entry = alloc_entry(g->current_volume, &result, &parent_node);
-    odfs_fh_t *fh;
-
-    if (!entry) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
-        return;
-    }
-
-    fh = alloc_fh(g, entry, SHARED_LOCK);
-    release_entry(entry);
-    if (!fh) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
@@ -2460,90 +2935,49 @@ static void action_read(handler_global_t *g, struct DosPacket *pkt)
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
     void *buf = (void *)pkt->dp_Arg2;
     LONG len = pkt->dp_Arg3;
+    LONG actual;
+    LONG err_dos;
 
-    if (!fh) {
+    err_dos = odfs_handler_read_object(g, fh, buf, len, &actual);
+    if (err_dos != 0) {
         pkt->dp_Res1 = -1;
-        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
-    {
-        LONG err_dos = validate_object_volume(g, fh_volume(fh));
-        if (err_dos != 0) {
-            pkt->dp_Res1 = -1;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-    }
-
-    size_t actual = (size_t)len;
-    odfs_err_t err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
-    if (err != ODFS_OK && actual == 0) {
-        pkt->dp_Res1 = -1;
-        pkt->dp_Res2 = odfs_err_to_dos(err);
-        return;
-    }
-
-    fh->pos += actual;
-    pkt->dp_Res1 = (LONG)actual;
+    pkt->dp_Res1 = actual;
 }
 
-static void action_seek(handler_global_t *g __attribute__((unused)),
-                        struct DosPacket *pkt)
+static void action_seek(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
     LONG offset = pkt->dp_Arg2;
     LONG mode = pkt->dp_Arg3;
-    LONG oldpos, newpos;
+    int64_t oldpos;
+    LONG err_dos;
 
-    if (!fh) {
+    err_dos = odfs_handler_seek_object(g, fh, offset, mode, &oldpos);
+    if (err_dos != 0) {
         pkt->dp_Res1 = -1;
-        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
-    {
-        LONG err_dos = validate_object_volume(g, fh_volume(fh));
-        if (err_dos != 0) {
-            pkt->dp_Res1 = -1;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-    }
-
-    oldpos = (LONG)fh->pos;
-
-    switch (mode) {
-    case OFFSET_BEGINNING: newpos = offset; break;
-    case OFFSET_CURRENT:   newpos = oldpos + offset; break;
-    case OFFSET_END:       newpos = (LONG)fh_node(fh)->size + offset; break;
-    default:
-        pkt->dp_Res1 = -1;
-        pkt->dp_Res2 = ERROR_SEEK_ERROR;
-        return;
-    }
-
-    if (newpos < 0 || (ULONG)newpos > fh_node(fh)->size) {
-        pkt->dp_Res1 = -1;
-        pkt->dp_Res2 = ERROR_SEEK_ERROR;
-        return;
-    }
-
-    fh->pos = (ULONG)newpos;
-    pkt->dp_Res1 = oldpos;
+    pkt->dp_Res1 = (LONG)oldpos;
 }
 
 static void action_end(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    LONG err_dos;
 
-    if (fh && !fh_is_active(g, fh)) {
+    err_dos = odfs_handler_close_object(g, fh);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
-    free_fh(g, fh);
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -2552,20 +2986,13 @@ static void action_end(handler_global_t *g, struct DosPacket *pkt)
 static void action_disk_info(handler_global_t *g, struct DosPacket *pkt)
 {
     struct InfoData *info = (struct InfoData *)BADDR(pkt->dp_Arg1);
+    LONG err_dos = odfs_handler_fill_info(g, NULL, info);
 
-    memset(info, 0, sizeof(*info));
-    info->id_NumSoftErrors = 0;
-    info->id_UnitNumber    = g->devunit;
-    info->id_DiskState     = ID_WRITE_PROTECTED;
-    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
-    info->id_NumBlocksUsed = info->id_NumBlocks;
-    info->id_BytesPerBlock = g->sector_size;
-    info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
-    info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
-    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
-                              g->current_volume->volnode->dl_LockList) ?
-                             DOSTRUE : DOSFALSE;
-
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
+    }
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -2573,6 +3000,7 @@ static void action_info(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct InfoData *info = (struct InfoData *)BADDR(pkt->dp_Arg2);
+    LONG err_dos;
 
     if (pkt->dp_Arg1 && !ol) {
         pkt->dp_Res1 = DOSFALSE;
@@ -2580,30 +3008,12 @@ static void action_info(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
+    err_dos = odfs_handler_fill_info(g, ol, info);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
     }
-
-    /* Single mounted volume: the lock only needs to be valid/current. */
-    (void)ol;
-    memset(info, 0, sizeof(*info));
-    info->id_NumSoftErrors = 0;
-    info->id_UnitNumber    = g->devunit;
-    info->id_DiskState     = ID_WRITE_PROTECTED;
-    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
-    info->id_NumBlocksUsed = info->id_NumBlocks;
-    info->id_BytesPerBlock = g->sector_size;
-    info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
-    info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
-    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
-                              g->current_volume->volnode->dl_LockList) ?
-                             DOSTRUE : DOSFALSE;
-
     pkt->dp_Res1 = DOSTRUE;
 }
 
