@@ -13,14 +13,13 @@
 
 #if ODFS_PLATFORM_AMIGA
 
-#include <exec/memory.h>
-#include <proto/exec.h>
+#include "sys_compat.h"
 
 static inline void *odfs_malloc(size_t size)
 {
     if (size == 0)
         size = 1;
-    return AllocVec((ULONG)size, MEMF_PUBLIC);
+    return odfs_amiga_alloc_vec((ULONG)size, MEMF_PUBLIC);
 }
 
 static inline void *odfs_calloc(size_t count, size_t size)
@@ -34,13 +33,12 @@ static inline void *odfs_calloc(size_t count, size_t size)
     if (total == 0)
         total = 1;
 
-    return AllocVec((ULONG)total, MEMF_PUBLIC | MEMF_CLEAR);
+    return odfs_amiga_alloc_vec((ULONG)total, MEMF_PUBLIC | MEMF_CLEAR);
 }
 
 static inline void odfs_free(void *ptr)
 {
-    if (ptr)
-        FreeVec(ptr);
+    odfs_amiga_free_vec(ptr);
 }
 
 #else

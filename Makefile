@@ -5,16 +5,42 @@
 
 # ---- toolchain selection ----
 
-# Amiga cross-compiler (m68k-amigaos or m68k-aros-gcc)
-CC      = m68k-amigaos-gcc
-STRIP   = m68k-amigaos-strip
-
-# NDK include path (override with: make NDK_PATH=/your/path)
-NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../m68k-amigaos/ndk-include 2>/dev/null)
+# Amiga cross-compiler.
+# Override with CC=ppc-amigaos-gcc for an AmigaOS 4 PPC build.
+CC      ?= m68k-amigaos-gcc
 
 # AROS cross-compiler (override: make CC=m68k-aros-gcc AROS=1)
 # When AROS=1, uses -static instead of -noixemul and defines __AROS__
 AROS ?= 0
+
+# Derive target tools from CC so CC=ppc-amigaos-gcc also selects the
+# matching ppc-amigaos-ar/strip/size tools.
+AMIGA_CC_TARGET   := $(shell $(CC) -dumpmachine 2>/dev/null)
+AMIGA_TOOL_PREFIX ?= $(patsubst %-gcc,%,$(notdir $(CC)))
+AMIGA_AR          ?= $(AMIGA_TOOL_PREFIX)-ar
+AMIGA_SIZE        ?= $(AMIGA_TOOL_PREFIX)-size
+STRIP             ?= $(AMIGA_TOOL_PREFIX)-strip
+
+ifneq ($(filter ppc-amigaos,$(AMIGA_CC_TARGET)),)
+AMIGA_TARGET ?= os4
+else ifeq ($(AROS),1)
+AMIGA_TARGET ?= aros
+else
+AMIGA_TARGET ?= os3
+endif
+
+ifeq ($(AMIGA_TARGET),os4)
+AMIGA_OSDIR := os4
+else
+AMIGA_OSDIR := os3
+endif
+
+# NDK include path (override with: make NDK_PATH=/your/path)
+ifeq ($(AMIGA_TARGET),os4)
+NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../ppc-amigaos/SDK/include/include_h 2>/dev/null)
+else
+NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../m68k-amigaos/ndk-include 2>/dev/null)
+endif
 
 # Host compiler
 HOSTCC ?= cc
@@ -25,6 +51,11 @@ AMIGA_DATE ?= $(shell date '+%-d.%-m.%Y')
 ODFS_GIT_VERSION ?= $(shell desc=$$(git describe --tags --match "v*" --dirty --always 2>/dev/null || echo unknown); printf '%s\n' "$$desc" | grep -q '^v' && printf '%s' "$$desc" || printf 'early-0-g%s' "$$desc")
 
 INCLUDES = -I include -I backends
+AMIGA_PLATFORM_INCLUDES = -I platform/amiga \
+                          -I platform/amiga/common \
+                          -I platform/amiga/$(AMIGA_OSDIR)
+AMIGA_INCLUDES = $(INCLUDES) $(AMIGA_PLATFORM_INCLUDES) \
+                 $(if $(NDK_PATH),-I$(NDK_PATH))
 
 # ---- optional 3rdparty submodules ----
 
@@ -53,7 +84,11 @@ SERIAL_DEBUG ?= 0
 PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
+ifeq ($(AMIGA_TARGET),os4)
+AMIGA_SIZE_LIMIT ?= 131072
+else
 AMIGA_SIZE_LIMIT ?= 60000
+endif
 ROM_SIZE_LIMIT   ?= 32768
 SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
 SIZE_LIMIT_DESC  ?= release Amiga handler
@@ -85,25 +120,45 @@ FEATURE_DEFS = \
           -DODFS_FEATURE_HFSPLUS=$(FEATURE_HFSPLUS) \
           -DODFS_FEATURE_CDDA=$(FEATURE_CDDA)
 
-ifeq ($(AROS),1)
-CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -static -nostartfiles \
-          -Wall -Wextra -Werror \
-          -Wstrict-prototypes -Wmissing-prototypes \
-          -Wno-array-bounds \
-          -MMD -MP \
-          -DAMIGA -D__AROS__ $(FEATURE_DEFS)
-LDFLAGS = -static
-LIBS    = -lamiga -lgcc
+ifeq ($(AMIGA_TARGET),aros)
+AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
+AMIGA_SYSFLAGS ?= -static
+AMIGA_WARNFLAGS =
+AMIGA_DEFS     = -DAMIGA -D__AROS__
+LDFLAGS        = $(AMIGA_SYSFLAGS)
+LIBS           = -lamiga -lgcc
+HANDLER_LDFLAGS = -nostartfiles
+HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
+else ifeq ($(AMIGA_TARGET),os4)
+AMIGA_CRT      ?= newlib
+AMIGA_CPUFLAGS ?= -mcpu=powerpc
+AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT)
+AMIGA_WARNFLAGS = -Wno-error=deprecated-declarations
+AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
+LDFLAGS        = $(AMIGA_SYSFLAGS)
+# Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
+# Do not add -lauto to the handler link.
+LIBS           = -lc -lgcc
+HANDLER_LDFLAGS =
+HANDLER_LIBS   = $(LIBS)
 else
-CFLAGS  = -Os -m68000 -mtune=68020-60 -msoft-float -noixemul -nostartfiles \
-          -Wall -Wextra -Werror \
-          -Wstrict-prototypes -Wmissing-prototypes \
-          -Wno-array-bounds \
-          -MMD -MP \
-          -DAMIGA $(FEATURE_DEFS)
-LDFLAGS = -noixemul
-LIBS    = -lamiga -lgcc
+AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
+AMIGA_SYSFLAGS ?= -noixemul
+AMIGA_WARNFLAGS =
+AMIGA_DEFS     = -DAMIGA
+LDFLAGS        = $(AMIGA_SYSFLAGS)
+LIBS           = -lamiga -lgcc
+HANDLER_LDFLAGS = -nostartfiles
+HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 endif
+
+CFLAGS = -Os $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
+         -Wall -Wextra -Werror \
+         $(AMIGA_WARNFLAGS) \
+         -Wstrict-prototypes -Wmissing-prototypes \
+         -Wno-array-bounds \
+         -MMD -MP \
+         $(AMIGA_DEFS) $(FEATURE_DEFS)
 
 # ---- build directories ----
 
@@ -139,11 +194,20 @@ HOST_SRCS = platform/host/file_media.c
 
 # Amiga handler sources
 AMIGA_SRCS = platform/amiga/handler_main.c \
-    platform/amiga/libc_stubs.c \
-    platform/amiga/printf_local.c
+    platform/amiga/printf_local.c \
+    platform/amiga/$(AMIGA_OSDIR)/sys_compat.c
+ifeq ($(AMIGA_TARGET),os4)
+AMIGA_SRCS += platform/amiga/os4/main.c
+else
+AMIGA_SRCS += platform/amiga/libc_stubs.c
+endif
 
 # Amiga assembly
+ifeq ($(AMIGA_TARGET),os4)
+AMIGA_ASM_SRCS =
+else
 AMIGA_ASM_SRCS = platform/amiga/startup.S
+endif
 AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
 HOST_LIB_SRCS  = $(CORE_SRCS) $(HOST_SRCS)
@@ -258,7 +322,7 @@ rom-test:
 # Print size breakdown of Amiga library objects
 size: $(AMIGA_BUILD)/libodfs.a
 	@echo "=== Amiga object sizes ==="
-	@m68k-amigaos-size $(AMIGA_BUILD)/libodfs.a
+	@$(AMIGA_SIZE) $(AMIGA_BUILD)/libodfs.a
 
 # ---- host library ----
 
@@ -362,14 +426,14 @@ $(HOST_BUILD)/tools/imgdump: tools/imgdump/imgdump.c $(HOST_BUILD)/libodfs.a
 $(AMIGA_BUILD)/libodfs.a: $(AMIGA_LIB_OBJS)
 	@mkdir -p $(@D)
 	@echo "  AR    $@ (amiga)"
-	@m68k-amigaos-ar rcs $@ $^
+	@$(AMIGA_AR) rcs $@ $^
 
 # ---- Amiga object files ----
 
 $(AMIGA_BUILD)/%.o: %.c
 	@mkdir -p $(@D)
 	@echo "  CC    $<"
-	@$(CC) $(CPPFLAGS) $(INCLUDES) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(AMIGA_INCLUDES) $(CFLAGS) -c -o $@ $<
 
 # ---- Amiga assembly ----
 
@@ -383,12 +447,12 @@ $(AMIGA_BUILD)/%.o: %.S
 $(AMIGA_TEST_BUILD)/tests/amiga/%.o: tests/amiga/%.c
 	@mkdir -p $(@D)
 	@echo "  CC    $<"
-	@$(CC) $(CPPFLAGS) $(INCLUDES) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(AMIGA_INCLUDES) $(CFLAGS) -c -o $@ $<
 
 $(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@$(CC) $(LDFLAGS) -o $@ $< -lc -lamiga -lgcc
+	@$(CC) $(LDFLAGS) -o $@ $< $(LIBS)
 	@echo "  STRIP $@"
 	@$(STRIP) $@
 
@@ -397,7 +461,7 @@ $(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
 $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@$(CC) $(LDFLAGS) -nostartfiles -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
+	@$(CC) $(LDFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
 	@echo "  STRIP $@"
 	@$(STRIP) $@
 
