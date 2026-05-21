@@ -197,7 +197,8 @@ AMIGA_SRCS = platform/amiga/handler_main.c \
     platform/amiga/printf_local.c \
     platform/amiga/$(AMIGA_OSDIR)/sys_compat.c
 ifeq ($(AMIGA_TARGET),os4)
-AMIGA_SRCS += platform/amiga/os4/main.c
+AMIGA_SRCS += platform/amiga/os4/main.c \
+    platform/amiga/os4/vector_port.c
 else
 AMIGA_SRCS += platform/amiga/libc_stubs.c
 endif
