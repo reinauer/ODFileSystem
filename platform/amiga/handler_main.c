@@ -2555,6 +2555,90 @@ static odfs_err_t exnext_cb(const odfs_node_t *entry, void *ctx)
     return ODFS_ERR_EOF; /* stop after one entry */
 }
 
+typedef struct dir_next_ctx {
+    ULONG previous_key;
+    int   first;
+    int   seen_previous;
+    int   found;
+    odfs_node_t entry;
+} dir_next_ctx_t;
+
+static odfs_err_t dir_next_cb(const odfs_node_t *entry, void *ctx)
+{
+    dir_next_ctx_t *dc = ctx;
+
+    if (!dc->first && !dc->seen_previous) {
+        if (amiga_node_key(entry) == dc->previous_key)
+            dc->seen_previous = 1;
+        return ODFS_OK;
+    }
+
+    dc->entry = *entry;
+    dc->found = 1;
+    return ODFS_ERR_EOF;
+}
+
+LONG odfs_handler_next_dir_entry(handler_global_t *g,
+                                 odfs_lock_t *ol,
+                                 ULONG previous_key,
+                                 odfs_node_t *entry_out,
+                                 ULONG *key_out)
+{
+    const odfs_node_t *dir;
+    ULONG dir_key;
+    dir_next_ctx_t dc;
+    uint32_t resume = 0;
+
+    if (!g || !entry_out || !key_out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    dir = ol ? lock_node(ol) : &g->mount.root;
+
+    if (ol) {
+        LONG err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+    } else if (!g->mounted) {
+        return ERROR_NO_DISK;
+    }
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ERROR_OBJECT_WRONG_TYPE;
+
+    dir_key = ol ? ol->key : amiga_node_key(dir);
+    memset(&dc, 0, sizeof(dc));
+    dc.previous_key = previous_key;
+    dc.first = (previous_key == 0 || previous_key == dir_key);
+
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && !dc.first &&
+        previous_key == amiga_node_key(&g->cdda_root))
+        return ERROR_NO_MORE_ENTRIES;
+
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
+        (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
+                                       &g->log, dir, dir_next_cb, &dc,
+                                       &resume);
+    } else
+#endif
+    {
+        (void)odfs_readdir(&g->mount, dir, dir_next_cb, &dc, &resume);
+
+#if ODFS_FEATURE_CDDA
+        if (!dc.found && g->has_cdda && node_is_mount_root(g, dir) &&
+            previous_key != amiga_node_key(&g->cdda_root))
+            (void)dir_next_cb(&g->cdda_root, &dc);
+#endif
+    }
+
+    if (!dc.found)
+        return ERROR_NO_MORE_ENTRIES;
+
+    *entry_out = dc.entry;
+    *key_out = amiga_node_key(&dc.entry);
+    return 0;
+}
+
 static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
