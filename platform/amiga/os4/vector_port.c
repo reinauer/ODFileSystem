@@ -6,6 +6,8 @@
 
 #include "vector_port.h"
 
+#include "handler.h"
+
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/nodes.h>
@@ -14,6 +16,7 @@
 #include <proto/dos.h>
 
 #include <stddef.h>
+#include <string.h>
 
 static void set_unsupported(struct FSVP *vp, int32 *res2)
 {
@@ -23,33 +26,130 @@ static void set_unsupported(struct FSVP *vp, int32 *res2)
         *res2 = ERROR_ACTION_NOT_KNOWN;
 }
 
+static handler_global_t *vp_global(struct FSVP *vp)
+{
+    return vp ? (handler_global_t *)vp->FSV.FSPrivate : NULL;
+}
+
+static void set_dos_error(int32 *res2, LONG err)
+{
+    if (res2)
+        *res2 = err;
+}
+
+static int32 return_dos_status(int32 *res2, LONG err)
+{
+    set_dos_error(res2, err);
+    return err == 0 ? DOSTRUE : DOSFALSE;
+}
+
+static odfs_lock_t *lock_from_vector(struct Lock *lock)
+{
+    return (odfs_lock_t *)LOCK_FROM_PTR(lock);
+}
+
+static odfs_fh_t *fh_from_vector(struct FileHandle *fh)
+{
+    return fh ? (odfs_fh_t *)fh->fh_Arg2 : NULL;
+}
+
+static const char *node_name_for_examine(handler_global_t *g,
+                                         const odfs_node_t *node)
+{
+    if (g && node && odfs_node_matches_identity(node, &g->mount.root))
+        return g->volname;
+    return node ? node->name : "";
+}
+
+static struct ExamineData *alloc_examine_data(handler_global_t *g,
+                                              const odfs_node_t *node)
+{
+    const char *name;
+    const char *comment = "";
+    size_t name_len;
+    size_t comment_len;
+    struct ExamineData *ed;
+
+    if (!node)
+        return NULL;
+
+    name = node_name_for_examine(g, node);
+    if (node->amiga_as.has_comment)
+        comment = node->amiga_as.comment;
+
+    name_len = strlen(name) + 1u;
+    comment_len = strlen(comment) + 1u;
+
+    ed = AllocDosObjectTags(DOS_EXAMINEDATA,
+                            ADO_ExamineData_NameSize,
+                            (ULONG)name_len,
+                            ADO_ExamineData_CommentSize,
+                            (ULONG)comment_len,
+                            ADO_ExamineData_LinkSize,
+                            1UL,
+                            TAG_END);
+    if (!ed)
+        return NULL;
+
+    ed->Type = (node->kind == ODFS_NODE_DIR) ?
+        FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
+    ed->FileSize = (node->kind == ODFS_NODE_DIR) ? -1LL : (int64)node->size;
+    odfs_handler_node_date(node, &ed->Date);
+    ed->RefCount = 0;
+    ed->ObjectID = odfs_handler_node_key(node);
+    ed->Protection = odfs_handler_node_protection(node);
+    ed->OwnerUID = DOS_OWNER_NONE;
+    ed->OwnerGID = DOS_OWNER_NONE;
+    ed->FSPrivate = odfs_handler_node_key(node);
+
+    if (ed->Name && ed->NameSize > 0) {
+        strncpy(ed->Name, name, ed->NameSize - 1);
+        ed->Name[ed->NameSize - 1] = '\0';
+    }
+    if (ed->Comment && ed->CommentSize > 0) {
+        strncpy(ed->Comment, comment, ed->CommentSize - 1);
+        ed->Comment[ed->CommentSize - 1] = '\0';
+    }
+    if (ed->Link && ed->LinkSize > 0)
+        ed->Link[0] = '\0';
+
+    return ed;
+}
+
 static struct Lock *vp_lock(struct FSVP *vp,
                             int32 *res2,
                             struct Lock *rel_lock,
                             CONST_STRPTR obj,
                             int32 mode)
 {
-    set_unsupported(vp, res2);
-    (void)rel_lock;
-    (void)obj;
-    (void)mode;
-    return NULL;
+    handler_global_t *g = vp_global(vp);
+    odfs_lock_t *ol = NULL;
+    LONG err;
+
+    err = odfs_handler_lock_object(g, lock_from_vector(rel_lock),
+                                   obj ? obj : "", mode, &ol);
+    set_dos_error(res2, err);
+    return (struct Lock *)LOCK_TO_PTR(ol);
 }
 
 static int32 vp_unlock(struct FSVP *vp, int32 *res2, struct Lock *lock)
 {
-    set_unsupported(vp, res2);
-    (void)lock;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_free_lock_object(
+                                 vp_global(vp), lock_from_vector(lock)));
 }
 
 static struct Lock *vp_dup_lock(struct FSVP *vp,
                                 int32 *res2,
                                 struct Lock *lock)
 {
-    set_unsupported(vp, res2);
-    (void)lock;
-    return NULL;
+    odfs_lock_t *ol = NULL;
+    LONG err;
+
+    err = odfs_handler_dup_lock_object(vp_global(vp),
+                                       lock_from_vector(lock), &ol);
+    set_dos_error(res2, err);
+    return (struct Lock *)LOCK_TO_PTR(ol);
 }
 
 static struct Lock *vp_create_dir(struct FSVP *vp,
@@ -67,18 +167,27 @@ static struct Lock *vp_parent_dir(struct FSVP *vp,
                                   int32 *res2,
                                   struct Lock *dirlock)
 {
-    set_unsupported(vp, res2);
-    (void)dirlock;
-    return NULL;
+    odfs_lock_t *parent = NULL;
+    LONG err;
+
+    err = odfs_handler_parent_lock_object(vp_global(vp),
+                                          lock_from_vector(dirlock),
+                                          &parent);
+    set_dos_error(res2, err);
+    return (struct Lock *)LOCK_TO_PTR(parent);
 }
 
 static struct Lock *vp_dup_lock_from_fh(struct FSVP *vp,
                                         int32 *res2,
                                         struct FileHandle *filehandle)
 {
-    set_unsupported(vp, res2);
-    (void)filehandle;
-    return NULL;
+    odfs_lock_t *ol = NULL;
+    LONG err;
+
+    err = odfs_handler_dup_lock_from_fh(vp_global(vp),
+                                        fh_from_vector(filehandle), &ol);
+    set_dos_error(res2, err);
+    return (struct Lock *)LOCK_TO_PTR(ol);
 }
 
 static int32 vp_open_from_lock(struct FSVP *vp,
@@ -86,19 +195,28 @@ static int32 vp_open_from_lock(struct FSVP *vp,
                                struct FileHandle *file,
                                struct Lock *lock)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    (void)lock;
-    return DOSFALSE;
+    odfs_fh_t *odfs_fh = NULL;
+    LONG err;
+
+    err = odfs_handler_open_from_lock_object(vp_global(vp),
+                                             lock_from_vector(lock),
+                                             &odfs_fh);
+    if (err == 0 && file)
+        file->fh_Arg2 = odfs_fh;
+    return return_dos_status(res2, err);
 }
 
 static struct Lock *vp_parent_of_fh(struct FSVP *vp,
                                     int32 *res2,
                                     struct FileHandle *file)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    return NULL;
+    odfs_lock_t *parent = NULL;
+    LONG err;
+
+    err = odfs_handler_parent_fh_object(vp_global(vp),
+                                        fh_from_vector(file), &parent);
+    set_dos_error(res2, err);
+    return (struct Lock *)LOCK_TO_PTR(parent);
 }
 
 static int32 vp_open(struct FSVP *vp,
@@ -108,19 +226,25 @@ static int32 vp_open(struct FSVP *vp,
                      CONST_STRPTR obj,
                      int32 mode)
 {
-    set_unsupported(vp, res2);
-    (void)fh;
-    (void)rel_dir;
-    (void)obj;
-    (void)mode;
-    return DOSFALSE;
+    odfs_fh_t *odfs_fh = NULL;
+    LONG err;
+
+    err = odfs_handler_open_object(vp_global(vp),
+                                   lock_from_vector(rel_dir),
+                                   obj ? obj : "", mode, &odfs_fh);
+    if (err == 0 && fh)
+        fh->fh_Arg2 = odfs_fh;
+    return return_dos_status(res2, err);
 }
 
 static int32 vp_close(struct FSVP *vp, int32 *res2, struct FileHandle *file)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    return DOSFALSE;
+    LONG err;
+
+    err = odfs_handler_close_object(vp_global(vp), fh_from_vector(file));
+    if (err == 0 && file)
+        file->fh_Arg2 = NULL;
+    return return_dos_status(res2, err);
 }
 
 static int32 vp_delete(struct FSVP *vp,
@@ -140,11 +264,13 @@ static int32 vp_read(struct FSVP *vp,
                      STRPTR buffer,
                      int32 numbytes)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    (void)buffer;
-    (void)numbytes;
-    return 0;
+    LONG actual = 0;
+    LONG err;
+
+    err = odfs_handler_read_object(vp_global(vp), fh_from_vector(file),
+                                   buffer, numbytes, &actual);
+    set_dos_error(res2, err);
+    return err == 0 ? actual : -1;
 }
 
 static int32 vp_write(struct FSVP *vp,
@@ -162,8 +288,9 @@ static int32 vp_write(struct FSVP *vp,
 
 static int32 vp_flush(struct FSVP *vp, int32 *res2)
 {
-    set_unsupported(vp, res2);
-    return DOSFALSE;
+    (void)vp;
+    set_dos_error(res2, 0);
+    return DOSTRUE;
 }
 
 static int32 vp_change_file_position(struct FSVP *vp,
@@ -172,11 +299,12 @@ static int32 vp_change_file_position(struct FSVP *vp,
                                      int32 mode,
                                      int64 position)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    (void)mode;
-    (void)position;
-    return DOSFALSE;
+    int64_t oldpos;
+
+    return return_dos_status(res2,
+                             odfs_handler_seek_object(
+                                 vp_global(vp), fh_from_vector(file),
+                                 position, mode, &oldpos));
 }
 
 static int32 vp_change_file_size(struct FSVP *vp,
@@ -196,18 +324,26 @@ static int64 vp_get_file_position(struct FSVP *vp,
                                   int32 *res2,
                                   struct FileHandle *file)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    return 0;
+    int64_t pos;
+    LONG err;
+
+    err = odfs_handler_get_file_position(vp_global(vp),
+                                         fh_from_vector(file), &pos);
+    set_dos_error(res2, err);
+    return err == 0 ? pos : -1;
 }
 
 static int64 vp_get_file_size(struct FSVP *vp,
                               int32 *res2,
                               struct FileHandle *file)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    return 0;
+    int64_t size;
+    LONG err;
+
+    err = odfs_handler_get_file_size(vp_global(vp),
+                                     fh_from_vector(file), &size);
+    set_dos_error(res2, err);
+    return err == 0 ? size : -1;
 }
 
 static int32 vp_change_lock_mode(struct FSVP *vp,
@@ -358,10 +494,15 @@ static int32 vp_same_lock(struct FSVP *vp,
                           struct Lock *lock1,
                           struct Lock *lock2)
 {
-    set_unsupported(vp, res2);
-    (void)lock1;
-    (void)lock2;
-    return DOSFALSE;
+    LONG same = LOCK_DIFFERENT;
+    LONG err;
+
+    err = odfs_handler_same_lock_object(vp_global(vp),
+                                        lock_from_vector(lock1),
+                                        lock_from_vector(lock2),
+                                        &same);
+    set_dos_error(res2, err);
+    return err == 0 ? same : LOCK_DIFFERENT;
 }
 
 static int32 vp_same_file(struct FSVP *vp,
@@ -369,10 +510,15 @@ static int32 vp_same_file(struct FSVP *vp,
                           struct FileHandle *fh1,
                           struct FileHandle *fh2)
 {
-    set_unsupported(vp, res2);
-    (void)fh1;
-    (void)fh2;
-    return DOSFALSE;
+    LONG same = LOCK_DIFFERENT;
+    LONG err;
+
+    err = odfs_handler_same_file_object(vp_global(vp),
+                                        fh_from_vector(fh1),
+                                        fh_from_vector(fh2),
+                                        &same);
+    set_dos_error(res2, err);
+    return err == 0 ? same : LOCK_DIFFERENT;
 }
 
 static int32 vp_filesystem_attr(struct FSVP *vp,
@@ -388,18 +534,18 @@ static int32 vp_volume_info_data(struct FSVP *vp,
                                  int32 *res2,
                                  struct InfoData *info)
 {
-    set_unsupported(vp, res2);
-    (void)info;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_fill_info(vp_global(vp), NULL,
+                                                    info));
 }
 
 static int32 vp_device_info_data(struct FSVP *vp,
                                  int32 *res2,
                                  struct InfoData *info)
 {
-    set_unsupported(vp, res2);
-    (void)info;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_fill_info(vp_global(vp), NULL,
+                                                    info));
 }
 
 static struct ExamineData *vp_examine_obj(struct FSVP *vp,
@@ -407,28 +553,62 @@ static struct ExamineData *vp_examine_obj(struct FSVP *vp,
                                           struct Lock *lock,
                                           CONST_STRPTR object)
 {
-    set_unsupported(vp, res2);
-    (void)lock;
-    (void)object;
-    return NULL;
+    handler_global_t *g = vp_global(vp);
+    odfs_lock_t *ol = NULL;
+    struct ExamineData *ed;
+    LONG err;
+
+    err = odfs_handler_lock_object(g, lock_from_vector(lock),
+                                   object ? object : "", SHARED_LOCK, &ol);
+    if (err != 0) {
+        set_dos_error(res2, err);
+        return NULL;
+    }
+
+    ed = alloc_examine_data(g, ol->entry ? &ol->entry->fnode : NULL);
+    (void)odfs_handler_free_lock_object(g, ol);
+    set_dos_error(res2, ed ? 0 : ERROR_NO_FREE_STORE);
+    return ed;
 }
 
 static struct ExamineData *vp_examine_lock(struct FSVP *vp,
                                            int32 *res2,
                                            struct Lock *lock)
 {
-    set_unsupported(vp, res2);
-    (void)lock;
-    return NULL;
+    handler_global_t *g = vp_global(vp);
+    const odfs_node_t *node = NULL;
+    struct ExamineData *ed;
+    LONG err;
+
+    err = odfs_handler_get_lock_node(g, lock_from_vector(lock), &node);
+    if (err != 0) {
+        set_dos_error(res2, err);
+        return NULL;
+    }
+
+    ed = alloc_examine_data(g, node);
+    set_dos_error(res2, ed ? 0 : ERROR_NO_FREE_STORE);
+    return ed;
 }
 
 static struct ExamineData *vp_examine_file(struct FSVP *vp,
                                            int32 *res2,
                                            struct FileHandle *file)
 {
-    set_unsupported(vp, res2);
-    (void)file;
-    return NULL;
+    handler_global_t *g = vp_global(vp);
+    const odfs_node_t *node = NULL;
+    struct ExamineData *ed;
+    LONG err;
+
+    err = odfs_handler_get_fh_node(g, fh_from_vector(file), &node);
+    if (err != 0) {
+        set_dos_error(res2, err);
+        return NULL;
+    }
+
+    ed = alloc_examine_data(g, node);
+    set_dos_error(res2, ed ? 0 : ERROR_NO_FREE_STORE);
+    return ed;
 }
 
 static int32 vp_examine_dir(struct FSVP *vp,
