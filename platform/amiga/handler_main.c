@@ -102,13 +102,7 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
     return ((sense[2] & 0x0f) == 0x05 && sense[12] == 0x20);
 }
 
-static LONG changeint_handler(
-#ifdef __amigaos4__
-    APTR data
-#else
-    APTR data asm("a1")
-#endif
-)
+static LONG changeint_signal(APTR data)
 {
     odfs_changeint_data_t *ci = data;
 
@@ -1484,9 +1478,7 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     }
 
     fib->fib_DirEntryType = (fnode->kind == ODFS_NODE_DIR) ? ST_USERDIR : ST_FILE;
-#ifndef __amigaos4__
-    fib->fib_EntryType    = fib->fib_DirEntryType;
-#endif
+    odfs_amiga_set_fib_entry_type(fib, fib->fib_DirEntryType);
     fib->fib_Size         = (LONG)fnode->size;
     fib->fib_NumBlocks    = (fnode->size + 511) / 512;
 
@@ -1593,9 +1585,7 @@ static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
     fill_fib(fib, fnode);
 
     fib->fib_DirEntryType = ST_ROOT;
-#ifndef __amigaos4__
-    fib->fib_EntryType = ST_ROOT;
-#endif
+    odfs_amiga_set_fib_entry_type(fib, ST_ROOT);
 
     len = strlen(g->volname);
     if (len > 30)
@@ -2844,9 +2834,7 @@ static struct DeviceNode *create_device_node(handler_global_t *g)
     memcpy(namebuf + 1, name, (size_t)namelen);
 
     devnode->dn_Next = 0;
-#ifndef __amigaos4__
-    devnode->dn_Lock = g->devnode ? g->devnode->dn_Lock : 0;
-#endif
+    odfs_amiga_copy_device_lock(devnode, g->devnode);
     devnode->dn_Name = MKBADDR(namebuf);
     sync_device_node(g, devnode);
 
@@ -3356,7 +3344,7 @@ static void install_media_change(handler_global_t *g)
     g->changeint_data.task       = g->dosport->mp_SigTask;
     g->changeint_data.sigmask    = 1UL << g->chgsigbit;
     odfs_amiga_init_interrupt(&g->changeint, "odfs-mediachange",
-                              &g->changeint_data, changeint_handler);
+                              &g->changeint_data, changeint_signal);
     g->chgreq->io_Data    = (APTR)&g->changeint;
     g->chgreq->io_Length  = sizeof(g->changeint);
     g->chgreq->io_Flags   = 0;

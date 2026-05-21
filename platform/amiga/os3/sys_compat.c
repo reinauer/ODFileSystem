@@ -14,6 +14,13 @@ struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
 struct Library *UtilityBase;
 
+static odfs_amiga_interrupt_fn interrupt_code;
+
+static LONG odfs_amiga_interrupt_entry(APTR data asm("a1"))
+{
+    return interrupt_code ? interrupt_code(data) : 0;
+}
+
 void odfs_amiga_init_sysbase(void)
 {
     SysBase = *((struct ExecBase **)4L);
@@ -113,11 +120,23 @@ void odfs_amiga_init_interrupt(struct Interrupt *intr,
                                APTR data,
                                odfs_amiga_interrupt_fn code)
 {
+    interrupt_code = code;
     intr->is_Node.ln_Type = NT_INTERRUPT;
     intr->is_Node.ln_Pri = 0;
     intr->is_Node.ln_Name = (char *)name;
     intr->is_Data = data;
-    intr->is_Code = (void (*)(void))(APTR)code;
+    intr->is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
+}
+
+void odfs_amiga_set_fib_entry_type(struct FileInfoBlock *fib, LONG type)
+{
+    fib->fib_EntryType = type;
+}
+
+void odfs_amiga_copy_device_lock(struct DeviceNode *dst,
+                                 const struct DeviceNode *src)
+{
+    dst->dn_Lock = src ? src->dn_Lock : 0;
 }
 
 ULONG odfs_amiga_call_hook_pkt(struct Hook *hook, APTR object, APTR message)
