@@ -14,6 +14,9 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
+#ifdef __amigaos4__
+#include <dos/obsolete.h>
+#endif
 
 #include "aros_compat.h"
 #include "odfs/api.h"

@@ -9,6 +9,7 @@
  */
 
 #include "handler.h"
+#include "sys_compat.h"
 
 #if ODFS_FEATURE_CDDA
 #include "cdda/cdda.h"
@@ -25,7 +26,6 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
-#include <proto/utility.h>
 
 #include <string.h>
 
@@ -41,11 +41,6 @@
 static const char version_string[] __attribute__((used)) =
     "$VER: ODFileSystem " ODFS_GIT_VERSION
     " (" ODFS_AMIGA_DATE ")";
-
-/* library bases — set by handler_main() */
-struct ExecBase *SysBase;
-struct DosLibrary *DOSBase;
-struct Library *UtilityBase;
 
 /* forward declarations */
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
@@ -107,8 +102,16 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
     return ((sense[2] & 0x0f) == 0x05 && sense[12] == 0x20);
 }
 
-static LONG changeint_handler(odfs_changeint_data_t *ci asm("a1"))
+static LONG changeint_handler(
+#ifdef __amigaos4__
+    APTR data
+#else
+    APTR data asm("a1")
+#endif
+)
 {
+    odfs_changeint_data_t *ci = data;
+
     if (ci && ci->task && ci->sigmask)
         Signal(ci->task, ci->sigmask);
     return 0;
@@ -173,13 +176,13 @@ static void notify_workbench_disk_change(BOOL inserted)
     struct IOStdReq *req;
     struct InputEvent event;
 
-    port = CreateMsgPort();
+    port = odfs_amiga_create_msg_port();
     if (!port)
         return;
 
-    req = (struct IOStdReq *)CreateIORequest(port, sizeof(*req));
+    req = (struct IOStdReq *)odfs_amiga_create_io_request(port, sizeof(*req));
     if (!req) {
-        DeleteMsgPort(port);
+        odfs_amiga_delete_msg_port(port);
         return;
     }
 
@@ -195,8 +198,8 @@ static void notify_workbench_disk_change(BOOL inserted)
         CloseDevice((struct IORequest *)req);
     }
 
-    DeleteIORequest((struct IORequest *)req);
-    DeleteMsgPort(port);
+    odfs_amiga_delete_io_request((struct IORequest *)req);
+    odfs_amiga_delete_msg_port(port);
 }
 
 static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
@@ -953,7 +956,7 @@ static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
 {
     odfs_entry_t *entry;
 
-    entry = AllocMem(sizeof(*entry), MEMF_PUBLIC | MEMF_CLEAR);
+    entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC | MEMF_CLEAR);
     if (!entry)
         return NULL;
 
@@ -979,7 +982,7 @@ static void release_entry(odfs_entry_t *entry)
     if (!entry)
         return;
     if (--entry->refcount == 0)
-        FreeMem(entry, sizeof(*entry));
+        odfs_amiga_free_mem(entry, sizeof(*entry));
 }
 
 static odfs_node_t *lock_node(odfs_lock_t *ol)
@@ -1043,7 +1046,7 @@ static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volno
 {
     odfs_volume_t *volume;
 
-    volume = AllocMem(sizeof(*volume), MEMF_PUBLIC | MEMF_CLEAR);
+    volume = odfs_amiga_alloc_mem(sizeof(*volume), MEMF_PUBLIC | MEMF_CLEAR);
     if (!volume)
         return NULL;
 
@@ -1199,7 +1202,7 @@ static odfs_err_t read_file_node(handler_global_t *g,
 static void free_volume(odfs_volume_t *volume)
 {
     if (volume)
-        FreeMem(volume, sizeof(*volume));
+        odfs_amiga_free_mem(volume, sizeof(*volume));
 }
 
 static void drain_all_objects(handler_global_t *g)
@@ -1210,14 +1213,14 @@ static void drain_all_objects(handler_global_t *g)
         odfs_fh_t *fh = (odfs_fh_t *)node;
         release_volume_object(g, fh->entry->volume);
         release_entry(fh->entry);
-        FreeMem(fh, sizeof(*fh));
+        odfs_amiga_free_mem(fh, sizeof(*fh));
     }
 
     while ((node = RemHead((struct List *)&g->locklist)) != NULL) {
         odfs_lock_t *ol = (odfs_lock_t *)node;
         release_volume_object(g, ol->entry->volume);
         release_entry(ol->entry);
-        FreeMem(ol, sizeof(*ol));
+        odfs_amiga_free_mem(ol, sizeof(*ol));
     }
 }
 
@@ -1265,7 +1268,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
     if (!entry)
         return NULL;
 
-    ol = AllocMem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
     if (!ol) {
         release_entry(entry);
         return NULL;
@@ -1295,7 +1298,7 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
     rebuild_volume_locklist(g, ol->entry->volume);
     release_volume_object(g, ol->entry->volume);
     release_entry(ol->entry);
-    FreeMem(ol, sizeof(*ol));
+    odfs_amiga_free_mem(ol, sizeof(*ol));
 }
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
@@ -1305,7 +1308,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
     if (!src)
         return NULL;
 
-    ol = AllocMem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
     if (!ol)
         return NULL;
 
@@ -1335,7 +1338,7 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     if (!entry)
         return NULL;
 
-    fh = AllocMem(sizeof(*fh), MEMF_PUBLIC | MEMF_CLEAR);
+    fh = odfs_amiga_alloc_mem(sizeof(*fh), MEMF_PUBLIC | MEMF_CLEAR);
     if (!fh)
         return NULL;
 
@@ -1354,7 +1357,7 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
     Remove((struct Node *)&fh->node);
     release_volume_object(g, fh->entry->volume);
     release_entry(fh->entry);
-    FreeMem(fh, sizeof(*fh));
+    odfs_amiga_free_mem(fh, sizeof(*fh));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1481,7 +1484,9 @@ static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
     }
 
     fib->fib_DirEntryType = (fnode->kind == ODFS_NODE_DIR) ? ST_USERDIR : ST_FILE;
+#ifndef __amigaos4__
     fib->fib_EntryType    = fib->fib_DirEntryType;
+#endif
     fib->fib_Size         = (LONG)fnode->size;
     fib->fib_NumBlocks    = (fnode->size + 511) / 512;
 
@@ -1588,7 +1593,9 @@ static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
     fill_fib(fib, fnode);
 
     fib->fib_DirEntryType = ST_ROOT;
+#ifndef __amigaos4__
     fib->fib_EntryType = ST_ROOT;
+#endif
 
     len = strlen(g->volname);
     if (len > 30)
@@ -2152,12 +2159,12 @@ static int exall_fill_entry(struct ExAllData **cursor, LONG *remaining,
 
     p = ((UBYTE *)ed) + exall_fixed_size(data);
     if (data >= ED_COMMENT) {
-        ed->ed_Comment = p;
+        ed->ed_Comment = (STRPTR)p;
         memcpy(p, comment, comment_len);
         p += comment_len;
     }
 
-    ed->ed_Name = p;
+    ed->ed_Name = (STRPTR)p;
     memcpy(p, name, name_len);
 
     if (data >= ED_TYPE)
@@ -2220,8 +2227,9 @@ static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
         return ODFS_ERR_EOF;
     }
 
-    if (UtilityBase && ec->control->eac_MatchFunc &&
-        !CallHookPkt(ec->control->eac_MatchFunc, slot, &ec->data)) {
+    if (ec->control->eac_MatchFunc &&
+        !odfs_amiga_call_hook_pkt(ec->control->eac_MatchFunc, slot,
+                                  &ec->data)) {
         ec->cursor = cursor_before;
         ec->remaining = remaining_before;
         return ODFS_OK;
@@ -2826,7 +2834,8 @@ static struct DeviceNode *create_device_node(handler_global_t *g)
         namelen = 30;
 
     alloc_size = sizeof(*devnode) + 32u;
-    devnode = AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
+    devnode = odfs_amiga_alloc_mem((ULONG)alloc_size,
+                                   MEMF_PUBLIC | MEMF_CLEAR);
     if (!devnode)
         return NULL;
 
@@ -2835,7 +2844,9 @@ static struct DeviceNode *create_device_node(handler_global_t *g)
     memcpy(namebuf + 1, name, (size_t)namelen);
 
     devnode->dn_Next = 0;
+#ifndef __amigaos4__
     devnode->dn_Lock = g->devnode ? g->devnode->dn_Lock : 0;
+#endif
     devnode->dn_Name = MKBADDR(namebuf);
     sync_device_node(g, devnode);
 
@@ -2846,7 +2857,7 @@ static void destroy_device_node(struct DeviceNode *devnode)
 {
     if (!devnode)
         return;
-    FreeMem(devnode, sizeof(*devnode) + 32u);
+    odfs_amiga_free_mem(devnode, sizeof(*devnode) + 32u);
 }
 
 static void publish_device_node(handler_global_t *g)
@@ -2958,7 +2969,7 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
      * metacharacters such as parentheses.
      */
     alloc_size = sizeof(*dl) + 32u;
-    dl = AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
+    dl = odfs_amiga_alloc_mem((ULONG)alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
     if (!dl)
         return NULL;
 
@@ -2983,7 +2994,7 @@ static void destroy_volume_node(struct DeviceList *volnode)
 {
     if (!volnode)
         return;
-    FreeMem(volnode, sizeof(*volnode) + 32u);
+    odfs_amiga_free_mem(volnode, sizeof(*volnode) + 32u);
 }
 
 static void detach_volume_node(struct DeviceList *volnode)
@@ -3077,7 +3088,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
         return;
 
     rdargs->RDA_Flags |= RDAF_NOPROMPT;
-    rdargs->RDA_Source.CS_Buffer = (UBYTE *)buf;
+    rdargs->RDA_Source.CS_Buffer = (STRPTR)buf;
     rdargs->RDA_Source.CS_Length = len + 1;
     rdargs->RDA_Source.CS_CurChr = 0;
 
@@ -3316,23 +3327,23 @@ static void unmount_volume(handler_global_t *g)
 
 static void install_media_change(handler_global_t *g)
 {
-    g->chgsigbit = AllocSignal(-1);
+    g->chgsigbit = odfs_amiga_alloc_signal(-1);
     if (g->chgsigbit == -1)
         return;
 
-    g->chgport = CreateMsgPort();
+    g->chgport = odfs_amiga_create_msg_port();
     if (!g->chgport) {
-        FreeSignal(g->chgsigbit);
+        odfs_amiga_free_signal(g->chgsigbit);
         g->chgsigbit = -1;
         return;
     }
 
-    g->chgreq = (struct IOStdReq *)CreateIORequest(g->chgport,
-                                                    sizeof(struct IOStdReq));
+    g->chgreq = (struct IOStdReq *)odfs_amiga_create_io_request(
+        g->chgport, sizeof(struct IOStdReq));
     if (!g->chgreq) {
-        DeleteMsgPort(g->chgport);
+        odfs_amiga_delete_msg_port(g->chgport);
         g->chgport = NULL;
-        FreeSignal(g->chgsigbit);
+        odfs_amiga_free_signal(g->chgsigbit);
         g->chgsigbit = -1;
         return;
     }
@@ -3342,13 +3353,10 @@ static void install_media_change(handler_global_t *g)
     g->chgreq->io_Unit   = g->devreq->io_Unit;
 
     g->chgreq->io_Command = TD_ADDCHANGEINT;
-    g->changeint.is_Node.ln_Type = NT_INTERRUPT;
-    g->changeint.is_Node.ln_Pri  = 0;
-    g->changeint.is_Node.ln_Name = (char *)"odfs-mediachange";
     g->changeint_data.task       = g->dosport->mp_SigTask;
     g->changeint_data.sigmask    = 1UL << g->chgsigbit;
-    g->changeint.is_Data         = &g->changeint_data;
-    g->changeint.is_Code         = (void (*)(void))(APTR)changeint_handler;
+    odfs_amiga_init_interrupt(&g->changeint, "odfs-mediachange",
+                              &g->changeint_data, changeint_handler);
     g->chgreq->io_Data    = (APTR)&g->changeint;
     g->chgreq->io_Length  = sizeof(g->changeint);
     g->chgreq->io_Flags   = 0;
@@ -3372,15 +3380,15 @@ static void remove_media_change(handler_global_t *g)
         /* don't CloseDevice — we don't own it */
         g->chgreq->io_Device = NULL;
         g->chgreq->io_Unit = NULL;
-        DeleteIORequest((struct IORequest *)g->chgreq);
+        odfs_amiga_delete_io_request((struct IORequest *)g->chgreq);
         g->chgreq = NULL;
     }
     if (g->chgport) {
-        DeleteMsgPort(g->chgport);
+        odfs_amiga_delete_msg_port(g->chgport);
         g->chgport = NULL;
     }
     if (g->chgsigbit != -1) {
-        FreeSignal(g->chgsigbit);
+        odfs_amiga_free_signal(g->chgsigbit);
         g->chgsigbit = -1;
     }
 
@@ -3469,13 +3477,13 @@ void handler_main(void)
 
     (void)version_string; /* ensure $VER is not optimized out */
 
-    SysBase = *((struct ExecBase **)4L);
+    odfs_amiga_init_sysbase();
 
-    g = AllocMem(sizeof(*g), MEMF_PUBLIC | MEMF_CLEAR);
+    g = odfs_amiga_alloc_mem(sizeof(*g), MEMF_PUBLIC | MEMF_CLEAR);
     if (!g)
         return;
 
-    g->sysbase = SysBase;
+    g->sysbase = odfs_amiga_sysbase();
     g->locklist.mlh_Head     = (struct MinNode *)&g->locklist.mlh_Tail;
     g->locklist.mlh_Tail     = NULL;
     g->locklist.mlh_TailPred = (struct MinNode *)&g->locklist.mlh_Head;
@@ -3529,21 +3537,19 @@ void handler_main(void)
               "ODFileSystem " ODFS_GIT_VERSION
               " (" ODFS_AMIGA_DATE ") starting...");
 
-    DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library", 36);
-    if (!DOSBase) {
+    if (!odfs_amiga_open_libraries()) {
         ODFS_ERROR(&g->log, ODFS_SUB_CORE,
                    "open dos.library failed");
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_INVALID_RESIDENT_LIBRARY;
         return_packet(g, pkt);
-        FreeMem(g, sizeof(*g));
+        odfs_amiga_free_mem(g, sizeof(*g));
         return;
     }
-    g->dosbase = DOSBase;
-    UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
+    g->dosbase = odfs_amiga_dosbase();
 
     /* open device */
-    g->devport = CreateMsgPort();
+    g->devport = odfs_amiga_create_msg_port();
     if (!g->devport) {
         ODFS_ERROR(&g->log, ODFS_SUB_IO,
                    "CreateMsgPort failed for %s unit=%lu",
@@ -3554,8 +3560,8 @@ void handler_main(void)
         goto shutdown;
     }
 
-    g->devreq = (struct IOStdReq *)CreateIORequest(g->devport,
-                                                    sizeof(struct IOStdReq));
+    g->devreq = (struct IOStdReq *)odfs_amiga_create_io_request(
+        g->devport, sizeof(struct IOStdReq));
     if (!g->devreq) {
         ODFS_ERROR(&g->log, ODFS_SUB_IO,
                    "CreateIORequest failed for %s unit=%lu",
@@ -3602,11 +3608,11 @@ void handler_main(void)
         #define DMA_BUF_SECTORS  8
         ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
         ULONG raw_size = DMA_BUF_SECTORS * g->sector_size + 15;
-        g->dma_buf_raw = (uint8_t *)AllocMem(raw_size, memtype);
+        g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
         if (!g->dma_buf_raw) {
             /* fallback: try without specific memory type */
-            g->dma_buf_raw = (uint8_t *)AllocMem(raw_size,
-                                                   MEMF_PUBLIC);
+            g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size,
+                                                             MEMF_PUBLIC);
         }
         if (g->dma_buf_raw) {
             /* 16-byte align */
@@ -3695,21 +3701,19 @@ shutdown:
     if (g->devreq) {
         if (g->devreq->io_Device)
             CloseDevice((struct IORequest *)g->devreq);
-        DeleteIORequest((struct IORequest *)g->devreq);
+        odfs_amiga_delete_io_request((struct IORequest *)g->devreq);
     }
     if (g->devport)
-        DeleteMsgPort(g->devport);
+        odfs_amiga_delete_msg_port(g->devport);
 
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
-        FreeMem(g->dma_buf_raw, DMA_BUF_SECTORS * g->sector_size + 15);
+        odfs_amiga_free_mem(g->dma_buf_raw,
+                            DMA_BUF_SECTORS * g->sector_size + 15);
 
     if (g->devnode)
         g->devnode->dn_Task = NULL;
 
-    if (UtilityBase)
-        CloseLibrary(UtilityBase);
-
-    CloseLibrary((struct Library *)DOSBase);
-    FreeMem(g, sizeof(*g));
+    odfs_amiga_close_libraries();
+    odfs_amiga_free_mem(g, sizeof(*g));
 }
