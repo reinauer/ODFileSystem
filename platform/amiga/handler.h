@@ -252,6 +252,12 @@ LONG odfs_handler_seek_object(handler_global_t *g,
                               int64_t offset,
                               LONG mode,
                               int64_t *oldpos_out);
+LONG odfs_handler_change_lock_mode(handler_global_t *g,
+                                   odfs_lock_t *ol,
+                                   LONG mode);
+LONG odfs_handler_change_file_mode(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   LONG mode);
 LONG odfs_handler_get_file_position(handler_global_t *g,
                                     odfs_fh_t *fh,
                                     int64_t *pos_out);
@@ -270,6 +276,7 @@ LONG odfs_handler_get_fh_node(handler_global_t *g,
 ULONG odfs_handler_node_key(const odfs_node_t *node);
 ULONG odfs_handler_node_protection(const odfs_node_t *node);
 void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds);
+LONG odfs_handler_inhibit(handler_global_t *g, LONG state);
 
 /* handler entry point (called from startup.S) */
 void handler_main(void);

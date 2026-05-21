@@ -26,6 +26,14 @@ static void set_unsupported(struct FSVP *vp, int32 *res2)
         *res2 = ERROR_ACTION_NOT_KNOWN;
 }
 
+static void set_write_protected(struct FSVP *vp, int32 *res2)
+{
+    (void)vp;
+
+    if (res2)
+        *res2 = ERROR_DISK_WRITE_PROTECTED;
+}
+
 static handler_global_t *vp_global(struct FSVP *vp)
 {
     return vp ? (handler_global_t *)vp->FSV.FSPrivate : NULL;
@@ -157,7 +165,7 @@ static struct Lock *vp_create_dir(struct FSVP *vp,
                                   struct Lock *rel_lock,
                                   CONST_STRPTR obj)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_lock;
     (void)obj;
     return NULL;
@@ -252,7 +260,7 @@ static int32 vp_delete(struct FSVP *vp,
                        struct Lock *rel_dirlock,
                        CONST_STRPTR obj)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)obj;
     return DOSFALSE;
@@ -279,11 +287,11 @@ static int32 vp_write(struct FSVP *vp,
                       STRPTR buffer,
                       int32 numbytes)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)file;
     (void)buffer;
     (void)numbytes;
-    return 0;
+    return -1;
 }
 
 static int32 vp_flush(struct FSVP *vp, int32 *res2)
@@ -313,7 +321,7 @@ static int32 vp_change_file_size(struct FSVP *vp,
                                  int32 mode,
                                  int64 size)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)file;
     (void)mode;
     (void)size;
@@ -351,10 +359,10 @@ static int32 vp_change_lock_mode(struct FSVP *vp,
                                  struct Lock *lock,
                                  int32 new_lock_mode)
 {
-    set_unsupported(vp, res2);
-    (void)lock;
-    (void)new_lock_mode;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_change_lock_mode(
+                                 vp_global(vp), lock_from_vector(lock),
+                                 new_lock_mode));
 }
 
 static int32 vp_change_file_mode(struct FSVP *vp,
@@ -362,10 +370,10 @@ static int32 vp_change_file_mode(struct FSVP *vp,
                                  struct FileHandle *fh,
                                  int32 new_lock_mode)
 {
-    set_unsupported(vp, res2);
-    (void)fh;
-    (void)new_lock_mode;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_change_file_mode(
+                                 vp_global(vp), fh_from_vector(fh),
+                                 new_lock_mode));
 }
 
 static int32 vp_set_date(struct FSVP *vp,
@@ -374,7 +382,7 @@ static int32 vp_set_date(struct FSVP *vp,
                          CONST_STRPTR name,
                          const struct DateStamp *ds)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)name;
     (void)ds;
@@ -387,7 +395,7 @@ static int32 vp_set_protection(struct FSVP *vp,
                                CONST_STRPTR name,
                                uint32 mask)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)name;
     (void)mask;
@@ -400,7 +408,7 @@ static int32 vp_set_comment(struct FSVP *vp,
                             CONST_STRPTR name,
                             CONST_STRPTR comment)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)name;
     (void)comment;
@@ -413,7 +421,7 @@ static int32 vp_set_group(struct FSVP *vp,
                           CONST_STRPTR name,
                           uint32 group)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)name;
     (void)group;
@@ -426,7 +434,7 @@ static int32 vp_set_user(struct FSVP *vp,
                          CONST_STRPTR name,
                          uint32 user)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)name;
     (void)user;
@@ -440,7 +448,7 @@ static int32 vp_rename(struct FSVP *vp,
                        struct Lock *dst_rel,
                        CONST_STRPTR dst)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)src_rel;
     (void)src;
     (void)dst_rel;
@@ -454,7 +462,7 @@ static int32 vp_create_soft_link(struct FSVP *vp,
                                  CONST_STRPTR linkname,
                                  CONST_STRPTR dest_obj)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)linkname;
     (void)dest_obj;
@@ -467,7 +475,7 @@ static int32 vp_create_hard_link(struct FSVP *vp,
                                  CONST_STRPTR linkname,
                                  struct Lock *dest_obj)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)rel_dirlock;
     (void)linkname;
     (void)dest_obj;
@@ -622,9 +630,9 @@ static int32 vp_examine_dir(struct FSVP *vp,
 
 static int32 vp_inhibit(struct FSVP *vp, int32 *res2, int32 inhibit_state)
 {
-    set_unsupported(vp, res2);
-    (void)inhibit_state;
-    return DOSFALSE;
+    return return_dos_status(res2,
+                             odfs_handler_inhibit(vp_global(vp),
+                                                  inhibit_state));
 }
 
 static int32 vp_write_protect(struct FSVP *vp,
@@ -632,7 +640,7 @@ static int32 vp_write_protect(struct FSVP *vp,
                               int32 wp_state,
                               uint32 passkey)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)wp_state;
     (void)passkey;
     return DOSFALSE;
@@ -644,7 +652,7 @@ static int32 vp_format(struct FSVP *vp,
                        uint32 dostype,
                        uint32 spare)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)new_volname;
     (void)dostype;
     (void)spare;
@@ -653,15 +661,16 @@ static int32 vp_format(struct FSVP *vp,
 
 static int32 vp_serialize(struct FSVP *vp, int32 *res2)
 {
-    set_unsupported(vp, res2);
-    return DOSFALSE;
+    (void)vp;
+    set_dos_error(res2, 0);
+    return DOSTRUE;
 }
 
 static int32 vp_relabel(struct FSVP *vp,
                         int32 *res2,
                         CONST_STRPTR new_volumename)
 {
-    set_unsupported(vp, res2);
+    set_write_protected(vp, res2);
     (void)new_volumename;
     return DOSFALSE;
 }
