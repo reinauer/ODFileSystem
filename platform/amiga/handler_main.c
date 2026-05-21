@@ -1297,6 +1297,9 @@ static void free_volume(odfs_volume_t *volume)
         odfs_amiga_free_mem(volume, sizeof(*volume));
 }
 
+static void mount_volume(handler_global_t *g);
+static void unmount_volume(handler_global_t *g);
+
 static void drain_all_objects(handler_global_t *g)
 {
     struct Node *node;
@@ -2203,6 +2206,49 @@ LONG odfs_handler_get_file_position(handler_global_t *g,
     return 0;
 }
 
+LONG odfs_handler_change_lock_mode(handler_global_t *g,
+                                   odfs_lock_t *ol,
+                                   LONG mode)
+{
+    if (!g || !ol)
+        return ERROR_INVALID_LOCK;
+    if (mode != SHARED_LOCK && mode != EXCLUSIVE_LOCK)
+        return ERROR_BAD_NUMBER;
+    if (!lock_is_active(g, ol))
+        return ERROR_INVALID_LOCK;
+
+    {
+        LONG err_dos = validate_object_volume(g, ol->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    ol->lock.fl_Access =
+        (lock_node(ol)->kind == ODFS_NODE_DIR) ? SHARED_LOCK : mode;
+    return 0;
+}
+
+LONG odfs_handler_change_file_mode(handler_global_t *g,
+                                   odfs_fh_t *fh,
+                                   LONG mode)
+{
+    if (!g || !fh)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (mode != SHARED_LOCK && mode != EXCLUSIVE_LOCK)
+        return ERROR_BAD_NUMBER;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    fh->access = mode;
+    return 0;
+}
+
 LONG odfs_handler_get_file_size(handler_global_t *g,
                                 odfs_fh_t *fh,
                                 int64_t *size_out)
@@ -2304,6 +2350,22 @@ LONG odfs_handler_get_fh_node(handler_global_t *g,
     }
 
     *node_out = fh_node(fh);
+    return 0;
+}
+
+LONG odfs_handler_inhibit(handler_global_t *g, LONG state)
+{
+    if (!g)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    if (state != DOSFALSE) {
+        g->inhibited = 1;
+        unmount_volume(g);
+    } else {
+        g->inhibited = 0;
+        mount_volume(g);
+    }
+
     return 0;
 }
 
@@ -3034,17 +3096,14 @@ static void action_current_volume(handler_global_t *g,
 
 static void action_inhibit(handler_global_t *g, struct DosPacket *pkt)
 {
-    LONG state = pkt->dp_Arg1;
+    LONG err_dos = odfs_handler_inhibit(g, pkt->dp_Arg1);
 
-    if (state != DOSFALSE) {
-        /* inhibit on — unmount, stop I/O */
-        g->inhibited = 1;
-        unmount_volume(g);
-    } else {
-        /* inhibit off — try to remount */
-        g->inhibited = 0;
-        mount_volume(g);
+    if (err_dos != 0) {
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = err_dos;
+        return;
     }
+
     pkt->dp_Res1 = DOSTRUE;
 }
 
