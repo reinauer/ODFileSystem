@@ -273,6 +273,11 @@ LONG odfs_handler_get_lock_node(handler_global_t *g,
 LONG odfs_handler_get_fh_node(handler_global_t *g,
                               odfs_fh_t *fh,
                               const odfs_node_t **node_out);
+LONG odfs_handler_next_dir_entry(handler_global_t *g,
+                                 odfs_lock_t *ol,
+                                 ULONG previous_key,
+                                 odfs_node_t *entry_out,
+                                 ULONG *key_out);
 ULONG odfs_handler_node_key(const odfs_node_t *node);
 ULONG odfs_handler_node_protection(const odfs_node_t *node);
 void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds);

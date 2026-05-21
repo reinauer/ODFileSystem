@@ -10,10 +10,12 @@
 
 #include <dos/dos.h>
 #include <dos/dostags.h>
+#include <exec/lists.h>
 #include <exec/nodes.h>
 #include <utility/tagitem.h>
 
 #include <proto/dos.h>
+#include <proto/exec.h>
 
 #include <stddef.h>
 #include <string.h>
@@ -69,8 +71,34 @@ static const char *node_name_for_examine(handler_global_t *g,
     return node ? node->name : "";
 }
 
-static struct ExamineData *alloc_examine_data(handler_global_t *g,
-                                              const odfs_node_t *node)
+static struct ExamineData *take_stale_examine_data(
+    struct PRIVATE_ExamineDirContext *ctx,
+    size_t name_len,
+    size_t comment_len)
+{
+    struct ExamineData *ed;
+
+    if (!ctx)
+        return NULL;
+
+    while (!IsMinListEmpty(&ctx->StaleNodeList)) {
+        ed = (struct ExamineData *)RemHead(
+            (struct List *)&ctx->StaleNodeList);
+        if (ed->NameSize >= name_len &&
+            ed->CommentSize >= comment_len &&
+            ed->LinkSize >= 1)
+            return ed;
+
+        FreeDosObject(DOS_EXAMINEDATA, ed);
+    }
+
+    return NULL;
+}
+
+static struct ExamineData *alloc_examine_data_from_context(
+    handler_global_t *g,
+    const odfs_node_t *node,
+    struct PRIVATE_ExamineDirContext *ctx)
 {
     const char *name;
     const char *comment = "";
@@ -88,17 +116,21 @@ static struct ExamineData *alloc_examine_data(handler_global_t *g,
     name_len = strlen(name) + 1u;
     comment_len = strlen(comment) + 1u;
 
-    ed = AllocDosObjectTags(DOS_EXAMINEDATA,
-                            ADO_ExamineData_NameSize,
-                            (ULONG)name_len,
-                            ADO_ExamineData_CommentSize,
-                            (ULONG)comment_len,
-                            ADO_ExamineData_LinkSize,
-                            1UL,
-                            TAG_END);
+    ed = take_stale_examine_data(ctx, name_len, comment_len);
+    if (!ed) {
+        ed = AllocDosObjectTags(DOS_EXAMINEDATA,
+                                ADO_ExamineData_NameSize,
+                                (ULONG)name_len,
+                                ADO_ExamineData_CommentSize,
+                                (ULONG)comment_len,
+                                ADO_ExamineData_LinkSize,
+                                1UL,
+                                TAG_END);
+    }
     if (!ed)
         return NULL;
 
+    ed->EXDinfo = 0;
     ed->Type = (node->kind == ODFS_NODE_DIR) ?
         FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
     ed->FileSize = (node->kind == ODFS_NODE_DIR) ? -1LL : (int64)node->size;
@@ -122,6 +154,12 @@ static struct ExamineData *alloc_examine_data(handler_global_t *g,
         ed->Link[0] = '\0';
 
     return ed;
+}
+
+static struct ExamineData *alloc_examine_data(handler_global_t *g,
+                                              const odfs_node_t *node)
+{
+    return alloc_examine_data_from_context(g, node, NULL);
 }
 
 static struct Lock *vp_lock(struct FSVP *vp,
@@ -623,9 +661,27 @@ static int32 vp_examine_dir(struct FSVP *vp,
                             int32 *res2,
                             struct PRIVATE_ExamineDirContext *ctx)
 {
-    set_unsupported(vp, res2);
-    (void)ctx;
-    return DOSFALSE;
+    handler_global_t *g = vp_global(vp);
+    odfs_node_t entry;
+    ULONG key = 0;
+    struct ExamineData *ed;
+    LONG err;
+
+    if (!ctx)
+        return return_dos_status(res2, ERROR_REQUIRED_ARG_MISSING);
+
+    err = odfs_handler_next_dir_entry(g, lock_from_vector(ctx->ReferenceLock),
+                                      ctx->FSPrivate[0], &entry, &key);
+    if (err != 0)
+        return return_dos_status(res2, err);
+
+    ed = alloc_examine_data_from_context(g, &entry, ctx);
+    if (!ed)
+        return return_dos_status(res2, ERROR_NO_FREE_STORE);
+
+    AddTail((struct List *)&ctx->FreshNodeList, (struct Node *)&ed->EXDnode);
+    ctx->FSPrivate[0] = key;
+    return return_dos_status(res2, 0);
 }
 
 static int32 vp_inhibit(struct FSVP *vp, int32 *res2, int32 inhibit_state)
