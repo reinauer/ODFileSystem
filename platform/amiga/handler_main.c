@@ -3281,6 +3281,7 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
 
     /* ---- shutdown ---- */
     case ACTION_DIE:
+    case ACTION_SHUTDOWN:
         pkt->dp_Res1 = DOSTRUE;
         break;
 
@@ -4306,7 +4307,8 @@ void handler_main_startup(struct Message *startup_msg)
                 trace_pkt(g, "dequeue", pkt);
 #endif
 
-                if (pkt->dp_Type == ACTION_DIE) {
+                if (pkt->dp_Type == ACTION_DIE ||
+                    pkt->dp_Type == ACTION_SHUTDOWN) {
                     pkt->dp_Res1 = DOSTRUE;
                     pkt->dp_Res2 = 0;
                     return_packet(g, pkt);
