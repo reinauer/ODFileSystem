@@ -7,6 +7,8 @@
 #ifndef ODFS_AMIGA_TARGET_COMPAT_H
 #define ODFS_AMIGA_TARGET_COMPAT_H
 
+#define ODFS_AMIGA_OS4 1
+
 /*
  * The current shared packet handler still uses classic names such as
  * DeviceList and ACTION_DIE. Keep that compatibility local to the OS4
