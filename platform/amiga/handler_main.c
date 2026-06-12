@@ -859,6 +859,7 @@ static const odfs_media_ops_t amiga_media_ops = {
 /* ------------------------------------------------------------------ */
 
 #if ODFS_SERIAL_DEBUG
+#if !ODFS_AMIGA_OS4
 static inline void raw_putchar(char c)
 {
     register char _d0 __asm("d0") = c;
@@ -876,6 +877,7 @@ static void serial_puts(const char *s)
     while (*s)
         raw_putchar(*s++);
 }
+#endif
 
 #if ODFS_PACKET_TRACE
 static void trace_pkt(handler_global_t *g, const char *tag, struct DosPacket *pkt)
@@ -929,8 +931,12 @@ static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
     (void)level;
     (void)subsys;
     (void)ctx;
+#if ODFS_AMIGA_OS4
+    DebugPrintF("%s\n", msg);
+#else
     serial_puts(msg);
     raw_putchar('\n');
+#endif
 }
 #else
 static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
