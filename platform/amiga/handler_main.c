@@ -11,6 +11,10 @@
 #include "handler.h"
 #include "sys_compat.h"
 
+#if ODFS_AMIGA_OS4
+#include "vector_port.h"
+#endif
+
 #if ODFS_FEATURE_CDDA
 #include "cdda/cdda.h"
 #endif
@@ -47,6 +51,10 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
 static void publish_device_node(handler_global_t *g);
 static void unpublish_device_node(handler_global_t *g);
+#if ODFS_AMIGA_OS4
+static LONG activate_vector_port(handler_global_t *g);
+static void deactivate_vector_port(handler_global_t *g);
+#endif
 static void mount_volume(handler_global_t *g);
 static void unmount_volume(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
@@ -3489,6 +3497,64 @@ static void unpublish_device_node(handler_global_t *g)
     g->published_devnode_owned = 0;
 }
 
+#if ODFS_AMIGA_OS4
+static LONG activate_vector_port(handler_global_t *g)
+{
+    struct FileSystemVectorPort *vp;
+    LONG sigbit;
+
+    if (!g || !g->process_port)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    vp = odfs_os4_alloc_vector_port(g);
+    if (!vp)
+        return ERROR_NO_FREE_STORE;
+
+    sigbit = AllocSignal(-1);
+    if (sigbit < 0) {
+        odfs_os4_free_vector_port(vp);
+        return ERROR_NO_FREE_STORE;
+    }
+
+    vp->MP.mp_Flags = PA_SIGNAL;
+    vp->MP.mp_SigBit = (UBYTE)sigbit;
+    vp->MP.mp_SigTask = FindTask(NULL);
+
+    if (GetFileSystemVectorPort(&vp->MP, FS_VECTORPORT_VERSION) != vp) {
+        FreeSignal(sigbit);
+        odfs_os4_free_vector_port(vp);
+        return ERROR_OBJECT_WRONG_TYPE;
+    }
+
+    g->vector_port = vp;
+    g->vector_sigbit = sigbit;
+    g->dosport = &vp->MP;
+    if (g->devnode)
+        g->devnode->dn_Task = g->dosport;
+
+    ODFS_INFO(&g->log, ODFS_SUB_CORE,
+              "OS4 filesystem vector port active");
+    return 0;
+}
+
+static void deactivate_vector_port(handler_global_t *g)
+{
+    if (!g)
+        return;
+
+    if (g->vector_port) {
+        odfs_os4_free_vector_port(g->vector_port);
+        g->vector_port = NULL;
+    }
+    if (g->vector_sigbit >= 0) {
+        FreeSignal((BYTE)g->vector_sigbit);
+        g->vector_sigbit = -1;
+    }
+    if (g->process_port)
+        g->dosport = g->process_port;
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* volume mount / unmount                                              */
 /* ------------------------------------------------------------------ */
@@ -4032,6 +4098,9 @@ void handler_main_startup(struct Message *startup_msg)
     g->fhlist.mlh_Tail       = NULL;
     g->fhlist.mlh_TailPred   = (struct MinNode *)&g->fhlist.mlh_Head;
     g->next_volume_id = 1;
+#if ODFS_AMIGA_OS4
+    g->vector_sigbit = -1;
+#endif
     g->chgsigbit = -1;
     g->toc_passthrough = -1;
     g->last_session_passthrough = -1;
@@ -4040,7 +4109,8 @@ void handler_main_startup(struct Message *startup_msg)
 
     {
         struct Process *proc = (struct Process *)FindTask(NULL);
-        g->dosport = &proc->pr_MsgPort;
+        g->process_port = &proc->pr_MsgPort;
+        g->dosport = g->process_port;
     }
 
     /* wait for startup packet */
@@ -4180,6 +4250,21 @@ void handler_main_startup(struct Message *startup_msg)
     g->media.ops = &amiga_media_ops;
     g->media.ctx = &amctx;
 
+#if ODFS_AMIGA_OS4
+    {
+        LONG err_dos = activate_vector_port(g);
+        if (err_dos != 0) {
+            ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                       "OS4 filesystem vector port setup failed: %ld",
+                       (long)err_dos);
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = err_dos;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+    }
+#endif
+
     /* reply startup packet */
     pkt->dp_Res1 = DOSTRUE;
     pkt->dp_Res2 = 0;
@@ -4258,6 +4343,10 @@ shutdown:
 
     if (g->devnode)
         g->devnode->dn_Task = NULL;
+
+#if ODFS_AMIGA_OS4
+    deactivate_vector_port(g);
+#endif
 
     odfs_amiga_close_libraries();
     odfs_amiga_free_mem(g, sizeof(*g));

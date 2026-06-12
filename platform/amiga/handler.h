@@ -24,6 +24,9 @@ typedef struct odfs_entry odfs_entry_t;
 typedef struct odfs_lock odfs_lock_t;
 typedef struct odfs_fh odfs_fh_t;
 typedef struct odfs_changeint_data odfs_changeint_data_t;
+#if ODFS_AMIGA_OS4
+struct FileSystemVectorPort;
+#endif
 
 struct odfs_changeint_data {
     struct Task       *task;
@@ -33,7 +36,12 @@ struct odfs_changeint_data {
 /* ---- handler globals ---- */
 
 typedef struct handler_global {
+    struct MsgPort      *process_port;  /* owning process message port */
     struct MsgPort      *dosport;       /* DOS message port */
+#if ODFS_AMIGA_OS4
+    struct FileSystemVectorPort *vector_port; /* native OS4 vector port */
+    LONG                 vector_sigbit; /* signal bit used by vector port */
+#endif
     struct DeviceNode   *devnode;       /* startup packet device node */
     struct FileSysStartupMsg *fssm;     /* startup packet FSSM */
     struct DeviceNode   *published_devnode; /* DOS device-list entry */
