@@ -11,6 +11,7 @@
 #include <exec/memory.h>
 #include <exec/ports.h>
 #include <exec/interrupts.h>
+#include <exec/semaphores.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
@@ -41,6 +42,12 @@ typedef struct handler_global {
 #if ODFS_AMIGA_OS4
     struct FileSystemVectorPort *vector_port; /* native OS4 vector port */
     LONG                 vector_sigbit; /* signal bit used by vector port */
+    /*
+     * OS4 vector callbacks run in the calling process context, so all
+     * access to handler state from the vectors and from the handler
+     * process must hold this semaphore.
+     */
+    struct SignalSemaphore fs_sem;
 #endif
     struct DeviceNode   *devnode;       /* startup packet device node */
     struct FileSysStartupMsg *fssm;     /* startup packet FSSM */

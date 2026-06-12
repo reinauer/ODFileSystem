@@ -13,6 +13,15 @@
 
 #if ODFS_AMIGA_OS4
 #include "vector_port.h"
+/*
+ * OS4 vector callbacks run in the calling process context; the handler
+ * process must hold the same semaphore while it touches handler state.
+ */
+#define ODFS_FS_LOCK(g)   ObtainSemaphore(&(g)->fs_sem)
+#define ODFS_FS_UNLOCK(g) ReleaseSemaphore(&(g)->fs_sem)
+#else
+#define ODFS_FS_LOCK(g)   ((void)0)
+#define ODFS_FS_UNLOCK(g) ((void)0)
 #endif
 
 #if ODFS_FEATURE_CDDA
@@ -4041,6 +4050,7 @@ void handler_main_startup(struct Message *startup_msg)
     handler_global_t *g;
     struct Message *msg;
     struct DosPacket *pkt;
+    struct DosPacket *shutdown_pkt = NULL;
     struct FileSysStartupMsg *fssm;
     struct DosEnvec *de;
     ULONG dossig, chgsig, waitmask;
@@ -4065,6 +4075,7 @@ void handler_main_startup(struct Message *startup_msg)
     g->next_volume_id = 1;
 #if ODFS_AMIGA_OS4
     g->vector_sigbit = -1;
+    InitSemaphore(&g->fs_sem);
 #endif
     g->chgsigbit = -1;
     g->toc_passthrough = -1;
@@ -4252,7 +4263,9 @@ void handler_main_startup(struct Message *startup_msg)
 
         /* media change */
         if ((sigs & chgsig) && !g->inhibited) {
+            ODFS_FS_LOCK(g);
             handle_media_change(g);
+            ODFS_FS_UNLOCK(g);
             /* re-init media adapter after remount */
             amctx.g = g;
         }
@@ -4265,14 +4278,35 @@ void handler_main_startup(struct Message *startup_msg)
                 trace_pkt(g, "dequeue", pkt);
 #endif
 
+#if ODFS_AMIGA_OS4
+                /* hand-built packets and private messages reach this
+                 * port directly; validate before trusting the packet */
+                if (!pkt || pkt->dp_Link != msg) {
+                    ReplyMsg(msg);
+                    continue;
+                }
+                msg->mn_ReplyPort = pkt->dp_Port;
+#endif
+
                 if (pkt->dp_Type == ACTION_DIE ||
                     pkt->dp_Type == ACTION_SHUTDOWN) {
-                    pkt->dp_Res1 = DOSTRUE;
-                    pkt->dp_Res2 = 0;
-                    return_packet(g, pkt);
+                    shutdown_pkt = pkt;
                     running = 0;
                     break;
                 }
+
+#if ODFS_AMIGA_OS4
+                if (g->vector_port) {
+                    /*
+                     * Route direct legacy packets through the DOS packet
+                     * emulator, which performs the equivalent vector-port
+                     * call exactly like a native DOS caller would.
+                     */
+                    odfs_os4_emulate_packet(g->vector_port, pkt);
+                    return_packet(g, pkt);
+                    continue;
+                }
+#endif
 
                 if (!g->mounted && packet_needs_live_mount(pkt)) {
                     pkt->dp_Res1 = DOSFALSE;
@@ -4287,11 +4321,28 @@ void handler_main_startup(struct Message *startup_msg)
         }
     }
 
-    /* ---- shutdown ---- */
+    /*
+     * ---- shutdown ----
+     * Invalidate the vector port first so dos.library stops vectoring
+     * new callers, then tear down DOS-visible state while holding the
+     * filesystem semaphore so in-flight vector calls finish first.
+     * The shutdown packet is replied only after the teardown is done.
+     */
+    ODFS_FS_LOCK(g);
+#if ODFS_AMIGA_OS4
+    odfs_os4_invalidate_vector_port(g->vector_port);
+#endif
     remove_media_change(g);
     unmount_volume(g);
     drain_all_objects(g);
     unpublish_device_node(g);
+    ODFS_FS_UNLOCK(g);
+
+    if (shutdown_pkt) {
+        shutdown_pkt->dp_Res1 = DOSTRUE;
+        shutdown_pkt->dp_Res2 = 0;
+        return_packet(g, shutdown_pkt);
+    }
 
 shutdown:
     if (g->devreq) {
