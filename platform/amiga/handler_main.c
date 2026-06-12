@@ -3377,33 +3377,18 @@ static void sync_device_node(handler_global_t *g, struct DeviceNode *devnode)
 static struct DeviceNode *create_device_node(handler_global_t *g)
 {
     struct DeviceNode *devnode;
-    UBYTE *namebuf;
     char name[32];
-    int namelen;
-    size_t alloc_size;
 
     device_node_name_from_bstr(g->devnode ? g->devnode->dn_Name : 0,
                                name, sizeof(name));
     if (name[0] == '\0')
         memcpy(name, "ODFS0", 6);
 
-    namelen = strlen(name);
-    if (namelen > 30)
-        namelen = 30;
-
-    alloc_size = sizeof(*devnode) + 32u;
-    devnode = odfs_amiga_alloc_mem((ULONG)alloc_size,
-                                   MEMF_PUBLIC | MEMF_CLEAR);
+    devnode = odfs_amiga_create_dos_entry(name, DLT_DEVICE);
     if (!devnode)
         return NULL;
 
-    namebuf = (UBYTE *)(devnode + 1);
-    namebuf[0] = (UBYTE)namelen;
-    memcpy(namebuf + 1, name, (size_t)namelen);
-
-    devnode->dn_Next = 0;
     odfs_amiga_copy_device_lock(devnode, g->devnode);
-    devnode->dn_Name = MKBADDR(namebuf);
     sync_device_node(g, devnode);
 
     return devnode;
@@ -3411,9 +3396,7 @@ static struct DeviceNode *create_device_node(handler_global_t *g)
 
 static void destroy_device_node(struct DeviceNode *devnode)
 {
-    if (!devnode)
-        return;
-    odfs_amiga_free_mem(devnode, sizeof(*devnode) + 32u);
+    odfs_amiga_delete_dos_entry(devnode);
 }
 
 static void publish_device_node(handler_global_t *g)
@@ -3569,36 +3552,13 @@ static void deactivate_vector_port(handler_global_t *g)
 static struct DeviceList *create_volume_node(handler_global_t *g)
 {
     struct DeviceList *dl;
-    UBYTE *namebuf;
-    int namelen;
-    size_t alloc_size;
 
-    namelen = strlen(g->volname);
-    if (namelen > 30)
-        namelen = 30;
-
-    /*
-     * Build the volume DosList entry directly instead of routing the name
-     * through MakeDosEntry(), which may normalize names containing AmigaDOS
-     * metacharacters such as parentheses.
-     */
-    alloc_size = sizeof(*dl) + 32u;
-    dl = odfs_amiga_alloc_mem((ULONG)alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
+    dl = odfs_amiga_create_dos_entry(g->volname, DLT_VOLUME);
     if (!dl)
         return NULL;
 
-    namebuf = (UBYTE *)(dl + 1);
-    namebuf[0] = (UBYTE)namelen;
-    memcpy(namebuf + 1, g->volname, (size_t)namelen);
-
-    dl->dl_Next     = 0;
-    dl->dl_Type     = DLT_VOLUME;
     dl->dl_Task     = g->dosport;
-    dl->dl_Lock     = 0;
-    dl->dl_LockList = 0;
     dl->dl_DiskType = ID_DOS_DISK;
-    dl->dl_unused   = 0;
-    dl->dl_Name     = MKBADDR(namebuf);
     fill_volume_date(g, &dl->dl_VolumeDate);
 
     return dl;
@@ -3606,9 +3566,7 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
 
 static void destroy_volume_node(struct DeviceList *volnode)
 {
-    if (!volnode)
-        return;
-    odfs_amiga_free_mem(volnode, sizeof(*volnode) + 32u);
+    odfs_amiga_delete_dos_entry(volnode);
 }
 
 static void detach_volume_node(struct DeviceList *volnode)
