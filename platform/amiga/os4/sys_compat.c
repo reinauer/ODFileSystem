@@ -23,6 +23,24 @@ struct UtilityBase *UtilityBase;
 static struct DOSIFace *dos_iface;
 static struct UtilityIFace *utility_iface;
 
+static odfs_amiga_interrupt_fn interrupt_code;
+
+/*
+ * V50+ interrupt entry. Soft interrupts fired through Cause() receive
+ * (0, SysBase, is_Data); interrupt servers receive (context, SysBase,
+ * userData). Both pass is_Data third, so one entry covers either path.
+ */
+static void odfs_amiga_interrupt_entry(int32 unused,
+                                       struct ExecBase *sysbase,
+                                       APTR data)
+{
+    (void)unused;
+    (void)sysbase;
+
+    if (interrupt_code)
+        interrupt_code(data);
+}
+
 void odfs_amiga_init_sysbase(void)
 {
     SysBase = *((struct ExecBase **)4L);
@@ -169,11 +187,12 @@ void odfs_amiga_init_interrupt(struct Interrupt *intr,
                                APTR data,
                                odfs_amiga_interrupt_fn code)
 {
+    interrupt_code = code;
     intr->is_Node.ln_Type = NT_INTERRUPT;
     intr->is_Node.ln_Pri = 0;
     intr->is_Node.ln_Name = (char *)name;
     intr->is_Data = data;
-    intr->is_Code = (void (*)(void))(APTR)code;
+    intr->is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
 }
 
 void odfs_amiga_set_fib_entry_type(struct FileInfoBlock *fib, LONG type)
