@@ -7,7 +7,9 @@
 
 # Amiga cross-compiler.
 # Override with CC=ppc-amigaos-gcc for an AmigaOS 4 PPC build.
-CC      ?= m68k-amigaos-gcc
+ifeq ($(origin CC),default)
+CC      = m68k-amigaos-gcc
+endif
 
 # AROS cross-compiler (override: make CC=m68k-aros-gcc AROS=1)
 # When AROS=1, uses -static instead of -noixemul and defines __AROS__
@@ -19,6 +21,7 @@ AMIGA_CC_TARGET   := $(shell $(CC) -dumpmachine 2>/dev/null)
 AMIGA_TOOL_PREFIX ?= $(patsubst %-gcc,%,$(notdir $(CC)))
 AMIGA_AR          ?= $(AMIGA_TOOL_PREFIX)-ar
 AMIGA_SIZE        ?= $(AMIGA_TOOL_PREFIX)-size
+AMIGA_OBJCOPY     ?= $(AMIGA_TOOL_PREFIX)-objcopy
 STRIP             ?= $(AMIGA_TOOL_PREFIX)-strip
 
 ifneq ($(filter ppc-amigaos,$(AMIGA_CC_TARGET)),)
@@ -133,7 +136,7 @@ else ifeq ($(AMIGA_TARGET),os4)
 AMIGA_CRT      ?= newlib
 AMIGA_CPUFLAGS ?= -mcpu=powerpc
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT)
-AMIGA_WARNFLAGS = -Wno-error=deprecated-declarations
+AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
 LDFLAGS        = $(AMIGA_SYSFLAGS)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
@@ -241,6 +244,12 @@ TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 # ---- handler target (Amiga) ----
 
 HANDLER      = $(AMIGA_BUILD)/ODFileSystem
+KICKSTART_MODULE =
+AMIGA_ARTIFACTS = $(HANDLER)
+ifeq ($(AMIGA_TARGET),os4)
+KICKSTART_MODULE = $(AMIGA_BUILD)/CDFileSystem
+AMIGA_ARTIFACTS += $(KICKSTART_MODULE)
+endif
 TEST_HANDLER = $(AMIGA_TEST_BUILD)/ODFileSystem
 AMIGA_TEST_TOOL = $(AMIGA_TEST_BUILD)/test_handler
 ADF          = $(AMIGA_TEST_BUILD)/ODFileSystem.adf
@@ -259,7 +268,7 @@ all: host
 
 host: lib tests tools
 
-amiga: $(HANDLER)
+amiga: $(AMIGA_ARTIFACTS)
 	@echo "  $(HANDLER) built successfully"
 	@size=$$(wc -c < "$(HANDLER)"); \
 	echo "  Handler size: $$size bytes"; \
@@ -267,6 +276,11 @@ amiga: $(HANDLER)
 		echo "  ERROR: $(SIZE_LIMIT_DESC) exceeds $(AMIGA_SIZE_LIMIT) bytes"; \
 		echo "  If this growth is intentional, rerun with $(SIZE_LIMIT_NAME)=<new-limit>"; \
 		exit 1; \
+	fi; \
+	if [ -n "$(KICKSTART_MODULE)" ]; then \
+		ksize=$$(wc -c < "$(KICKSTART_MODULE)"); \
+		echo "  Kickstart module: $(KICKSTART_MODULE)"; \
+		echo "  CDFileSystem size: $$ksize bytes"; \
 	fi
 
 amiga-test:
@@ -465,6 +479,16 @@ $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
 	@$(CC) $(LDFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
 	@echo "  STRIP $@"
 	@$(STRIP) $@
+
+ifeq ($(AMIGA_TARGET),os4)
+$(KICKSTART_MODULE): $(AMIGA_BUILD)/platform/amiga/os4/start.o $(AMIGA_BUILD)/libodfs.a
+	@mkdir -p $(@D)
+	@echo "  LINK  $@ (kickstart)"
+	@$(CC) $(LDFLAGS) -nostartfiles -nostdlib -Wl,-r -o $@.unstripped $< -L$(AMIGA_BUILD) -lodfs -lgcc
+	@echo "  STRIP $@"
+	@$(AMIGA_OBJCOPY) --strip-unneeded $@.unstripped $@
+	@rm -f $@.unstripped
+endif
 
 
 # ---- clean ----
