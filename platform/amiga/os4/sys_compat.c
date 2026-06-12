@@ -6,6 +6,7 @@
 
 #include "sys_compat.h"
 
+#include <dos/dostags.h>
 #include <exec/exectags.h>
 #include <exec/interfaces.h>
 #include <interfaces/dos.h>
@@ -180,6 +181,23 @@ void odfs_amiga_free_signal(LONG num)
 {
     if (num != -1)
         FreeSignal(num);
+}
+
+void *odfs_amiga_create_dos_entry(const char *name, LONG type)
+{
+    if (!name)
+        return NULL;
+
+    return AllocDosObjectTags(DOS_DOSLIST,
+                              ADO_Type, (ULONG)type,
+                              ADO_Name, (ULONG)name,
+                              TAG_END);
+}
+
+void odfs_amiga_delete_dos_entry(void *node)
+{
+    if (node)
+        FreeDosObject(DOS_DOSLIST, node);
 }
 
 void odfs_amiga_init_interrupt(struct Interrupt *intr,

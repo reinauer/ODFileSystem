@@ -50,6 +50,15 @@ void odfs_amiga_delete_io_request(struct IORequest *req);
 LONG odfs_amiga_alloc_signal(LONG num);
 void odfs_amiga_free_signal(LONG num);
 
+/*
+ * Allocate a DosList entry (device or volume node) with the given
+ * dol_Type and a BCPL copy of name, all other fields zeroed. The
+ * returned node must be released with odfs_amiga_delete_dos_entry()
+ * after it has been removed from the DOS list.
+ */
+void *odfs_amiga_create_dos_entry(const char *name, LONG type);
+void odfs_amiga_delete_dos_entry(void *node);
+
 void odfs_amiga_init_interrupt(struct Interrupt *intr,
                                const char *name,
                                APTR data,

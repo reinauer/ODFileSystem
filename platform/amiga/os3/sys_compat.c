@@ -10,6 +10,8 @@
 #include <proto/dos.h>
 #include <proto/utility.h>
 
+#include <string.h>
+
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
 struct Library *UtilityBase;
@@ -113,6 +115,43 @@ void odfs_amiga_free_signal(LONG num)
 {
     if (num != -1)
         FreeSignal(num);
+}
+
+void *odfs_amiga_create_dos_entry(const char *name, LONG type)
+{
+    struct DosList *dl;
+    UBYTE *namebuf;
+    size_t namelen;
+
+    if (!name)
+        return NULL;
+
+    namelen = strlen(name);
+    if (namelen > 30)
+        namelen = 30;
+
+    /*
+     * Build the DosList entry directly instead of routing the name
+     * through MakeDosEntry(), which may normalize names containing
+     * AmigaDOS metacharacters such as parentheses.
+     */
+    dl = AllocMem(sizeof(*dl) + 32u, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!dl)
+        return NULL;
+
+    namebuf = (UBYTE *)(dl + 1);
+    namebuf[0] = (UBYTE)namelen;
+    memcpy(namebuf + 1, name, namelen);
+
+    dl->dol_Type = type;
+    dl->dol_Name = MKBADDR(namebuf);
+    return dl;
+}
+
+void odfs_amiga_delete_dos_entry(void *node)
+{
+    if (node)
+        FreeMem(node, sizeof(struct DosList) + 32u);
 }
 
 void odfs_amiga_init_interrupt(struct Interrupt *intr,
