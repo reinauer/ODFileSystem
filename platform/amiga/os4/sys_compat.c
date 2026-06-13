@@ -44,7 +44,14 @@ static void odfs_amiga_interrupt_entry(int32 unused,
 
 void odfs_amiga_init_sysbase(void)
 {
-    SysBase = *((struct ExecBase **)4L);
+    /*
+     * _start establishes SysBase before any other handler code runs.
+     * As a fallback (e.g. if the entry path ever changes), recover it
+     * from the classic ExecBase pointer at absolute address 4, which
+     * the kickstart environment maintains.
+     */
+    if (!SysBase)
+        SysBase = *((struct ExecBase **)4L);
 }
 
 struct ExecBase *odfs_amiga_sysbase(void)
@@ -110,36 +117,39 @@ void odfs_amiga_close_libraries(void)
     }
 }
 
-void *odfs_amiga_alloc_vec(ULONG size, ULONG flags)
+void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)
 {
+    ULONG type;
+
     if (size == 0)
         size = 1;
 
+    /*
+     * AVT_Type only accepts MEMF_PRIVATE, MEMF_SHARED, and
+     * MEMF_EXECUTABLE. Translate the legacy flags the shared handler
+     * uses (MEMF_PUBLIC, de_BufMemType bits): handler memory is shared
+     * with DOS and other processes, so legacy MEMF_PUBLIC maps to
+     * MEMF_SHARED.
+     */
+    type = (flags & MEMF_PRIVATE) ? MEMF_PRIVATE : MEMF_SHARED;
+    if (flags & MEMF_EXECUTABLE)
+        type |= MEMF_EXECUTABLE;
+
     if (flags & MEMF_CLEAR) {
         return AllocVecTags(size,
-                            AVT_Type, flags & ~MEMF_CLEAR,
+                            AVT_Type, type,
                             AVT_ClearWithValue, 0,
                             TAG_END);
     }
 
-    return AllocVecTags(size, AVT_Type, flags, TAG_END);
-}
-
-void odfs_amiga_free_vec(void *ptr)
-{
-    if (ptr)
-        FreeVec(ptr);
-}
-
-void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)
-{
-    return odfs_amiga_alloc_vec(size, flags);
+    return AllocVecTags(size, AVT_Type, type, TAG_END);
 }
 
 void odfs_amiga_free_mem(void *ptr, ULONG size)
 {
     (void)size;
-    odfs_amiga_free_vec(ptr);
+    if (ptr)
+        FreeVec(ptr);
 }
 
 struct MsgPort *odfs_amiga_create_msg_port(void)

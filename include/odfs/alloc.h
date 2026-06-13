@@ -13,13 +13,25 @@
 
 #if ODFS_PLATFORM_AMIGA
 
-#include "sys_compat.h"
+#include "amiga_target_compat.h"
+
+#include <exec/memory.h>
+#include <exec/types.h>
+#if ODFS_AMIGA_OS4
+#include <exec/exectags.h>
+#include <utility/tagitem.h>
+#endif
+#include <proto/exec.h>
 
 static inline void *odfs_malloc(size_t size)
 {
     if (size == 0)
         size = 1;
-    return odfs_amiga_alloc_vec((ULONG)size, MEMF_PUBLIC);
+#if ODFS_AMIGA_OS4
+    return AllocVecTags((ULONG)size, AVT_Type, MEMF_SHARED, TAG_END);
+#else
+    return AllocVec((ULONG)size, MEMF_PUBLIC);
+#endif
 }
 
 static inline void *odfs_calloc(size_t count, size_t size)
@@ -33,12 +45,20 @@ static inline void *odfs_calloc(size_t count, size_t size)
     if (total == 0)
         total = 1;
 
-    return odfs_amiga_alloc_vec((ULONG)total, MEMF_PUBLIC | MEMF_CLEAR);
+#if ODFS_AMIGA_OS4
+    return AllocVecTags((ULONG)total,
+                        AVT_Type, MEMF_SHARED,
+                        AVT_ClearWithValue, 0,
+                        TAG_END);
+#else
+    return AllocVec((ULONG)total, MEMF_PUBLIC | MEMF_CLEAR);
+#endif
 }
 
 static inline void odfs_free(void *ptr)
 {
-    odfs_amiga_free_vec(ptr);
+    if (ptr)
+        FreeVec(ptr);
 }
 
 #else
