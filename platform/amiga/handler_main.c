@@ -107,9 +107,8 @@ static int scsi_is_unsupported_command(const uint8_t *sense);
  *   (x86 AROS) targets.
  */
 
-typedef struct amiga_media_ctx {
-    handler_global_t *g;
-} amiga_media_ctx_t;
+/* amiga_media_ctx_t is defined in handler.h and embedded per-process
+ * in handler_global so concurrent handler processes never share it. */
 
 static int scsi_is_unsupported_command(const uint8_t *sense)
 {
@@ -4055,7 +4054,6 @@ void handler_main_startup(struct Message *startup_msg)
     struct DosEnvec *de;
     ULONG dossig, chgsig, waitmask;
     int running = 1;
-    static amiga_media_ctx_t amctx;
 
     (void)version_string; /* ensure $VER is not optimized out */
 
@@ -4222,9 +4220,9 @@ void handler_main_startup(struct Message *startup_msg)
     }
 
     /* set up media adapter */
-    amctx.g = g;
+    g->media_ctx.g = g;
     g->media.ops = &amiga_media_ops;
-    g->media.ctx = &amctx;
+    g->media.ctx = &g->media_ctx;
 
 #if ODFS_AMIGA_OS4
     {
@@ -4267,7 +4265,7 @@ void handler_main_startup(struct Message *startup_msg)
             handle_media_change(g);
             ODFS_FS_UNLOCK(g);
             /* re-init media adapter after remount */
-            amctx.g = g;
+            g->media_ctx.g = g;
         }
 
         /* DOS packets */

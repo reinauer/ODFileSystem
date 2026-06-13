@@ -34,6 +34,18 @@ struct odfs_changeint_data {
     ULONG              sigmask;
 };
 
+/*
+ * Media-adapter context passed to the odfs_media_ops callbacks. It must
+ * be per-handler-process: diskboot starts one handler process per CD
+ * unit, so a shared instance would let a later process clobber the
+ * device binding of an earlier one. It lives inside handler_global so
+ * each process owns its own copy.
+ */
+struct handler_global;
+typedef struct amiga_media_ctx {
+    struct handler_global *g;
+} amiga_media_ctx_t;
+
 /* ---- handler globals ---- */
 
 typedef struct handler_global {
@@ -49,6 +61,7 @@ typedef struct handler_global {
      */
     struct SignalSemaphore fs_sem;
 #endif
+    amiga_media_ctx_t    media_ctx;     /* per-process media-adapter ctx */
     struct DeviceNode   *devnode;       /* startup packet device node */
     struct FileSysStartupMsg *fssm;     /* startup packet FSSM */
     struct DeviceNode   *published_devnode; /* DOS device-list entry */
