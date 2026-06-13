@@ -34,6 +34,9 @@ struct odfs_changeint_data {
     ULONG              sigmask;
 };
 
+/* Filesystem DOSType (matches the OS4 FileSysEntry). */
+#define ODFS_OS4_CD_DOSTYPE 0x43443031UL /* 'CD01' */
+
 /*
  * Media-adapter context passed to the odfs_media_ops callbacks. It must
  * be per-handler-process: diskboot starts one handler process per CD
@@ -144,12 +147,17 @@ struct odfs_entry {
 
 struct odfs_lock {
     struct MinNode  node;           /* for locklist */
+#if ODFS_AMIGA_OS4
+    struct Lock    *lock;           /* DOS-allocated OS4 lock */
+#else
     struct FileLock lock;           /* DOS lock (MUST be at known offset) */
     ULONG           dos_private[2]; /* reserve fl_SIZEOF..fl_SIZEOF+7 for DOS */
+#endif
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
 };
 
+#if !ODFS_AMIGA_OS4
 typedef char odfs_lock_private_offset_must_match[
     (offsetof(odfs_lock_t, dos_private) ==
      offsetof(odfs_lock_t, lock) + sizeof(struct FileLock)) ? 1 : -1
@@ -157,6 +165,7 @@ typedef char odfs_lock_private_offset_must_match[
 typedef char odfs_lock_private_size_must_match[
     (sizeof(((odfs_lock_t *)0)->dos_private) == 8) ? 1 : -1
 ];
+#endif
 
 /* ---- file handle wrapper ---- */
 
@@ -168,6 +177,29 @@ struct odfs_fh {
 };
 
 /* ---- helper macros ---- */
+
+#if ODFS_AMIGA_OS4
+#define ODFS_LOCK_DOS(ol) \
+    (((ol) != NULL) ? (ol)->lock : NULL)
+
+/* Convert a direct DOS lock pointer to our odfs_lock_t */
+#define LOCK_FROM_PTR(ptr) \
+    ((ptr) ? (odfs_lock_t *)((struct Lock *)(ptr))->fl_FSPrivate1 : NULL)
+
+/* Convert BPTR lock to our odfs_lock_t */
+#define LOCK_FROM_BPTR(bptr) \
+    ((bptr) ? LOCK_FROM_PTR((struct Lock *)BADDR(bptr)) : NULL)
+
+/* Convert odfs_lock_t to BPTR for DOS */
+#define LOCK_TO_BPTR(ol) \
+    (((ol) && (ol)->lock) ? MKBADDR((ol)->lock) : 0)
+
+/* Convert odfs_lock_t to a direct DOS lock pointer */
+#define LOCK_TO_PTR(ol) \
+    (((ol) && (ol)->lock) ? (ol)->lock : NULL)
+#else
+#define ODFS_LOCK_DOS(ol) \
+    (((ol) != NULL) ? &(ol)->lock : NULL)
 
 /* Convert BPTR lock to our odfs_lock_t */
 #define LOCK_FROM_BPTR(bptr) \
@@ -186,6 +218,7 @@ struct odfs_fh {
 /* Convert odfs_lock_t to a direct DOS lock pointer */
 #define LOCK_TO_PTR(ol) \
     ((ol) ? &(ol)->lock : NULL)
+#endif
 
 /* BCPL string to C string (AROS-compatible) */
 static inline void bstr_to_cstr(BSTR bstr, char *buf, int bufsize)

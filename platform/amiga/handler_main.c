@@ -1052,12 +1052,12 @@ static void rebuild_volume_locklist(handler_global_t *g, odfs_volume_t *volume)
         if (!head)
             head = LOCK_TO_BPTR(ol);
         if (prev)
-            prev->lock.fl_Link = LOCK_TO_BPTR(ol);
+            ODFS_LOCK_DOS(prev)->fl_Link = LOCK_TO_BPTR(ol);
         prev = ol;
     }
 
     if (prev)
-        prev->lock.fl_Link = 0;
+        ODFS_LOCK_DOS(prev)->fl_Link = 0;
     volume->volnode->dl_LockList = head;
     Permit();
 }
@@ -1297,6 +1297,10 @@ static void drain_all_objects(handler_global_t *g)
 
     while ((node = RemHead((struct List *)&g->locklist)) != NULL) {
         odfs_lock_t *ol = (odfs_lock_t *)node;
+#if ODFS_AMIGA_OS4
+        if (ol->lock)
+            FreeDosObject(DOS_LOCK, ol->lock);
+#endif
         release_volume_object(g, ol->entry->volume);
         release_entry(ol->entry);
         odfs_amiga_free_mem(ol, sizeof(*ol));
@@ -1339,6 +1343,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
 {
     odfs_lock_t *ol;
     odfs_entry_t *entry;
+    struct FileLock *lock;
 
     if (!g->current_volume)
         return NULL;
@@ -1352,16 +1357,33 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
         release_entry(entry);
         return NULL;
     }
+#if ODFS_AMIGA_OS4
+    ol->lock = AllocDosObjectTags(DOS_LOCK,
+                                  ADO_DOSType, ODFS_OS4_CD_DOSTYPE,
+                                  TAG_DONE);
+    if (!ol->lock) {
+        odfs_amiga_free_mem(ol, sizeof(*ol));
+        release_entry(entry);
+        return NULL;
+    }
+#endif
     ol->entry = entry;
     ol->key = amiga_node_key(fnode);
+#if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
+#endif
 
-    ol->lock.fl_Link   = 0;
-    ol->lock.fl_Key    = ol->key;
-    ol->lock.fl_Access = access;
-    ol->lock.fl_Task   = g->dosport;
-    ol->lock.fl_Volume = MKBADDR(volume_node_ptr(entry->volume));
+    lock = ODFS_LOCK_DOS(ol);
+    lock->fl_Link   = 0;
+    lock->fl_Key    = ol->key;
+    lock->fl_Access = access;
+    lock->fl_Task   = g->dosport;
+    lock->fl_Volume = MKBADDR(volume_node_ptr(entry->volume));
+#if ODFS_AMIGA_OS4
+    lock->fl_FSPrivate1 = ol;
+    lock->fl_FSPrivate2 = entry;
+#endif
 
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
@@ -1375,6 +1397,10 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
         return;
     Remove((struct Node *)&ol->node);
     rebuild_volume_locklist(g, ol->entry->volume);
+#if ODFS_AMIGA_OS4
+    if (ol->lock)
+        FreeDosObject(DOS_LOCK, ol->lock);
+#endif
     release_volume_object(g, ol->entry->volume);
     release_entry(ol->entry);
     odfs_amiga_free_mem(ol, sizeof(*ol));
@@ -1383,6 +1409,7 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 {
     odfs_lock_t *ol;
+    struct FileLock *lock;
 
     if (!src)
         return NULL;
@@ -1391,15 +1418,31 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
     if (!ol)
         return NULL;
 
+#if ODFS_AMIGA_OS4
+    ol->lock = AllocDosObjectTags(DOS_LOCK,
+                                  ADO_DOSType, ODFS_OS4_CD_DOSTYPE,
+                                  TAG_DONE);
+    if (!ol->lock) {
+        odfs_amiga_free_mem(ol, sizeof(*ol));
+        return NULL;
+    }
+#endif
     ol->entry = retain_entry(src->entry);
     ol->key = src->key;
+#if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
-    ol->lock.fl_Link = 0;
-    ol->lock.fl_Key = ol->key;
-    ol->lock.fl_Access = src->lock.fl_Access;
-    ol->lock.fl_Task = g->dosport;
-    ol->lock.fl_Volume = MKBADDR(volume_node_ptr(ol->entry->volume));
+#endif
+    lock = ODFS_LOCK_DOS(ol);
+    lock->fl_Link = 0;
+    lock->fl_Key = ol->key;
+    lock->fl_Access = ODFS_LOCK_DOS(src)->fl_Access;
+    lock->fl_Task = g->dosport;
+    lock->fl_Volume = MKBADDR(volume_node_ptr(ol->entry->volume));
+#if ODFS_AMIGA_OS4
+    lock->fl_FSPrivate1 = ol;
+    lock->fl_FSPrivate2 = ol->entry;
+#endif
     retain_volume_object(ol->entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
     rebuild_volume_locklist(g, ol->entry->volume);
@@ -2073,7 +2116,7 @@ LONG odfs_handler_open_from_lock_object(handler_global_t *g,
             return err_dos;
     }
 
-    fh = alloc_fh(g, ol->entry, ol->lock.fl_Access);
+    fh = alloc_fh(g, ol->entry, ODFS_LOCK_DOS(ol)->fl_Access);
     if (!fh)
         return ERROR_NO_FREE_STORE;
 
@@ -2207,7 +2250,7 @@ LONG odfs_handler_change_lock_mode(handler_global_t *g,
             return err_dos;
     }
 
-    ol->lock.fl_Access =
+    ODFS_LOCK_DOS(ol)->fl_Access =
         (lock_node(ol)->kind == ODFS_NODE_DIR) ? SHARED_LOCK : mode;
     return 0;
 }
@@ -2646,8 +2689,10 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
         fill_root_fib(g, fib, fnode);
     else
         fill_fib(fib, fnode);
+#if !ODFS_AMIGA_OS4
     if (ol)
         ol->dos_private[1] = (ULONG)-1;
+#endif
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
     trace_node(g, "examine-node", fnode);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
