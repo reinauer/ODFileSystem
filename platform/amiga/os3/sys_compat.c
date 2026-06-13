@@ -72,17 +72,6 @@ void odfs_amiga_free_mem(void *ptr, ULONG size)
         FreeMem(ptr, size);
 }
 
-void *odfs_amiga_alloc_vec(ULONG size, ULONG flags)
-{
-    return AllocVec(size, flags);
-}
-
-void odfs_amiga_free_vec(void *ptr)
-{
-    if (ptr)
-        FreeVec(ptr);
-}
-
 struct MsgPort *odfs_amiga_create_msg_port(void)
 {
     return CreateMsgPort();

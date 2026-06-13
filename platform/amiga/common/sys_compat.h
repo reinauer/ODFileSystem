@@ -38,8 +38,6 @@ void odfs_amiga_close_libraries(void);
 
 void *odfs_amiga_alloc_mem(ULONG size, ULONG flags);
 void odfs_amiga_free_mem(void *ptr, ULONG size);
-void *odfs_amiga_alloc_vec(ULONG size, ULONG flags);
-void odfs_amiga_free_vec(void *ptr);
 
 struct MsgPort *odfs_amiga_create_msg_port(void);
 void odfs_amiga_delete_msg_port(struct MsgPort *port);

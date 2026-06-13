@@ -135,15 +135,22 @@ HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 else ifeq ($(AMIGA_TARGET),os4)
 AMIGA_CRT      ?= newlib
 AMIGA_CPUFLAGS ?= -mcpu=powerpc
-AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT)
+# No unwind tables: the freestanding handler has no exception support,
+# and the kickstart loader expects plain PT_LOAD program headers only.
+AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
 LDFLAGS        = $(AMIGA_SYSFLAGS)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.
 LIBS           = -lc -lgcc
-HANDLER_LDFLAGS =
-HANDLER_LIBS   = $(LIBS)
+# The handler must not run the newlib C runtime startup: it consumes
+# the first process message, which is the handler's ACTION_STARTUP
+# packet. os4/start.c provides the freestanding entry instead.
+# -static keeps gcc from passing --eh-frame-hdr, so the binary carries
+# only the plain PT_LOAD program headers the kickstart loader expects.
+HANDLER_LDFLAGS = -nostartfiles -static -Wl,-u,_start
+HANDLER_LIBS   = -nostdlib -lgcc
 else
 AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -noixemul
@@ -201,10 +208,16 @@ AMIGA_SRCS = platform/amiga/handler_main.c \
     platform/amiga/$(AMIGA_OSDIR)/sys_compat.c
 ifeq ($(AMIGA_TARGET),os4)
 AMIGA_SRCS += platform/amiga/os4/main.c \
+    platform/amiga/os4/start.c \
+    platform/amiga/os4/freestanding.c \
     platform/amiga/os4/vector_port.c
 else
 AMIGA_SRCS += platform/amiga/libc_stubs.c
 endif
+
+# Freestanding libc replacements: stop the compiler from recognizing
+# the copy loops and emitting calls to the functions being defined.
+$(AMIGA_BUILD)/platform/amiga/os4/freestanding.o: CFLAGS += -fno-builtin
 
 # Amiga assembly
 ifeq ($(AMIGA_TARGET),os4)
