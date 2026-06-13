@@ -753,44 +753,6 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 /* ------------------------------------------------------------------ */
 
 /*
- * Issue SCSI Test Unit Ready (0x00).
- * Returns 1 if drive is ready, 0 otherwise.
- */
-static int scsi_test_unit_ready(handler_global_t *g)
-{
-    uint8_t cmd[6];
-    struct SCSICmd scsi;
-    LONG io_rc;
-
-    memset(cmd, 0, sizeof(cmd));
-    memset(&scsi, 0, sizeof(scsi));
-
-    cmd[0] = 0x00; /* TEST UNIT READY */
-
-    scsi.scsi_Data      = NULL;
-    scsi.scsi_Length     = 0;
-    scsi.scsi_CmdLength  = 6;
-    scsi.scsi_Command    = cmd;
-    scsi.scsi_Flags      = SCSIF_AUTOSENSE;
-
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
-        ODFS_WARN(&g->log, ODFS_SUB_IO,
-                  "TEST UNIT READY failed io_rc=%ld io_Error=%ld "
-                  "scsi_Status=%lu",
-                  (long)io_rc, (long)g->devreq->io_Error,
-                  (unsigned long)scsi.scsi_Status);
-        return 0;
-    }
-
-    return 1;
-}
-
-/*
  * Issue SCSI Mode Select (0x15) to set the block size.
  *
  * This ensures the drive uses 2048-byte blocks (standard for CD-ROM
@@ -4060,8 +4022,24 @@ void handler_main_startup(struct Message *startup_msg)
     odfs_amiga_init_sysbase();
 
     g = odfs_amiga_alloc_mem(sizeof(*g), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!g)
+    if (!g) {
+        /*
+         * Never exit without answering the startup packet: DOS blocks
+         * the mounting context (during boot, the whole boot) until the
+         * packet is replied.
+         */
+        if (startup_msg && startup_msg->mn_Node.ln_Name) {
+            pkt = (struct DosPacket *)startup_msg->mn_Node.ln_Name;
+            if (pkt->dp_Port) {
+                pkt->dp_Res1 = DOSFALSE;
+                pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+                startup_msg->mn_Node.ln_Succ = NULL;
+                startup_msg->mn_Node.ln_Pred = NULL;
+                PutMsg(pkt->dp_Port, startup_msg);
+            }
+        }
         return;
+    }
 
     g->sysbase = odfs_amiga_sysbase();
     g->locklist.mlh_Head     = (struct MinNode *)&g->locklist.mlh_Tail;
@@ -4136,6 +4114,8 @@ void handler_main_startup(struct Message *startup_msg)
         return;
     }
     g->dosbase = odfs_amiga_dosbase();
+    ODFS_INFO(&g->log, ODFS_SUB_CORE, "libraries open, device=%s unit=%lu",
+              g->devname, (unsigned long)g->devunit);
 
     /* open device */
     g->devport = odfs_amiga_create_msg_port();
@@ -4161,6 +4141,8 @@ void handler_main_startup(struct Message *startup_msg)
         goto shutdown;
     }
 
+    ODFS_INFO(&g->log, ODFS_SUB_IO, "opening %s unit %lu",
+              g->devname, (unsigned long)g->devunit);
     if (OpenDevice((CONST_STRPTR)g->devname, g->devunit,
                    (struct IORequest *)g->devreq, g->devflags) != 0) {
         ODFS_ERROR(&g->log, ODFS_SUB_IO,
@@ -4173,20 +4155,10 @@ void handler_main_startup(struct Message *startup_msg)
         return_packet(g, pkt);
         goto shutdown;
     }
+    ODFS_INFO(&g->log, ODFS_SUB_IO, "device open");
 
     g->devnode->dn_Startup = MKBADDR(fssm);
     g->devnode->dn_Task = g->dosport;
-
-    /*
-     * SCSI drive setup: wait for unit ready and set 2048-byte blocks.
-     * Mode Select may fail on non-SCSI devices (e.g. IDE with
-     * trackdisk.device) — this is non-fatal.
-     */
-    scsi_test_unit_ready(g);
-    if (!scsi_mode_select(g, 2048)) {
-        /* Mode Select failed — drive probably doesn't support it
-         * or is already in 2048-byte mode. Not fatal. */
-    }
 
     /*
      * Allocate DMA-safe bounce buffer using de_BufMemType.
@@ -4219,7 +4191,52 @@ void handler_main_startup(struct Message *startup_msg)
         }
     }
 
-    /* set up media adapter */
+    /*
+     * Probe the drive geometry before committing to the mount.
+     * TD_GETGEOMETRY uses the native ATA path and returns promptly even
+     * on a not-ready unit (unlike HD_SCSICMD, which can hang). A failure
+     * here means the unit has no usable device behind it — e.g. the
+     * empty/phantom second ATAPI channel that QEMU's peg2ide reports
+     * from a floating bus. Decline the mount in that case rather than
+     * publishing a dead drive that DOS would route to and poll.
+     *
+     * When geometry succeeds but reports a non-2048 block size, switch
+     * the drive to 2048-byte CD blocks with MODE SELECT (an HD_SCSICMD,
+     * issued only for a confirmed present drive so it cannot hang on a
+     * phantom unit).
+     */
+    {
+        struct DriveGeometry geom;
+        LONG geo_rc;
+
+        memset(&geom, 0, sizeof(geom));
+        g->devreq->io_Command = TD_GETGEOMETRY;
+        g->devreq->io_Data    = &geom;
+        g->devreq->io_Length  = sizeof(geom);
+        geo_rc = DoIO((struct IORequest *)g->devreq);
+        ODFS_INFO(&g->log, ODFS_SUB_IO,
+                  "geometry rc=%ld sector=%lu", (long)geo_rc,
+                  (unsigned long)geom.dg_SectorSize);
+
+        if (geo_rc != 0) {
+            ODFS_WARN(&g->log, ODFS_SUB_IO,
+                      "no usable device on unit %lu (geometry rc=%ld) - "
+                      "declining mount",
+                      (unsigned long)g->devunit, (long)geo_rc);
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_DEVICE_NOT_MOUNTED;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+
+        if (geom.dg_SectorSize != 0 && geom.dg_SectorSize != 2048) {
+            ODFS_INFO(&g->log, ODFS_SUB_IO, "mode select...");
+            (void)scsi_mode_select(g, 2048);
+        }
+    }
+    ODFS_INFO(&g->log, ODFS_SUB_IO, "scsi setup done");
+
+    /* set up media adapter (context lives in g, one per process) */
     g->media_ctx.g = g;
     g->media.ops = &amiga_media_ops;
     g->media.ctx = &g->media_ctx;
