@@ -2619,14 +2619,20 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
     if (!g || !entry_out || !key_out)
         return ERROR_REQUIRED_ARG_MISSING;
 
-    dir = ol ? lock_node(ol) : &g->mount.root;
-
     if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
+        LONG err_dos;
+
+        if (!lock_is_active(g, ol))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, ol->entry->volume);
         if (err_dos != 0)
             return err_dos;
+        dir = lock_node(ol);
     } else if (!g->mounted) {
         return ERROR_NO_DISK;
+    } else {
+        dir = &g->mount.root;
     }
 
     if (dir->kind != ODFS_NODE_DIR)

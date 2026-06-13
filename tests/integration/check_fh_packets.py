@@ -14,8 +14,11 @@ ACTION_COPY_DIR_FH = 1030
 ACTION_PARENT_FH = 1031
 ACTION_EXAMINE_FH = 1034
 ACTION_EXAMINE_OBJECT = 23
+ACTION_SAME_LOCK = 40
 ACTION_PARENT = 29
 FILE_LOCK_SIZE = FileLockStruct.get_size()
+LOCK_SAME = 0
+LOCK_SAME_VOLUME = 1
 
 
 def fib_name(bridge: HandlerBridge, fib_addr: int) -> str:
@@ -149,6 +152,25 @@ def main() -> int:
                     print(
                         "FAIL: EXAMINE_OBJECT did not mark the lock examined for "
                         f"{dir_path}/{leaf}"
+                    )
+                    return 1
+
+                res1, res2 = send_and_wait(
+                    bridge, ACTION_SAME_LOCK, [dup_lock, dup_lock]
+                )
+                if res1 != -1 or res2 != LOCK_SAME:
+                    print(
+                        f"FAIL: SAME_LOCK same object returned ({res1}, {res2})"
+                    )
+                    return 1
+
+                res1, res2 = send_and_wait(
+                    bridge, ACTION_SAME_LOCK, [dup_lock, parent_lock]
+                )
+                if res1 != 0 or res2 != LOCK_SAME_VOLUME:
+                    print(
+                        "FAIL: SAME_LOCK same-volume objects returned "
+                        f"({res1}, {res2})"
                     )
                     return 1
 
