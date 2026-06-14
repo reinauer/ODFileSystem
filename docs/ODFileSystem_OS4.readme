@@ -1,0 +1,162 @@
+Short:        Modern optical-disc filesystem for OS4
+Author:       stefan.reinauer@coreboot.org (Stefan Reinauer)
+Uploader:     stefan reinauer coreboot org (Stefan Reinauer)
+Type:         disk/cdrom
+Version:      [VERSION]
+Requires:     AmigaOS 4.1 Final Edition
+Architecture: ppc-amigaos
+
+ODFileSystem for AmigaOS 4
+==========================
+
+ODFileSystem is a read-only optical-disc filesystem handler for
+AmigaOS.  It mounts CD-ROM, DVD, Blu-ray, and image-backed optical
+media through the normal AmigaDOS filesystem interface.
+
+This archive contains the PowerPC AmigaOS 4 build.  It is separate
+from the m68k AmigaOS 3 archive.
+
+
+Archive Contents
+----------------
+
+- ODFileSystem-amigaos4
+  Disk-loadable filesystem handler.  Copy or rename this to
+  L:ODFileSystem when installing it for use with a DOSDriver or
+  mountlist entry.
+
+- CDFileSystem
+  Relocatable Kickstart resident module.  Use this to replace the
+  AmigaOS 4 Kickstart CDFileSystem module.
+
+- ODFileSystem-amigaos4-test
+  Test build of the disk-loadable handler with serial debug output
+  enabled.
+
+- CDFileSystem-test
+  Test build of the Kickstart resident module with serial debug output
+  enabled.
+
+- README.md
+  This file.
+
+
+Features
+--------
+
+- ISO 9660 directory and file access
+- Rock Ridge long names and metadata
+- Joliet Unicode names
+- UDF bridge-disc support
+- HFS and HFS+ data-fork access
+- Multisession media support
+- CDDA tracks exposed as virtual audio files
+- Read-only operation for safe use with optical media
+
+For ISO-family hybrid discs, ODFileSystem prefers Rock Ridge, then
+Joliet, then plain ISO 9660.  For bridge discs it prefers the ISO view
+by default; UDF and HFS can be selected explicitly through mount
+options.
+
+
+Disk-Loaded Installation
+------------------------
+
+Use this method if you want ODFileSystem to behave like a normal
+filesystem handler loaded from disk.
+
+1. Copy the handler to:
+
+       L:ODFileSystem
+
+2. Install or edit a DOSDriver entry, for example:
+
+       DEVS:DOSDrivers/CD0
+
+3. Set the filesystem in the DOSDriver or Mountlist to:
+
+       FileSystem = L:ODFileSystem
+
+4. Set Device and Unit for your CD/DVD device.
+
+Mount the device from Workbench by double-clicking the DOSDriver icon,
+or from Shell with:
+
+       Mount CD0:
+
+
+Kickstart Installation
+----------------------
+
+Use this method if you want ODFileSystem to replace the Kickstart
+CDFileSystem module used during early boot.
+
+1. Back up your existing Kickstart CD filesystem module:
+
+       Kickstart/CDFileSystem
+
+2. Copy the supplied module to:
+
+       Kickstart/CDFileSystem
+
+   The file name should remain CDFileSystem.  Do not rename it to
+   ODFileSystem.kmod unless you also edit Kicklayout.
+
+3. Check that Kicklayout contains this module entry:
+
+       MODULE Kickstart/CDFileSystem
+
+4. Rebuild or update your Kickstart.zip if your machine or emulator
+   boots from a zipped Kickstart directory.
+
+5. Reboot.
+
+The supplied CDFileSystem file is an AmigaOS 4 Kickstart resident
+module.  It is intentionally different from the disk-loadable
+ODFileSystem handler.
+
+
+Mount Options
+-------------
+
+Options can be supplied with the DOSDriver Control string:
+
+       Control = "LOWERCASE UDF FILEBUFFERS=128"
+
+Supported options include:
+
+- LOWERCASE
+  Lowercase plain ISO 9660 names.
+
+- NOROCKRIDGE or NORR
+  Disable Rock Ridge.
+
+- NOJOLIET or NOJ
+  Disable Joliet.
+
+- UDF
+  Prefer UDF on bridge discs.
+
+- HFSFIRST or HF
+  Prefer HFS on hybrid HFS/ISO discs.
+
+- FILEBUFFERS=n or FB=n
+  Set the filesystem block-cache size.
+
+- AIFF
+  Expose CDDA audio tracks as AIFF files instead of WAV files.
+
+
+Limitations
+-----------
+
+ODFileSystem is read-only.
+
+HFS and HFS+ support exposes data forks only.  Resource forks and
+Finder metadata are not presented through the AmigaDOS view, so some
+classic Mac media may not appear exactly as they would on Mac OS.
+
+Project source and current documentation are available from the
+ODFileSystem repository:
+
+       https://github.com/reinauer/ODFileSystem

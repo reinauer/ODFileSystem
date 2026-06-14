@@ -270,12 +270,23 @@ ADF_VOLUME   = ODFileSystem
 ADF_DOSDRIVER      = platform/amiga/dosdrivers/CD0
 ADF_DOSDRIVER_ICON = platform/amiga/dosdrivers/CD0.info
 XDFTOOL      ?= xdftool
+LHA          ?= lha
+AMIGAOS3_PACKAGE_NAME ?= ODFileSystem
+AMIGAOS3_PACKAGE     = $(AMIGA_BUILD)/$(AMIGAOS3_PACKAGE_NAME).lha
+AMIGAOS3_PACKAGE_DIR = $(AMIGA_BUILD)/$(AMIGAOS3_PACKAGE_NAME)-lha
+AMIGAOS3_README      = docs/ODFileSystem.readme
+AMIGAOS4_PACKAGE_NAME ?= ODFileSystem-amigaos4
+AMIGAOS4_PACKAGE     = $(AMIGA_BUILD)/$(AMIGAOS4_PACKAGE_NAME).lha
+AMIGAOS4_PACKAGE_DIR = $(AMIGA_BUILD)/$(AMIGAOS4_PACKAGE_NAME)-lha
+AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 
 # ==================================================================
 # targets
 # ==================================================================
 
-.PHONY: all host amiga amiga-test adf rom rom-test lib tests tools fuzz check golden-check malformed-check fuzz-check integration-check clean size
+.PHONY: all host amiga amiga-test adf rom rom-test lib tests tools fuzz
+.PHONY: check golden-check malformed-check fuzz-check integration-check
+.PHONY: clean size amigaos3-lha amigaos4-lha
 
 all: host
 
@@ -316,6 +327,57 @@ adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefi
 		write $(ADF_DOSDRIVER) + \
 		write $(ADF_DOSDRIVER_ICON)
 	@echo "  ADF image ready: $(ADF)"
+
+amigaos3-lha:
+	@if [ "$(AMIGA_TARGET)" != "os3" ]; then \
+		echo "  ERROR: amigaos3-lha requires CC=m68k-amigaos-gcc"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory AMIGA_BUILD=$(AMIGA_BUILD) amiga
+	@$(MAKE) --no-print-directory AMIGA_TEST_BUILD=$(AMIGA_TEST_BUILD) \
+		amiga-test
+	@$(MAKE) --no-print-directory ROM_BUILD=$(ROM_BUILD) rom
+	@$(MAKE) --no-print-directory ROM_TEST_BUILD=$(ROM_TEST_BUILD) \
+		rom-test
+	@rm -rf "$(AMIGAOS3_PACKAGE_DIR)" "$(AMIGAOS3_PACKAGE)"
+	@mkdir -p "$(AMIGAOS3_PACKAGE_DIR)"
+	@cp "$(HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem"
+	@cp "$(TEST_HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-test"
+	@cp "$(ROM_BUILD)/ODFileSystem" \
+		"$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-rom"
+	@cp "$(ROM_TEST_BUILD)/ODFileSystem" \
+		"$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-rom-test"
+	@cp "$(AMIGAOS3_README)" "$(AMIGAOS3_PACKAGE_DIR)/README.md"
+	@echo "  LHA   $(AMIGAOS3_PACKAGE)"
+	@(cd "$(AMIGAOS3_PACKAGE_DIR)" && \
+		$(LHA) -aq "$(CURDIR)/$(AMIGAOS3_PACKAGE)" \
+		ODFileSystem ODFileSystem-test \
+		ODFileSystem-rom ODFileSystem-rom-test README.md)
+	@echo "  LHA archive ready: $(AMIGAOS3_PACKAGE)"
+
+amigaos4-lha:
+	@if [ "$(AMIGA_TARGET)" != "os4" ]; then \
+		echo "  ERROR: amigaos4-lha requires CC=ppc-amigaos-gcc"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory AMIGA_BUILD=$(AMIGA_BUILD) amiga
+	@$(MAKE) --no-print-directory AMIGA_TEST_BUILD=$(AMIGA_TEST_BUILD) \
+		amiga-test
+	@rm -rf "$(AMIGAOS4_PACKAGE_DIR)" "$(AMIGAOS4_PACKAGE)"
+	@mkdir -p "$(AMIGAOS4_PACKAGE_DIR)"
+	@cp "$(HANDLER)" "$(AMIGAOS4_PACKAGE_DIR)/ODFileSystem-amigaos4"
+	@cp "$(KICKSTART_MODULE)" "$(AMIGAOS4_PACKAGE_DIR)/CDFileSystem"
+	@cp "$(TEST_HANDLER)" \
+		"$(AMIGAOS4_PACKAGE_DIR)/ODFileSystem-amigaos4-test"
+	@cp "$(AMIGA_TEST_BUILD)/CDFileSystem" \
+		"$(AMIGAOS4_PACKAGE_DIR)/CDFileSystem-test"
+	@cp "$(AMIGAOS4_README)" "$(AMIGAOS4_PACKAGE_DIR)/README.md"
+	@echo "  LHA   $(AMIGAOS4_PACKAGE)"
+	@(cd "$(AMIGAOS4_PACKAGE_DIR)" && \
+		$(LHA) -aq "$(CURDIR)/$(AMIGAOS4_PACKAGE)" \
+		ODFileSystem-amigaos4 CDFileSystem \
+		ODFileSystem-amigaos4-test CDFileSystem-test README.md)
+	@echo "  LHA archive ready: $(AMIGAOS4_PACKAGE)"
 
 # ROM profile: minimal build for burning into ROM
 # ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
