@@ -4361,19 +4361,6 @@ void handler_main_startup(struct Message *startup_msg)
                     break;
                 }
 
-#if ODFS_AMIGA_OS4
-                if (g->vector_port) {
-                    /*
-                     * Route direct legacy packets through the DOS packet
-                     * emulator, which performs the equivalent vector-port
-                     * call exactly like a native DOS caller would.
-                     */
-                    odfs_os4_emulate_packet(g->vector_port, pkt);
-                    return_packet(g, pkt);
-                    continue;
-                }
-#endif
-
                 if (!g->mounted && packet_needs_live_mount(pkt)) {
                     pkt->dp_Res1 = DOSFALSE;
                     pkt->dp_Res2 = ERROR_NO_DISK;
@@ -4381,7 +4368,20 @@ void handler_main_startup(struct Message *startup_msg)
                     continue;
                 }
 
+                /*
+                 * Service DOS packets with the shared packet dispatcher.
+                 * On OS4 this dos.library drives the handler through the
+                 * classic packet protocol (BPTR locks) for the legacy
+                 * Lock()/Examine()/ExNext() APIs, including the
+                 * deprecated examine actions that DOSEmulatePacket
+                 * answers with ERROR_ACTION_NOT_KNOWN. Hold the
+                 * filesystem semaphore so packet servicing in the
+                 * handler process is serialized against native
+                 * vector-port calls made from caller context.
+                 */
+                ODFS_FS_LOCK(g);
                 handle_packet(g, pkt);
+                ODFS_FS_UNLOCK(g);
                 return_packet(g, pkt);
             }
         }
