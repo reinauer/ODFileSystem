@@ -43,6 +43,9 @@ jobs:
       - name: Build ROM test profile
         run: make rom-test
 
+      - name: Build AmigaOS 3 archive
+        run: make amigaos3-lha
+
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -52,5 +55,42 @@ jobs:
             build/amiga-test/ODFileSystem
             build/amiga-rom/ODFileSystem
             build/amiga-rom-test/ODFileSystem
+            build/amiga/ODFileSystem.lha
             build/host/tools/
+          if-no-files-found: error
+
+  build-amigaos4:
+    runs-on: ubuntu-latest
+    container: stefanreinauer/amigappc-gcc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Check AmigaOS 4 compiler
+        run: |
+          command -v ppc-amigaos-gcc
+          ppc-amigaos-gcc -dumpmachine
+
+      - name: Build AmigaOS 4 handlers and archive
+        run: |
+          make amigaos4-lha \
+            CC=ppc-amigaos-gcc \
+            AMIGA_BUILD=build/amigaos4 \
+            AMIGA_TEST_BUILD=build/amigaos4-test
+
+      - name: Upload AmigaOS 4 CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: odfilesystem-amigaos4-build
+          path: |
+            build/amigaos4/ODFileSystem
+            build/amigaos4/CDFileSystem
+            build/amigaos4-test/ODFileSystem
+            build/amigaos4-test/CDFileSystem
+            build/amigaos4/ODFileSystem-amigaos4.lha
           if-no-files-found: error
