@@ -55,6 +55,7 @@ typedef struct handler_global {
     struct MsgPort      *process_port;  /* owning process message port */
     struct MsgPort      *dosport;       /* DOS message port */
 #if ODFS_AMIGA_OS4
+    struct Task         *handler_task;  /* task that owns handler ports */
     struct FileSystemVectorPort *vector_port; /* native OS4 vector port */
     LONG                 vector_sigbit; /* signal bit used by vector port */
     /*

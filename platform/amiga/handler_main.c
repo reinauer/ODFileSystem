@@ -217,9 +217,41 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
 {
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
+    struct IOStdReq *req = g->devreq;
+#if ODFS_AMIGA_OS4
+    struct MsgPort *tmp_port = NULL;
+    struct IOStdReq *tmp_req = NULL;
+#endif
     uint32_t total_bytes = count * g->sector_size;
     uint8_t *out = buf;
     uint32_t done = 0;
+    odfs_err_t ret = ODFS_OK;
+
+#if ODFS_AMIGA_OS4
+    /*
+     * Native vector callbacks run in the caller's task, but g->devreq
+     * replies to the handler task's port. If a caller-task DoIO() has to
+     * wait for completion, the device signals the wrong task and the
+     * caller blocks forever. Use a request with a reply port owned by the
+     * current task for vector-context media I/O.
+     */
+    if (FindTask(NULL) != g->handler_task) {
+        tmp_port = odfs_amiga_create_msg_port();
+        if (!tmp_port)
+            return ODFS_ERR_NOMEM;
+
+        tmp_req = (struct IOStdReq *)odfs_amiga_create_io_request(
+            tmp_port, sizeof(*tmp_req));
+        if (!tmp_req) {
+            odfs_amiga_delete_msg_port(tmp_port);
+            return ODFS_ERR_NOMEM;
+        }
+
+        tmp_req->io_Device = g->devreq->io_Device;
+        tmp_req->io_Unit = g->devreq->io_Unit;
+        req = tmp_req;
+    }
+#endif
 
     /*
      * Read through the DMA-safe bounce buffer, one chunk at a time.
@@ -245,36 +277,46 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
             byte_offset_lo = cur_lba * g->sector_size;
         }
 
-        g->devreq->io_Offset = byte_offset_lo;
-        g->devreq->io_Actual = byte_offset_hi;
-        g->devreq->io_Length = chunk;
-        g->devreq->io_Data   = g->dma_buf;
+        req->io_Offset = byte_offset_lo;
+        req->io_Actual = byte_offset_hi;
+        req->io_Length = chunk;
+        req->io_Data   = g->dma_buf;
 
         if (byte_offset_hi != 0)
-            g->devreq->io_Command = TD_READ64;
+            req->io_Command = TD_READ64;
         else
-            g->devreq->io_Command = CMD_READ;
+            req->io_Command = CMD_READ;
 
-        if (DoIO((struct IORequest *)g->devreq) != 0 ||
-            g->devreq->io_Error != 0 ||
-            g->devreq->io_Actual != chunk) {
+        if (DoIO((struct IORequest *)req) != 0 ||
+            req->io_Error != 0 ||
+            req->io_Actual != chunk) {
             ODFS_ERROR(&g->log, ODFS_SUB_IO,
-                       "sector read failed lba=%lu count=%lu "
-                       "chunk=%lu io_Error=%ld actual=%lu cmd=%lu",
+                       "sector read failed unit=%lu lba=%lu count=%lu "
+                       "chunk=%lu off=%lu io_Error=%ld actual=%lu cmd=%lu",
+                       (unsigned long)g->devunit,
                        (unsigned long)cur_lba,
                        (unsigned long)count,
                        (unsigned long)chunk,
-                       (long)g->devreq->io_Error,
-                       (unsigned long)g->devreq->io_Actual,
-                       (unsigned long)g->devreq->io_Command);
-            return ODFS_ERR_IO;
+                       (unsigned long)req->io_Offset,
+                       (long)req->io_Error,
+                       (unsigned long)req->io_Actual,
+                       (unsigned long)req->io_Command);
+            ret = ODFS_ERR_IO;
+            goto out;
         }
 
         memcpy(out + done, g->dma_buf, chunk);
         done += chunk;
     }
 
-    return ODFS_OK;
+out:
+#if ODFS_AMIGA_OS4
+    if (tmp_req)
+        odfs_amiga_delete_io_request((struct IORequest *)tmp_req);
+    if (tmp_port)
+        odfs_amiga_delete_msg_port(tmp_port);
+#endif
+    return ret;
 }
 
 static uint32_t amiga_sector_size(void *ctx)
@@ -4112,6 +4154,9 @@ void handler_main_startup(struct Message *startup_msg)
 
     {
         struct Process *proc = (struct Process *)FindTask(NULL);
+#if ODFS_AMIGA_OS4
+        g->handler_task = (struct Task *)proc;
+#endif
         g->process_port = &proc->pr_MsgPort;
         g->dosport = g->process_port;
     }
