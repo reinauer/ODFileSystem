@@ -1,0 +1,133 @@
+name: Publish Aminet releases
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-amigaos3:
+    name: Build AmigaOS 3 Aminet upload
+    if: ${{ !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v') }}
+    runs-on: ubuntu-latest
+    container: stefanreinauer/amiga-gcc:gcc-v13.3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Build AmigaOS 3 archive
+        env:
+          ODFS_GIT_VERSION: ${{ github.event.release.tag_name }}
+        run: make amigaos3-lha
+
+      - name: Prepare AmigaOS 3 Aminet upload files
+        run: |
+          set -eu
+          mkdir -p dist
+          cp build/amiga/ODFileSystem.lha dist/ODFileSystem.lha
+          cp docs/ODFileSystem.readme dist/ODFileSystem.readme
+
+      - name: Upload AmigaOS 3 Aminet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aminet-os3-upload
+          path: |
+            dist/ODFileSystem.lha
+            dist/ODFileSystem.readme
+          if-no-files-found: error
+
+  build-amigaos4:
+    name: Build AmigaOS 4 Aminet upload
+    if: ${{ !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v') }}
+    runs-on: ubuntu-latest
+    container: stefanreinauer/amigappc-gcc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Check AmigaOS 4 compiler
+        run: |
+          command -v ppc-amigaos-gcc
+          ppc-amigaos-gcc -dumpmachine
+
+      - name: Build AmigaOS 4 archive
+        env:
+          ODFS_GIT_VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          make amigaos4-lha \
+            CC=ppc-amigaos-gcc \
+            AMIGA_BUILD=build/amigaos4 \
+            AMIGA_TEST_BUILD=build/amigaos4-test
+
+      - name: Prepare AmigaOS 4 Aminet upload files
+        run: |
+          set -eu
+          mkdir -p dist
+          cp build/amigaos4/ODFileSystem-amigaos4.lha \
+            dist/ODFileSystem-amigaos4.lha
+          cp docs/ODFileSystem_OS4.readme dist/ODFileSystem_OS4.readme
+
+      - name: Upload AmigaOS 4 Aminet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aminet-os4-upload
+          path: |
+            dist/ODFileSystem-amigaos4.lha
+            dist/ODFileSystem_OS4.readme
+          if-no-files-found: error
+
+  publish:
+    name: Upload to Aminet
+    needs:
+      - build-amigaos3
+      - build-amigaos4
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download AmigaOS 3 Aminet artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aminet-os3-upload
+          path: dist/os3
+
+      - name: Download AmigaOS 4 Aminet artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aminet-os4-upload
+          path: dist/os4
+
+      - name: Upload AmigaOS 3 package to Aminet
+        id: aminet-os3
+        uses: sidick/aminet-release-action@v1
+        with:
+          filename: dist/os3/ODFileSystem.lha
+          readme: dist/os3/ODFileSystem.readme
+          category: disk/cdrom
+          inject-version: true
+
+      - name: Upload AmigaOS 4 package to Aminet
+        id: aminet-os4
+        uses: sidick/aminet-release-action@v1
+        with:
+          filename: dist/os4/ODFileSystem-amigaos4.lha
+          readme: dist/os4/ODFileSystem_OS4.readme
+          category: disk/cdrom
+          inject-version: true
