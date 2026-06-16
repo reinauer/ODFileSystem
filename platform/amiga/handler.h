@@ -271,7 +271,21 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
     }
 }
 
+typedef struct odfs_handler_node_info {
+    const char      *name;
+    const char      *comment;
+    ULONG            key;
+    ULONG            protection;
+    uint64_t         size;
+    struct DateStamp date;
+    LONG             fib_type;
+    int              is_dir;
+} odfs_handler_node_info_t;
+
 /* shared operations used by packet and OS4 vector frontends */
+void odfs_handler_fill_node_info(handler_global_t *g,
+                                 const odfs_node_t *node,
+                                 odfs_handler_node_info_t *info);
 LONG odfs_handler_resolve_object_node(handler_global_t *g,
                                       odfs_lock_t *parent_lock,
                                       const char *path,
@@ -348,9 +362,6 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  ULONG previous_key,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out);
-ULONG odfs_handler_node_key(const odfs_node_t *node);
-ULONG odfs_handler_node_protection(const odfs_node_t *node);
-void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds);
 LONG odfs_handler_inhibit(handler_global_t *g, LONG state);
 
 /* handler entry point (called from startup.S) */

@@ -1196,6 +1196,9 @@ static int nodes_same(const odfs_node_t *a, const odfs_node_t *b)
            a->extent.length == b->extent.length;
 }
 
+static int node_is_mount_root(const handler_global_t *g,
+                              const odfs_node_t *fnode);
+
 static ULONG amiga_node_key(const odfs_node_t *node)
 {
     ULONG key;
@@ -1217,12 +1220,7 @@ static ULONG amiga_node_key(const odfs_node_t *node)
     return key;
 }
 
-ULONG odfs_handler_node_key(const odfs_node_t *node)
-{
-    return amiga_node_key(node);
-}
-
-ULONG odfs_handler_node_protection(const odfs_node_t *node)
+static ULONG node_protection(const odfs_node_t *node)
 {
     ULONG prot = 0;
 
@@ -1278,7 +1276,7 @@ ULONG odfs_handler_node_protection(const odfs_node_t *node)
     return prot;
 }
 
-void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds)
+static void node_date(const odfs_node_t *node, struct DateStamp *ds)
 {
     if (!ds)
         return;
@@ -1313,6 +1311,33 @@ void odfs_handler_node_date(const odfs_node_t *node, struct DateStamp *ds)
         ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
         ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
     }
+}
+
+void odfs_handler_fill_node_info(handler_global_t *g,
+                                 const odfs_node_t *node,
+                                 odfs_handler_node_info_t *info)
+{
+    if (!info)
+        return;
+
+    memset(info, 0, sizeof(*info));
+    info->name = "";
+    info->comment = "";
+
+    if (!node)
+        return;
+
+    info->name = (g && node_is_mount_root(g, node)) ? g->volname : node->name;
+    if (node->amiga_as.has_comment)
+        info->comment = node->amiga_as.comment;
+    info->key = amiga_node_key(node);
+    info->protection = node_protection(node);
+    info->size = node->size;
+    info->is_dir = (node->kind == ODFS_NODE_DIR);
+    info->fib_type = info->is_dir ? ST_USERDIR : ST_FILE;
+    if (g && node_is_mount_root(g, node))
+        info->fib_type = ST_ROOT;
+    node_date(node, &info->date);
 }
 
 static odfs_err_t lookup_child_node(handler_global_t *g,
@@ -1668,112 +1693,39 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 /* fill FileInfoBlock from odfs_node_t                               */
 /* ------------------------------------------------------------------ */
 
-static void fill_fib(struct FileInfoBlock *fib, const odfs_node_t *fnode)
+static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
+                     const odfs_node_t *fnode)
 {
-    ULONG prot = 0;
-    int comment_len = 0;
+    odfs_handler_node_info_t info;
+    int name_len;
+    int comment_len;
+    int max_name_len;
 
     memset(fib, 0, sizeof(*fib));
+    odfs_handler_fill_node_info(g, fnode, &info);
 
-    /* filename — BCPL string (length prefix) */
-    {
-        int len = strlen(fnode->name);
-        if (len > 106)
-            len = 106;
-        fib->fib_FileName[0] = len;
-        memcpy(&fib->fib_FileName[1], fnode->name, len);
-    }
+    max_name_len = (info.fib_type == ST_ROOT) ? 30 : 106;
+    name_len = strlen(info.name);
+    if (name_len > max_name_len)
+        name_len = max_name_len;
+    fib->fib_FileName[0] = name_len;
+    memcpy(&fib->fib_FileName[1], info.name, name_len);
 
-    fib->fib_DirEntryType = (fnode->kind == ODFS_NODE_DIR) ? ST_USERDIR : ST_FILE;
+    fib->fib_DirEntryType = info.fib_type;
     odfs_amiga_set_fib_entry_type(fib, fib->fib_DirEntryType);
-    fib->fib_Size         = (LONG)fnode->size;
-    fib->fib_NumBlocks    = (fnode->size + 511) / 512;
+    fib->fib_Size = (LONG)info.size;
+    fib->fib_NumBlocks = (info.size + 511) / 512;
+    fib->fib_Protection = info.protection;
+    fib->fib_Date = info.date;
 
-    if (fnode->amiga_as.has_protection) {
-        prot = fnode->amiga_as.protection[3];
-    } else if (fnode->mode != 0) {
-        /* MakeCD table 6 default mapping from PX to classic Amiga bits. */
-        if ((fnode->mode & 0200) == 0)
-            prot |= FIBF_DELETE | FIBF_WRITE;
-        if ((fnode->mode & 0100) == 0)
-            prot |= FIBF_EXECUTE;
-        if ((fnode->mode & 0400) == 0)
-            prot |= FIBF_READ;
-#ifdef FIBF_GRP_DELETE
-        if (fnode->mode & 0020)
-            prot |= FIBF_GRP_DELETE;
-#endif
-#ifdef FIBF_GRP_EXECUTE
-        if (fnode->mode & 0010)
-            prot |= FIBF_GRP_EXECUTE;
-#endif
-#ifdef FIBF_GRP_WRITE
-        if (fnode->mode & 0020)
-            prot |= FIBF_GRP_WRITE;
-#endif
-#ifdef FIBF_GRP_READ
-        if (fnode->mode & 0040)
-            prot |= FIBF_GRP_READ;
-#endif
-#ifdef FIBF_OTR_DELETE
-        if (fnode->mode & 0002)
-            prot |= FIBF_OTR_DELETE;
-#endif
-#ifdef FIBF_OTR_EXECUTE
-        if (fnode->mode & 0001)
-            prot |= FIBF_OTR_EXECUTE;
-#endif
-#ifdef FIBF_OTR_WRITE
-        if (fnode->mode & 0002)
-            prot |= FIBF_OTR_WRITE;
-#endif
-#ifdef FIBF_OTR_READ
-        if (fnode->mode & 0004)
-            prot |= FIBF_OTR_READ;
-#endif
-    } else {
-        /* Read-only fallback when there is no RR/AS metadata at all. */
-        prot = FIBF_WRITE | FIBF_DELETE;
-    }
-    fib->fib_Protection = prot;
+    comment_len = strlen(info.comment);
+    if (comment_len > (int)sizeof(fib->fib_Comment) - 1)
+        comment_len = (int)sizeof(fib->fib_Comment) - 1;
+    fib->fib_Comment[0] = comment_len;
+    if (comment_len > 0)
+        memcpy(&fib->fib_Comment[1], info.comment, comment_len);
 
-    /* date stamp — Amiga epoch is 1978-01-01 */
-    if (fnode->mtime.year >= 1978) {
-        LONG days = 0;
-        int y;
-        for (y = 1978; y < fnode->mtime.year; y++) {
-            days += 365;
-            if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
-                days++;
-        }
-        {
-            static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-            int m;
-            for (m = 1; m < fnode->mtime.month && m <= 12; m++) {
-                days += mdays[m];
-                if (m == 2 && ((fnode->mtime.year % 4 == 0 &&
-                    fnode->mtime.year % 100 != 0) ||
-                    fnode->mtime.year % 400 == 0))
-                    days++;
-            }
-        }
-        days += fnode->mtime.day - 1;
-
-        fib->fib_Date.ds_Days   = days;
-        fib->fib_Date.ds_Minute = fnode->mtime.hour * 60 + fnode->mtime.minute;
-        fib->fib_Date.ds_Tick   = fnode->mtime.second * TICKS_PER_SECOND;
-    }
-
-    if (fnode->amiga_as.has_comment) {
-        comment_len = strlen(fnode->amiga_as.comment);
-        if (comment_len > (int)sizeof(fib->fib_Comment) - 1)
-            comment_len = (int)sizeof(fib->fib_Comment) - 1;
-        fib->fib_Comment[0] = comment_len;
-        if (comment_len > 0)
-            memcpy(&fib->fib_Comment[1], fnode->amiga_as.comment, comment_len);
-    }
-
-    fib->fib_DiskKey = (LONG)amiga_node_key(fnode);
+    fib->fib_DiskKey = (LONG)info.key;
 }
 
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode)
@@ -1782,23 +1734,6 @@ static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnod
         return 0;
 
     return odfs_node_matches_identity(fnode, &g->mount.root);
-}
-
-static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
-                          const odfs_node_t *fnode)
-{
-    int len;
-
-    fill_fib(fib, fnode);
-
-    fib->fib_DirEntryType = ST_ROOT;
-    odfs_amiga_set_fib_entry_type(fib, ST_ROOT);
-
-    len = strlen(g->volname);
-    if (len > 30)
-        len = 30;
-    fib->fib_FileName[0] = len;
-    memcpy(&fib->fib_FileName[1], g->volname, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2658,6 +2593,7 @@ static void action_same_lock(handler_global_t *g, struct DosPacket *pkt)
 /* ---- examine ---- */
 
 typedef struct exnext_ctx {
+    handler_global_t *g;
     struct FileInfoBlock *fib;
     ULONG previous_key;
     int   first;
@@ -2675,7 +2611,7 @@ static odfs_err_t exnext_cb(const odfs_node_t *entry, void *ctx)
         return ODFS_OK;
     }
 
-    fill_fib(ec->fib, entry);
+    fill_fib(ec->g, ec->fib, entry);
     ec->found = 1;
     return ODFS_ERR_EOF; /* stop after one entry */
 }
@@ -2789,10 +2725,7 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    if (node_is_mount_root(g, fnode))
-        fill_root_fib(g, fib, fnode);
-    else
-        fill_fib(fib, fnode);
+    fill_fib(g, fib, fnode);
 #if !ODFS_AMIGA_OS4
     if (ol)
         ol->dos_private[1] = (ULONG)-1;
@@ -2837,6 +2770,7 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     }
 
     dir_key = ol ? ol->key : amiga_node_key(dir);
+    ec.g = g;
     ec.fib = fib;
     ec.previous_key = (ULONG)fib->fib_DiskKey;
     ec.first = (ec.previous_key == dir_key);
@@ -2890,7 +2824,7 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
         /* data entries exhausted — inject CDDA virtual dir if at root */
         if (g->has_cdda && node_is_mount_root(g, dir) &&
             ec.previous_key != amiga_node_key(&g->cdda_root)) {
-            fill_fib(fib, &g->cdda_root);
+            fill_fib(g, fib, &g->cdda_root);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
             ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                        "exnext-inject-cdda key=%08lx",
@@ -2928,22 +2862,20 @@ static size_t exall_fixed_size(LONG data)
     return sizes[data];
 }
 
-static int exall_fill_entry(struct ExAllData **cursor, LONG *remaining,
-                            LONG data, const odfs_node_t *entry)
+static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
+                            LONG *remaining, LONG data,
+                            const odfs_node_t *entry)
 {
     struct ExAllData *ed = *cursor;
-    struct FileInfoBlock fib;
-    const char *name = entry->name;
-    const char *comment = "";
-    size_t name_len = strlen(name) + 1u;
-    size_t comment_len = 1u;
+    odfs_handler_node_info_t info;
+    size_t name_len;
+    size_t comment_len;
     size_t need;
     UBYTE *p;
 
-    if (entry->amiga_as.has_comment) {
-        comment = entry->amiga_as.comment;
-        comment_len = strlen(comment) + 1u;
-    }
+    odfs_handler_fill_node_info(g, entry, &info);
+    name_len = strlen(info.name) + 1u;
+    comment_len = strlen(info.comment) + 1u;
 
     need = exall_fixed_size(data) + name_len;
     if (data >= ED_COMMENT)
@@ -2953,29 +2885,28 @@ static int exall_fill_entry(struct ExAllData **cursor, LONG *remaining,
     if (need > (size_t)*remaining)
         return 0;
 
-    fill_fib(&fib, entry);
     memset(ed, 0, exall_fixed_size(data));
 
     p = ((UBYTE *)ed) + exall_fixed_size(data);
     if (data >= ED_COMMENT) {
         ed->ed_Comment = (STRPTR)p;
-        memcpy(p, comment, comment_len);
+        memcpy(p, info.comment, comment_len);
         p += comment_len;
     }
 
     ed->ed_Name = (STRPTR)p;
-    memcpy(p, name, name_len);
+    memcpy(p, info.name, name_len);
 
     if (data >= ED_TYPE)
-        ed->ed_Type = fib.fib_DirEntryType;
+        ed->ed_Type = info.fib_type;
     if (data >= ED_SIZE)
-        ed->ed_Size = (ULONG)fib.fib_Size;
+        ed->ed_Size = (ULONG)info.size;
     if (data >= ED_PROTECTION)
-        ed->ed_Prot = (ULONG)fib.fib_Protection;
+        ed->ed_Prot = info.protection;
     if (data >= ED_DATE) {
-        ed->ed_Days = (ULONG)fib.fib_Date.ds_Days;
-        ed->ed_Mins = (ULONG)fib.fib_Date.ds_Minute;
-        ed->ed_Ticks = (ULONG)fib.fib_Date.ds_Tick;
+        ed->ed_Days = (ULONG)info.date.ds_Days;
+        ed->ed_Mins = (ULONG)info.date.ds_Minute;
+        ed->ed_Ticks = (ULONG)info.date.ds_Tick;
     }
     if (data >= ED_OWNER) {
         ed->ed_OwnerUID = 0;
@@ -2989,6 +2920,7 @@ static int exall_fill_entry(struct ExAllData **cursor, LONG *remaining,
 }
 
 typedef struct exall_ctx {
+    handler_global_t *g;
     struct ExAllData *cursor;
     struct ExAllData *last;
     struct ExAllControl *control;
@@ -3021,7 +2953,8 @@ static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
     cursor_before = ec->cursor;
     remaining_before = ec->remaining;
     slot = ec->cursor;
-    if (!exall_fill_entry(&ec->cursor, &ec->remaining, ec->data, entry)) {
+    if (!exall_fill_entry(ec->g, &ec->cursor, &ec->remaining, ec->data,
+                          entry)) {
         ec->full = 1;
         return ODFS_ERR_EOF;
     }
@@ -3083,6 +3016,7 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
     }
 
     memset(&ec, 0, sizeof(ec));
+    ec.g = g;
     ec.cursor = buf;
     ec.control = control;
     ec.remaining = size;
@@ -3164,7 +3098,7 @@ static void action_examine_fh(handler_global_t *g, struct DosPacket *pkt)
         }
     }
 
-    fill_fib(fib, fh_node(fh));
+    fill_fib(g, fib, fh_node(fh));
     pkt->dp_Res1 = DOSTRUE;
 }
 
