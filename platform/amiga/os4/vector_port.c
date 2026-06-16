@@ -166,14 +166,6 @@ static odfs_fh_t *fh_from_vector(struct FileHandle *fh)
     return fh ? (odfs_fh_t *)fh->fh_Arg2 : NULL;
 }
 
-static const char *node_name_for_examine(handler_global_t *g,
-                                         const odfs_node_t *node)
-{
-    if (g && node && odfs_node_matches_identity(node, &g->mount.root))
-        return g->volname;
-    return node ? node->name : "";
-}
-
 static struct ExamineData *take_stale_examine_data(
     struct PRIVATE_ExamineDirContext *ctx,
     size_t name_len,
@@ -205,6 +197,7 @@ static struct ExamineData *alloc_examine_data_from_context(
 {
     const char *name;
     const char *comment = "";
+    odfs_handler_node_info_t info;
     size_t name_len;
     size_t comment_len;
     struct ExamineData *ed;
@@ -212,9 +205,9 @@ static struct ExamineData *alloc_examine_data_from_context(
     if (!node)
         return NULL;
 
-    name = node_name_for_examine(g, node);
-    if (node->amiga_as.has_comment)
-        comment = node->amiga_as.comment;
+    odfs_handler_fill_node_info(g, node, &info);
+    name = info.name;
+    comment = info.comment;
 
     name_len = strlen(name) + 1u;
     comment_len = strlen(comment) + 1u;
@@ -244,16 +237,15 @@ static struct ExamineData *alloc_examine_data_from_context(
         return NULL;
 
     ed->EXDinfo = 0;
-    ed->Type = (node->kind == ODFS_NODE_DIR) ?
-        FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
-    ed->FileSize = (node->kind == ODFS_NODE_DIR) ? -1LL : (int64)node->size;
-    odfs_handler_node_date(node, &ed->Date);
+    ed->Type = info.is_dir ? FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
+    ed->FileSize = info.is_dir ? -1LL : (int64)info.size;
+    ed->Date = info.date;
     ed->RefCount = 0;
-    ed->ObjectID = odfs_handler_node_key(node);
-    ed->Protection = odfs_handler_node_protection(node);
+    ed->ObjectID = info.key;
+    ed->Protection = info.protection;
     ed->OwnerUID = DOS_OWNER_NONE;
     ed->OwnerGID = DOS_OWNER_NONE;
-    ed->FSPrivate = odfs_handler_node_key(node);
+    ed->FSPrivate = info.key;
 
     if (ed->Name && ed->NameSize > 0) {
         strncpy(ed->Name, name, ed->NameSize - 1);
