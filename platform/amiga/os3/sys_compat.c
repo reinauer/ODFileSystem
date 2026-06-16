@@ -156,17 +156,6 @@ void odfs_amiga_init_interrupt(struct Interrupt *intr,
     intr->is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
 }
 
-void odfs_amiga_set_fib_entry_type(struct FileInfoBlock *fib, LONG type)
-{
-    fib->fib_EntryType = type;
-}
-
-void odfs_amiga_copy_device_lock(struct DeviceNode *dst,
-                                 const struct DeviceNode *src)
-{
-    dst->dn_Lock = src ? src->dn_Lock : 0;
-}
-
 ULONG odfs_amiga_call_hook_pkt(struct Hook *hook, APTR object, APTR message)
 {
     if (!UtilityBase)
