@@ -212,16 +212,69 @@ static void notify_workbench_disk_change(BOOL inserted)
     odfs_amiga_delete_msg_port(port);
 }
 
+#if ODFS_AMIGA_OS4
+static void release_vector_io_request(handler_global_t *g)
+{
+    if (!g)
+        return;
+
+    if (g->vector_io_req) {
+        odfs_amiga_delete_io_request((struct IORequest *)g->vector_io_req);
+        g->vector_io_req = NULL;
+    }
+    if (g->vector_io_port) {
+        odfs_amiga_delete_msg_port(g->vector_io_port);
+        g->vector_io_port = NULL;
+    }
+    g->vector_io_task = NULL;
+}
+
+static struct IOStdReq *vector_io_request_for_current_task(handler_global_t *g)
+{
+    struct Task *task;
+    struct MsgPort *port;
+    struct IOStdReq *req;
+
+    if (!g || !g->devreq)
+        return NULL;
+
+    task = FindTask(NULL);
+    if (task == g->handler_task)
+        return g->devreq;
+
+    if (g->vector_io_req && g->vector_io_task == task) {
+        g->vector_io_req->io_Device = g->devreq->io_Device;
+        g->vector_io_req->io_Unit = g->devreq->io_Unit;
+        return g->vector_io_req;
+    }
+
+    release_vector_io_request(g);
+
+    port = odfs_amiga_create_msg_port();
+    if (!port)
+        return NULL;
+
+    req = (struct IOStdReq *)odfs_amiga_create_io_request(port, sizeof(*req));
+    if (!req) {
+        odfs_amiga_delete_msg_port(port);
+        return NULL;
+    }
+
+    req->io_Device = g->devreq->io_Device;
+    req->io_Unit = g->devreq->io_Unit;
+    g->vector_io_task = task;
+    g->vector_io_port = port;
+    g->vector_io_req = req;
+    return req;
+}
+#endif
+
 static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
                                       uint32_t count, void *buf)
 {
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
     struct IOStdReq *req = g->devreq;
-#if ODFS_AMIGA_OS4
-    struct MsgPort *tmp_port = NULL;
-    struct IOStdReq *tmp_req = NULL;
-#endif
     uint32_t total_bytes = count * g->sector_size;
     uint8_t *out = buf;
     uint32_t done = 0;
@@ -233,23 +286,13 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
      * replies to the handler task's port. If a caller-task DoIO() has to
      * wait for completion, the device signals the wrong task and the
      * caller blocks forever. Use a request with a reply port owned by the
-     * current task for vector-context media I/O.
+     * current task for vector-context media I/O. Vector callbacks are
+     * serialized by fs_sem, so one cached caller-task request is enough.
      */
     if (FindTask(NULL) != g->handler_task) {
-        tmp_port = odfs_amiga_create_msg_port();
-        if (!tmp_port)
+        req = vector_io_request_for_current_task(g);
+        if (!req)
             return ODFS_ERR_NOMEM;
-
-        tmp_req = (struct IOStdReq *)odfs_amiga_create_io_request(
-            tmp_port, sizeof(*tmp_req));
-        if (!tmp_req) {
-            odfs_amiga_delete_msg_port(tmp_port);
-            return ODFS_ERR_NOMEM;
-        }
-
-        tmp_req->io_Device = g->devreq->io_Device;
-        tmp_req->io_Unit = g->devreq->io_Unit;
-        req = tmp_req;
     }
 #endif
 
@@ -310,12 +353,6 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
     }
 
 out:
-#if ODFS_AMIGA_OS4
-    if (tmp_req)
-        odfs_amiga_delete_io_request((struct IORequest *)tmp_req);
-    if (tmp_port)
-        odfs_amiga_delete_msg_port(tmp_port);
-#endif
     return ret;
 }
 
@@ -4456,6 +4493,9 @@ void handler_main_startup(struct Message *startup_msg)
     }
 
 shutdown:
+#if ODFS_AMIGA_OS4
+    release_vector_io_request(g);
+#endif
     if (g->devreq) {
         if (g->devreq->io_Device)
             CloseDevice((struct IORequest *)g->devreq);
