@@ -1200,11 +1200,6 @@ static const struct FileSystemVectors odfs_os4_vectors = {
     .End_Marker = -1
 };
 
-const struct FileSystemVectors *odfs_os4_vector_template(void)
-{
-    return &odfs_os4_vectors;
-}
-
 struct FileSystemVectorPort *odfs_os4_alloc_vector_port(APTR fs_private)
 {
     struct FileSystemVectorPort *vp;
@@ -1225,21 +1220,6 @@ void odfs_os4_free_vector_port(struct FileSystemVectorPort *vp)
 {
     if (vp)
         FreeDosObject(DOS_FSVECTORPORT, vp);
-}
-
-void odfs_os4_emulate_packet(struct FileSystemVectorPort *vp,
-                             struct DosPacket *pkt)
-{
-    if (!pkt)
-        return;
-
-    if (vp && vp->FSV.DOSEmulatePacket) {
-        vp->FSV.DOSEmulatePacket(vp, pkt);
-        return;
-    }
-
-    pkt->dp_Res1 = DOSFALSE;
-    pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;
 }
 
 void odfs_os4_invalidate_vector_port(struct FileSystemVectorPort *vp)

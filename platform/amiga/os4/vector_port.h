@@ -12,17 +12,8 @@
 
 struct DosPacket;
 
-const struct FileSystemVectors *odfs_os4_vector_template(void);
 struct FileSystemVectorPort *odfs_os4_alloc_vector_port(APTR fs_private);
 void odfs_os4_free_vector_port(struct FileSystemVectorPort *vp);
-
-/*
- * Route a direct legacy DosPacket through the DOS packet emulator that
- * AllocDosObject() installed in the vector port. Results are placed in
- * the packet; the caller still replies it.
- */
-void odfs_os4_emulate_packet(struct FileSystemVectorPort *vp,
-                             struct DosPacket *pkt);
 
 /*
  * Stop dos.library from vectoring new callers (sets the vector version
