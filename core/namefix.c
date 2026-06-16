@@ -13,21 +13,67 @@
 
 #include <string.h>
 
+#define ODFS_NAMEFIX_CHUNK_SIZE 4096u
+
 void odfs_namefix_init(odfs_namefix_state_t *state)
 {
     state->head = NULL;
+    state->chunks = NULL;
 }
 
 void odfs_namefix_destroy(odfs_namefix_state_t *state)
 {
-    odfs_namefix_entry_t *entry = state->head;
-    while (entry) {
-        odfs_namefix_entry_t *next = entry->next;
-        odfs_free(entry->name);
-        odfs_free(entry);
-        entry = next;
+    odfs_namefix_chunk_t *chunk = state->chunks;
+
+    while (chunk) {
+        odfs_namefix_chunk_t *next = chunk->next;
+        odfs_free(chunk);
+        chunk = next;
     }
+
     state->head = NULL;
+    state->chunks = NULL;
+}
+
+static size_t odfs_namefix_align(size_t size)
+{
+    size_t align = sizeof(void *);
+
+    return (size + align - 1u) & ~(align - 1u);
+}
+
+static void *odfs_namefix_alloc(odfs_namefix_state_t *state, size_t size)
+{
+    odfs_namefix_chunk_t *chunk;
+    size_t chunk_size = ODFS_NAMEFIX_CHUNK_SIZE;
+    size_t total;
+
+    if (!state || size == 0)
+        return NULL;
+
+    size = odfs_namefix_align(size);
+    chunk = state->chunks;
+    if (chunk && size <= chunk->size - chunk->used) {
+        void *ptr = (unsigned char *)(chunk + 1) + chunk->used;
+        chunk->used += size;
+        return ptr;
+    }
+
+    if (size > chunk_size)
+        chunk_size = size;
+    if (chunk_size > (size_t)-1 - sizeof(*chunk))
+        return NULL;
+
+    total = sizeof(*chunk) + chunk_size;
+    chunk = odfs_malloc(total);
+    if (!chunk)
+        return NULL;
+
+    chunk->next = state->chunks;
+    chunk->used = size;
+    chunk->size = chunk_size;
+    state->chunks = chunk;
+    return (void *)(chunk + 1);
 }
 
 static int odfs_namefix_contains(const odfs_namefix_state_t *state,
@@ -45,21 +91,14 @@ static int odfs_namefix_contains(const odfs_namefix_state_t *state,
 static odfs_err_t odfs_namefix_remember(odfs_namefix_state_t *state,
                                         const char *name)
 {
-    size_t len = strlen(name);
-    odfs_namefix_entry_t *entry = odfs_malloc(sizeof(*entry));
-    char *copy;
+    size_t len = strlen(name) + 1u;
+    odfs_namefix_entry_t *entry;
 
+    entry = odfs_namefix_alloc(state, sizeof(*entry) + len);
     if (!entry)
         return ODFS_ERR_NOMEM;
 
-    copy = odfs_malloc(len + 1);
-    if (!copy) {
-        odfs_free(entry);
-        return ODFS_ERR_NOMEM;
-    }
-
-    memcpy(copy, name, len + 1);
-    entry->name = copy;
+    memcpy(entry->name, name, len);
     entry->next = state->head;
     state->head = entry;
     return ODFS_OK;

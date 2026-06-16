@@ -12,11 +12,18 @@
 
 typedef struct odfs_namefix_entry {
     struct odfs_namefix_entry *next;
-    char                      *name;
+    char                       name[1];
 } odfs_namefix_entry_t;
+
+typedef struct odfs_namefix_chunk {
+    struct odfs_namefix_chunk *next;
+    size_t                     used;
+    size_t                     size;
+} odfs_namefix_chunk_t;
 
 typedef struct odfs_namefix_state {
     odfs_namefix_entry_t *head;
+    odfs_namefix_chunk_t *chunks;
 } odfs_namefix_state_t;
 
 void odfs_namefix_init(odfs_namefix_state_t *state);
