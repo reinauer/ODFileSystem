@@ -23,14 +23,6 @@ typedef struct ancestry_search_ctx {
     int                descend;
 } ancestry_search_ctx_t;
 
-static int ancestry_is_root(const odfs_mount_t *mnt, const odfs_node_t *node)
-{
-    if (!mnt || !node)
-        return 0;
-
-    return odfs_node_matches_identity(node, &mnt->root);
-}
-
 static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
 {
     ancestry_search_ctx_t *asc = ctx;
@@ -50,21 +42,20 @@ static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
     return ODFS_OK;
 }
 
-odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
-                                    const odfs_node_t *node,
-                                    odfs_node_t *parent_out,
-                                    odfs_node_t *grandparent_out)
+/*
+ * Generic fallback: locate a node's parent by depth-first search of the
+ * mounted tree. O(directories on the volume); used only when the backend
+ * has no resolve_parent op (or it declined the request).
+ */
+odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
+                                      const odfs_node_t *node,
+                                      odfs_node_t *parent_out,
+                                      odfs_node_t *grandparent_out)
 {
     ancestry_frame_t *frames;
     size_t cap = 8;
     size_t depth = 1;
     odfs_err_t err = ODFS_ERR_NOT_FOUND;
-
-    if (!mnt || !node || !parent_out)
-        return ODFS_ERR_INVAL;
-
-    if (ancestry_is_root(mnt, node))
-        return ODFS_ERR_NOT_FOUND;
 
     frames = odfs_malloc(cap * sizeof(*frames));
     if (!frames)

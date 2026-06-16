@@ -87,6 +87,26 @@ typedef struct odfs_backend_ops {
                           odfs_node_t *out);
 
     /*
+     * Resolve the parent (and optional grandparent) of a directory node
+     * directly, without a tree walk. May be NULL, in which case the core
+     * falls back to a generic search.
+     *
+     *   dir             — the directory whose parent is wanted
+     *   parent_out      — receives the containing directory
+     *   grandparent_out — if non-NULL, receives the parent's parent (or the
+     *                     volume root when parent_out is the root)
+     *
+     * Returns ODFS_ERR_NOT_FOUND when dir is the root (has no parent), or
+     * ODFS_ERR_UNSUPPORTED to ask the core to use the generic search.
+     */
+    odfs_err_t (*resolve_parent)(void *backend_ctx,
+                                  odfs_cache_t *cache,
+                                  odfs_log_state_t *log,
+                                  const odfs_node_t *dir,
+                                  odfs_node_t *parent_out,
+                                  odfs_node_t *grandparent_out);
+
+    /*
      * Get volume name. May be NULL if not applicable.
      *   buf      — output buffer
      *   buf_size — size of output buffer

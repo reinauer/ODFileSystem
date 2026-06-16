@@ -134,7 +134,26 @@ typedef struct iso_context {
     int            lowercase;     /* lowercase ISO names for display */
     int            has_rock_ridge; /* Rock Ridge extensions detected */
     int            rr_skip;       /* SP skip bytes for RR entries */
+    odfs_node_t    root;          /* verbatim root node, for parent resolution */
 } iso_context_t;
+
+/* --- shared ancestry helpers (used by iso9660 and joliet) --- */
+
+/*
+ * Read the parent directory's extent location from the ".." record at the
+ * start of the directory extent at dir_lba (a media LBA). On success returns
+ * the parent's media LBA and on-disc data length. Both ISO9660 and Joliet
+ * share the ECMA-119 directory-record layout, so this works for either.
+ */
+odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t *parent_lba_out,
+                                       uint32_t *parent_size_out);
+
+/* synthesize the minimal directory node needed to enumerate an extent */
+odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
+                              uint32_t lba, uint32_t size);
 
 /* --- backend ops (exposed for registration) --- */
 

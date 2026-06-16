@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "odfs/ancestry.h"
 #include "odfs/string.h"
 #include <string.h>
 #include <inttypes.h>
@@ -534,6 +535,34 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
         return ODFS_ERR_UNSUPPORTED;
 
     return ops->lookup(backend_ctx, &mnt->cache, &mnt->log, dir, name, out);
+}
+
+odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
+                                    const odfs_node_t *node,
+                                    odfs_node_t *parent_out,
+                                    odfs_node_t *grandparent_out)
+{
+    const odfs_backend_ops_t *ops;
+    void *backend_ctx;
+
+    if (!mnt || !node || !parent_out)
+        return ODFS_ERR_INVAL;
+
+    if (mount_is_root(mnt, node))
+        return ODFS_ERR_NOT_FOUND;
+
+    /* prefer the backend's direct resolver, if it has one */
+    if (mount_backend_for_type(mnt, node->backend, &ops, &backend_ctx) &&
+        ops && ops->resolve_parent) {
+        odfs_err_t err = ops->resolve_parent(backend_ctx, &mnt->cache,
+                                             &mnt->log, node,
+                                             parent_out, grandparent_out);
+        /* UNSUPPORTED means "use the generic search for this node" */
+        if (err != ODFS_ERR_UNSUPPORTED)
+            return err;
+    }
+
+    return odfs_resolve_parent_search(mnt, node, parent_out, grandparent_out);
 }
 
 odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,

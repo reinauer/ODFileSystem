@@ -24,4 +24,15 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
                                     odfs_node_t *parent_out,
                                     odfs_node_t *grandparent_out);
 
+/*
+ * Generic fallback used when the active backend exposes no resolve_parent op
+ * (or it declines a particular node). Locates the parent by depth-first
+ * search of the mounted tree. Not for direct use — call
+ * odfs_resolve_parent_node, which dispatches to the backend first.
+ */
+odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
+                                      const odfs_node_t *node,
+                                      odfs_node_t *parent_out,
+                                      odfs_node_t *grandparent_out);
+
 #endif /* ODFS_ANCESTRY_H */

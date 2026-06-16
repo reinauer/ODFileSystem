@@ -245,6 +245,9 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     joliet_parse_dir_date(&ctx->svd.root_dir_record[ISO_DR_DATE], &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
+    /* keep a verbatim copy of the root for parent resolution */
+    ctx->root = *root_out;
+
     *backend_ctx = ctx;
     return ODFS_OK;
 }
@@ -438,6 +441,130 @@ static uint32_t joliet_get_volume_size(void *backend_ctx)
 }
 
 /* ------------------------------------------------------------------ */
+/* resolve_parent                                                      */
+/* ------------------------------------------------------------------ */
+
+typedef struct joliet_lba_match {
+    uint32_t     want_lba;
+    odfs_node_t *out;
+    int          found;
+} joliet_lba_match_t;
+
+static odfs_err_t joliet_lba_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    joliet_lba_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_lba) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF;
+    }
+    return ODFS_OK;
+}
+
+/* enumerate parent_dir; return the dir child whose extent begins at child_lba */
+static odfs_err_t joliet_find_child_by_lba(void *backend_ctx,
+                                           odfs_cache_t *cache,
+                                           odfs_log_state_t *log,
+                                           const odfs_node_t *parent_dir,
+                                           uint32_t child_lba,
+                                           odfs_node_t *out)
+{
+    joliet_lba_match_t m;
+    odfs_err_t err;
+
+    m.want_lba = child_lba;
+    m.out = out;
+    m.found = 0;
+
+    err = joliet_readdir(backend_ctx, cache, log, parent_dir,
+                         joliet_lba_match_cb, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+static odfs_err_t joliet_resolve_parent(void *backend_ctx,
+                                        odfs_cache_t *cache,
+                                        odfs_log_state_t *log,
+                                        const odfs_node_t *dir,
+                                        odfs_node_t *parent_out,
+                                        odfs_node_t *grandparent_out)
+{
+    joliet_context_t *ctx = backend_ctx;
+    uint32_t ss = ctx->session_start;
+    uint32_t root_lba = ctx->svd.root_dir_lba;
+    uint32_t parent_lba, parent_size;
+    uint32_t gp_lba, gp_size;
+    odfs_node_t grandparent;
+    odfs_err_t err;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    err = odfs_iso_read_parent_extent(cache, ss, dir->extent.lba,
+                                      &parent_lba, &parent_size);
+    if (err != ODFS_OK)
+        return err;
+
+    if (parent_lba == dir->extent.lba || dir->extent.lba == root_lba)
+        return ODFS_ERR_NOT_FOUND;
+
+    if (parent_lba == root_lba) {
+        *parent_out = ctx->root;
+        if (grandparent_out)
+            *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    err = odfs_iso_read_parent_extent(cache, ss, parent_lba, &gp_lba, &gp_size);
+    if (err != ODFS_OK)
+        return err;
+
+    if (gp_lba == root_lba)
+        grandparent = ctx->root;
+    else
+        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
+
+    err = joliet_find_child_by_lba(backend_ctx, cache, log, &grandparent,
+                                   parent_lba, parent_out);
+    if (err != ODFS_OK)
+        return err;
+
+    if (!grandparent_out)
+        return ODFS_OK;
+
+    if (gp_lba == root_lba) {
+        *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    {
+        uint32_t ggp_lba, ggp_size;
+        odfs_node_t great;
+
+        err = odfs_iso_read_parent_extent(cache, ss, gp_lba,
+                                          &ggp_lba, &ggp_size);
+        if (err != ODFS_OK)
+            return err;
+
+        if (ggp_lba == root_lba)
+            great = ctx->root;
+        else
+            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
+
+        err = joliet_find_child_by_lba(backend_ctx, cache, log, &great,
+                                       gp_lba, grandparent_out);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -450,6 +577,7 @@ const odfs_backend_ops_t joliet_backend_ops = {
     .readdir         = joliet_readdir,
     .read            = joliet_read,
     .lookup          = joliet_lookup,
+    .resolve_parent  = joliet_resolve_parent,
     .get_volume_name = joliet_get_volume_name,
     .get_volume_size = joliet_get_volume_size,
 };

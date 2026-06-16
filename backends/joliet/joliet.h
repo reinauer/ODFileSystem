@@ -20,6 +20,7 @@ typedef struct joliet_context {
     iso_pvd_info_t svd;            /* parsed from SVD (same structure as PVD) */
     uint32_t       session_start;
     uint32_t       next_node_id;
+    odfs_node_t    root;           /* verbatim root node, for parent resolution */
 } joliet_context_t;
 
 extern const odfs_backend_ops_t joliet_backend_ops;

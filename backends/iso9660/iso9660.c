@@ -326,6 +326,9 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     }
 #endif
 
+    /* keep a verbatim copy of the root for parent resolution */
+    ctx->root = *root_out;
+
     *backend_ctx = ctx;
     return ODFS_OK;
 }
@@ -555,6 +558,199 @@ static uint32_t iso_get_volume_size(void *backend_ctx)
 }
 
 /* ------------------------------------------------------------------ */
+/* resolve_parent                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Read the ".." record at the start of a directory extent.
+ *
+ * ECMA-119 9.1 mandates that every directory begins with a "." (self) record
+ * followed by a ".." (parent) record. The ".." record carries the parent
+ * directory's extent LBA and data length, so we recover the parent's location
+ * without enumerating anything. dir_lba/parent_lba are media LBAs (session
+ * offset already applied).
+ */
+odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t *parent_lba_out,
+                                       uint32_t *parent_size_out)
+{
+    const uint8_t *sector;
+    const uint8_t *self_rec;
+    const uint8_t *dotdot_rec;
+    uint8_t self_len;
+    odfs_err_t err;
+
+    err = odfs_cache_read(cache, dir_lba, &sector);
+    if (err != ODFS_OK)
+        return err;
+
+    self_rec = sector;
+    self_len = self_rec[ISO_DR_LENGTH];
+    /* "." must be a single-record self entry leaving room for ".." */
+    if (self_len < 34 || (uint32_t)self_len + 34 > ISO_SECTOR_SIZE)
+        return ODFS_ERR_BAD_FORMAT;
+
+    dotdot_rec = sector + self_len;
+    if (dotdot_rec[ISO_DR_LENGTH] < 34 ||
+        dotdot_rec[ISO_DR_NAME_LEN] != 1 ||
+        dotdot_rec[ISO_DR_NAME] != 0x01)
+        return ODFS_ERR_BAD_FORMAT;
+
+    *parent_lba_out  = iso_read_le32(&dotdot_rec[ISO_DR_EXTENT_LBA]) +
+                       session_start;
+    *parent_size_out = iso_read_le32(&dotdot_rec[ISO_DR_DATA_LENGTH]);
+    return ODFS_OK;
+}
+
+typedef struct iso_lba_match {
+    uint32_t     want_lba;
+    odfs_node_t *out;
+    int          found;
+} iso_lba_match_t;
+
+static odfs_err_t iso_lba_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    iso_lba_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_lba) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF; /* stop iterating */
+    }
+    return ODFS_OK;
+}
+
+/*
+ * Enumerate parent_dir and return the directory child whose extent begins at
+ * child_lba as a fully-populated node (correct name + Rock Ridge metadata).
+ */
+static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
+                                        odfs_cache_t *cache,
+                                        odfs_log_state_t *log,
+                                        const odfs_node_t *parent_dir,
+                                        uint32_t child_lba,
+                                        odfs_node_t *out)
+{
+    iso_lba_match_t m;
+    odfs_err_t err;
+
+    m.want_lba = child_lba;
+    m.out = out;
+    m.found = 0;
+
+    err = iso_readdir(backend_ctx, cache, log, parent_dir,
+                      iso_lba_match_cb, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+/* synthesize the minimal node needed to enumerate a directory extent */
+odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
+                              uint32_t lba, uint32_t size)
+{
+    odfs_node_t n;
+    memset(&n, 0, sizeof(n));
+    n.backend       = backend;
+    n.kind          = ODFS_NODE_DIR;
+    n.extent.lba    = lba;
+    n.extent.length = size;
+    n.size          = size;
+    return n;
+}
+
+static odfs_err_t iso_resolve_parent(void *backend_ctx,
+                                     odfs_cache_t *cache,
+                                     odfs_log_state_t *log,
+                                     const odfs_node_t *dir,
+                                     odfs_node_t *parent_out,
+                                     odfs_node_t *grandparent_out)
+{
+    iso_context_t *ctx = backend_ctx;
+    uint32_t ss = ctx->session_start;
+    uint32_t root_lba = ctx->pvd.root_dir_lba;
+    uint32_t parent_lba, parent_size;
+    uint32_t gp_lba, gp_size;
+    odfs_node_t grandparent;
+    odfs_err_t err;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    /* dir's own ".." → parent location */
+    err = odfs_iso_read_parent_extent(cache, ss, dir->extent.lba,
+                                      &parent_lba, &parent_size);
+    if (err != ODFS_OK)
+        return err;
+
+    /* a directory whose ".." points at itself is the root: no parent */
+    if (parent_lba == dir->extent.lba || dir->extent.lba == root_lba)
+        return ODFS_ERR_NOT_FOUND;
+
+    /*
+     * When the parent is the volume root, return the verbatim root node the
+     * mount built — the root has no on-disc name entry to enumerate. The
+     * grandparent of a top-level directory is also the root.
+     */
+    if (parent_lba == root_lba) {
+        *parent_out = ctx->root;
+        if (grandparent_out)
+            *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    /* parent's own ".." → grandparent location, needed to enumerate parent */
+    err = odfs_iso_read_parent_extent(cache, ss, parent_lba, &gp_lba, &gp_size);
+    if (err != ODFS_OK)
+        return err;
+
+    /* enumerate the grandparent to obtain a fully-populated parent node */
+    if (gp_lba == root_lba)
+        grandparent = ctx->root;
+    else
+        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
+
+    err = iso_find_child_by_lba(backend_ctx, cache, log, &grandparent,
+                                parent_lba, parent_out);
+    if (err != ODFS_OK)
+        return err;
+
+    if (!grandparent_out)
+        return ODFS_OK;
+
+    if (gp_lba == root_lba) {
+        *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    /* grandparent's ".." → great-grandparent, to populate the grandparent */
+    {
+        uint32_t ggp_lba, ggp_size;
+        odfs_node_t great;
+
+        err = odfs_iso_read_parent_extent(cache, ss, gp_lba, &ggp_lba, &ggp_size);
+        if (err != ODFS_OK)
+            return err;
+
+        if (ggp_lba == root_lba)
+            great = ctx->root;
+        else
+            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
+
+        err = iso_find_child_by_lba(backend_ctx, cache, log, &great,
+                                    gp_lba, grandparent_out);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -567,6 +763,7 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .readdir         = iso_readdir,
     .read            = iso_read,
     .lookup          = iso_lookup,
+    .resolve_parent  = iso_resolve_parent,
     .get_volume_name = iso_get_volume_name,
     .get_volume_size = iso_get_volume_size,
 };
