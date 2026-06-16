@@ -33,7 +33,11 @@ typedef struct odfs_cache_entry {
 /* block cache */
 typedef struct odfs_cache {
     odfs_cache_entry_t *entries;
+    int32_t            *buckets;     /* hash bucket -> entry index */
+    int32_t            *next;        /* hash collision chain per entry */
     uint32_t             capacity;    /* number of entries */
+    uint32_t             hash_size;
+    uint32_t             valid_count;
     uint32_t             sector_size;
     uint32_t             clock;       /* LRU clock */
     odfs_cache_stats_t  stats;

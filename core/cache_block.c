@@ -10,14 +10,103 @@
 
 #define ODFS_CACHE_STREAM_MIN_SECTORS 2u
 
+static void cache_reset_hash(odfs_cache_t *cache)
+{
+    uint32_t i;
+
+    if (!cache)
+        return;
+
+    if (cache->buckets) {
+        for (i = 0; i < cache->hash_size; i++)
+            cache->buckets[i] = -1;
+    }
+    if (cache->next) {
+        for (i = 0; i < cache->capacity; i++)
+            cache->next[i] = -1;
+    }
+}
+
+static uint32_t cache_hash_lba(const odfs_cache_t *cache, uint32_t lba)
+{
+    return cache->hash_size ? (lba % cache->hash_size) : 0;
+}
+
+static int32_t cache_find_index(const odfs_cache_t *cache, uint32_t lba)
+{
+    int32_t idx;
+
+    if (!cache || !cache->buckets || !cache->next || cache->hash_size == 0)
+        return -1;
+
+    idx = cache->buckets[cache_hash_lba(cache, lba)];
+    while (idx >= 0) {
+        const odfs_cache_entry_t *entry = &cache->entries[idx];
+
+        if (entry->valid && entry->lba == lba)
+            return idx;
+        idx = cache->next[idx];
+    }
+    return -1;
+}
+
+static void cache_insert_index(odfs_cache_t *cache, uint32_t idx)
+{
+    uint32_t bucket;
+
+    if (!cache || !cache->buckets || !cache->next || idx >= cache->capacity)
+        return;
+
+    bucket = cache_hash_lba(cache, cache->entries[idx].lba);
+    cache->next[idx] = cache->buckets[bucket];
+    cache->buckets[bucket] = (int32_t)idx;
+}
+
+static void cache_remove_index(odfs_cache_t *cache, uint32_t idx)
+{
+    uint32_t bucket;
+    int32_t cur;
+    int32_t prev = -1;
+
+    if (!cache || !cache->buckets || !cache->next || idx >= cache->capacity)
+        return;
+
+    bucket = cache_hash_lba(cache, cache->entries[idx].lba);
+    cur = cache->buckets[bucket];
+    while (cur >= 0) {
+        if ((uint32_t)cur == idx) {
+            if (prev >= 0)
+                cache->next[prev] = cache->next[cur];
+            else
+                cache->buckets[bucket] = cache->next[cur];
+            cache->next[cur] = -1;
+            return;
+        }
+        prev = cur;
+        cur = cache->next[cur];
+    }
+}
+
 odfs_err_t odfs_cache_init(odfs_cache_t *cache,
                              odfs_media_t *media,
                              uint32_t capacity)
 {
     uint32_t sector_size;
+    uint32_t i;
+    size_t entries_bytes;
+    size_t next_bytes;
+    size_t bucket_bytes;
 
     if (!cache || !media || capacity == 0)
         return ODFS_ERR_INVAL;
+    if (capacity > (UINT32_MAX - 1u) / 2u)
+        return ODFS_ERR_RANGE;
+
+    entries_bytes = (size_t)capacity * sizeof(odfs_cache_entry_t);
+    next_bytes = (size_t)capacity * sizeof(cache->next[0]);
+    if (entries_bytes / sizeof(odfs_cache_entry_t) != capacity ||
+        next_bytes / sizeof(cache->next[0]) != capacity)
+        return ODFS_ERR_OVERFLOW;
 
     memset(cache, 0, sizeof(*cache));
     sector_size = odfs_media_sector_size(media);
@@ -28,15 +117,34 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     if (!cache->entries)
         return ODFS_ERR_NOMEM;
 
+    cache->hash_size = capacity * 2u + 1u;
+    bucket_bytes = (size_t)cache->hash_size * sizeof(cache->buckets[0]);
+    if (bucket_bytes / sizeof(cache->buckets[0]) != cache->hash_size) {
+        odfs_free(cache->entries);
+        memset(cache, 0, sizeof(*cache));
+        return ODFS_ERR_OVERFLOW;
+    }
+    cache->buckets = odfs_malloc(bucket_bytes);
+    cache->next = odfs_malloc(next_bytes);
+    if (!cache->buckets || !cache->next) {
+        odfs_free(cache->buckets);
+        odfs_free(cache->next);
+        odfs_free(cache->entries);
+        memset(cache, 0, sizeof(*cache));
+        return ODFS_ERR_NOMEM;
+    }
+
     /* allocate data buffers for each entry */
-    for (uint32_t i = 0; i < capacity; i++) {
+    for (i = 0; i < capacity; i++) {
         cache->entries[i].data = odfs_malloc(sector_size);
         if (!cache->entries[i].data) {
             /* roll back */
             for (uint32_t j = 0; j < i; j++)
                 odfs_free(cache->entries[j].data);
+            odfs_free(cache->buckets);
+            odfs_free(cache->next);
             odfs_free(cache->entries);
-            cache->entries = NULL;
+            memset(cache, 0, sizeof(*cache));
             return ODFS_ERR_NOMEM;
         }
         cache->entries[i].valid = 0;
@@ -46,6 +154,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->sector_size = sector_size;
     cache->clock = 0;
     cache->media = media;
+    cache_reset_hash(cache);
 
     return ODFS_OK;
 }
@@ -57,6 +166,8 @@ void odfs_cache_destroy(odfs_cache_t *cache)
 
     for (uint32_t i = 0; i < cache->capacity; i++)
         odfs_free(cache->entries[i].data);
+    odfs_free(cache->buckets);
+    odfs_free(cache->next);
     odfs_free(cache->entries);
 
     memset(cache, 0, sizeof(*cache));
@@ -69,6 +180,8 @@ void odfs_cache_flush(odfs_cache_t *cache)
 
     for (uint32_t i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
+    cache->valid_count = 0;
+    cache_reset_hash(cache);
 }
 
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
@@ -78,7 +191,8 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     uint32_t i;
     uint32_t victim = 0;
     uint32_t oldest_age = UINT32_MAX;
-    uint32_t used = 0;
+    int victim_valid;
+    int32_t hit;
     odfs_err_t err;
 
     if (!cache || !cache->entries || !out)
@@ -87,18 +201,12 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     cache->stats.reads++;
     cache->clock++;
 
-    /* search for hit */
-    for (i = 0; i < cache->capacity; i++) {
-        if (cache->entries[i].valid) {
-            used++;
-            if (cache->entries[i].lba == lba) {
-                /* hit */
-                cache->entries[i].age = cache->clock;
-                cache->stats.hits++;
-                *out = cache->entries[i].data;
-                return ODFS_OK;
-            }
-        }
+    hit = cache_find_index(cache, lba);
+    if (hit >= 0) {
+        cache->entries[hit].age = cache->clock;
+        cache->stats.hits++;
+        *out = cache->entries[hit].data;
+        return ODFS_OK;
     }
 
     /* miss — find victim (LRU or first invalid) */
@@ -115,26 +223,26 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
         }
     }
 
-    /* evicting a valid entry */
-    cache->stats.evictions++;
-
 fill:
+    victim_valid = cache->entries[victim].valid;
     err = odfs_media_read(cache->media, lba, 1, cache->entries[victim].data);
     if (err != ODFS_OK)
         return err;
 
+    if (victim_valid) {
+        cache_remove_index(cache, victim);
+        cache->stats.evictions++;
+    } else {
+        cache->valid_count++;
+    }
+
     cache->entries[victim].lba = lba;
     cache->entries[victim].age = cache->clock;
     cache->entries[victim].valid = 1;
+    cache_insert_index(cache, victim);
 
-    /* track high-water mark */
-    used = 0;
-    for (i = 0; i < cache->capacity; i++) {
-        if (cache->entries[i].valid)
-            used++;
-    }
-    if (used > cache->stats.max_used)
-        cache->stats.max_used = used;
+    if (cache->valid_count > cache->stats.max_used)
+        cache->stats.max_used = cache->valid_count;
 
     *out = cache->entries[victim].data;
     return ODFS_OK;
