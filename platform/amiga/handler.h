@@ -158,6 +158,8 @@ struct odfs_entry {
     odfs_volume_t      *volume;
     odfs_node_t         fnode;
     odfs_node_t         parent_node;
+    odfs_node_t         grandparent_node;
+    int                 has_grandparent;
     ULONG               refcount;
 };
 
@@ -301,11 +303,13 @@ typedef struct odfs_handler_node_info {
 void odfs_handler_fill_node_info(handler_global_t *g,
                                  const odfs_node_t *node,
                                  odfs_handler_node_info_t *info);
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_resolve_object_node(handler_global_t *g,
                                       odfs_lock_t *parent_lock,
                                       const char *path,
                                       odfs_node_t *node_out,
                                       odfs_node_t *parent_out);
+#endif
 LONG odfs_handler_lock_object(handler_global_t *g,
                               odfs_lock_t *parent_lock,
                               const char *path,

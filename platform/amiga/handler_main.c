@@ -1009,7 +1009,8 @@ static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
 
 static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
                                  const odfs_node_t *fnode,
-                                 const odfs_node_t *parent)
+                                 const odfs_node_t *parent,
+                                 const odfs_node_t *grandparent)
 {
     odfs_entry_t *entry;
 
@@ -1023,6 +1024,13 @@ static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
         entry->parent_node = *parent;
     else
         entry->parent_node = *fnode;
+    if (grandparent) {
+        entry->grandparent_node = *grandparent;
+        entry->has_grandparent = 1;
+    } else {
+        entry->grandparent_node = entry->parent_node;
+        entry->has_grandparent = 0;
+    }
     entry->refcount = 1;
     return entry;
 }
@@ -1052,6 +1060,13 @@ static odfs_node_t *lock_parent_node(odfs_lock_t *ol)
     return ol ? &ol->entry->parent_node : NULL;
 }
 
+static odfs_node_t *lock_grandparent_node(odfs_lock_t *ol)
+{
+    if (!ol || !ol->entry->has_grandparent)
+        return NULL;
+    return &ol->entry->grandparent_node;
+}
+
 static odfs_node_t *fh_node(odfs_fh_t *fh)
 {
     return fh ? &fh->entry->fnode : NULL;
@@ -1060,6 +1075,13 @@ static odfs_node_t *fh_node(odfs_fh_t *fh)
 static odfs_node_t *fh_parent_node(odfs_fh_t *fh)
 {
     return fh ? &fh->entry->parent_node : NULL;
+}
+
+static odfs_node_t *fh_grandparent_node(odfs_fh_t *fh)
+{
+    if (!fh || !fh->entry->has_grandparent)
+        return NULL;
+    return &fh->entry->grandparent_node;
 }
 
 static odfs_volume_t *fh_volume(odfs_fh_t *fh)
@@ -1443,6 +1465,7 @@ static int packet_needs_live_mount(const struct DosPacket *pkt)
 static odfs_lock_t *alloc_lock(handler_global_t *g,
                                 const odfs_node_t *fnode,
                                 const odfs_node_t *parent,
+                                const odfs_node_t *grandparent,
                                 LONG access)
 {
     odfs_lock_t *ol;
@@ -1452,7 +1475,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
     if (!g->current_volume)
         return NULL;
 
-    entry = alloc_entry(g->current_volume, fnode, parent);
+    entry = alloc_entry(g->current_volume, fnode, parent, grandparent);
     if (!entry)
         return NULL;
 
@@ -1599,21 +1622,40 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
  *   "//foo"      = go to parent, then descend into foo
  *   ""           = current node
  *
- * Tracks the current node and its immediate parent. When an ascent needs the
- * next ancestor, reconstruct it with an iterative directory walk.
+ * Tracks the current node, its immediate parent, and a cached parent ancestor
+ * when available. When an ascent needs an unknown ancestor, reconstruct it with
+ * an iterative directory walk.
  */
 static odfs_err_t resolve_amiga_path(handler_global_t *g,
                                       const odfs_node_t *start,
                                       const odfs_node_t *start_parent,
+                                      const odfs_node_t *start_grandparent,
                                       const char *path,
                                       odfs_node_t *result,
-                                      odfs_node_t *parent_out)
+                                      odfs_node_t *parent_out,
+                                      odfs_node_t *grandparent_out,
+                                      int *has_grandparent_out)
 {
     odfs_node_t cur = *start;
     odfs_node_t parent = start_parent ? *start_parent : *start;
+    odfs_node_t grandparent =
+        start_grandparent ? *start_grandparent : parent;
+    int has_grandparent = start_grandparent != NULL;
     const char *p = path;
     char comp[256];
     odfs_err_t err;
+
+    if (!start_parent || node_is_mount_root(g, start)) {
+        parent = g->mount.root;
+        grandparent = g->mount.root;
+        has_grandparent = 1;
+#if ODFS_FEATURE_CDDA
+    } else if (g->has_cdda && nodes_same(start, &g->cdda_root)) {
+        parent = g->mount.root;
+        grandparent = g->mount.root;
+        has_grandparent = 1;
+#endif
+    }
 
     /* Handle colons in the path (e.g., "CD0:foo" or "LIBS:foo").
      *
@@ -1633,15 +1675,24 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
                 cur = parent;
                 if (node_is_mount_root(g, &cur)) {
                     parent = g->mount.root;
+                    grandparent = g->mount.root;
+                    has_grandparent = 1;
 #if ODFS_FEATURE_CDDA
                 } else if (g->has_cdda && nodes_same(&cur, &g->cdda_root)) {
                     parent = g->mount.root;
+                    grandparent = g->mount.root;
+                    has_grandparent = 1;
 #endif
+                } else if (has_grandparent) {
+                    parent = grandparent;
+                    grandparent = parent;
+                    has_grandparent = 0;
                 } else {
                     err = odfs_resolve_parent_node(&g->mount, &cur,
-                                                   &parent, NULL);
+                                                   &parent, &grandparent);
                     if (err != ODFS_OK)
                         return err;
+                    has_grandparent = 1;
                 }
             }
             p++;
@@ -1667,6 +1718,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         /* intercept "CDDA" virtual directory on mixed-mode discs */
         if (g->has_cdda && cur.extent.lba == g->mount.root.extent.lba &&
             odfs_strcasecmp(comp, "CDDA") == 0) {
+            grandparent = parent;
+            has_grandparent = 1;
             parent = cur;
             cur = g->cdda_root;
             p = end;
@@ -1674,6 +1727,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         }
 #endif
 
+        grandparent = parent;
+        has_grandparent = 1;
         parent = cur;
         err = lookup_child_node(g, &cur, comp, &cur);
         if (err != ODFS_OK)
@@ -1686,6 +1741,10 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 
     *result = cur;
     *parent_out = parent;
+    if (grandparent_out)
+        *grandparent_out = grandparent;
+    if (has_grandparent_out)
+        *has_grandparent_out = has_grandparent;
     return ODFS_OK;
 }
 
@@ -1738,19 +1797,21 @@ static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnod
     return odfs_node_matches_identity(fnode, &g->mount.root);
 }
 
-/* ------------------------------------------------------------------ */
-/* shared frontend operations                                          */
-/* ------------------------------------------------------------------ */
-
-LONG odfs_handler_resolve_object_node(handler_global_t *g,
-                                      odfs_lock_t *parent_lock,
-                                      const char *path,
-                                      odfs_node_t *node_out,
-                                      odfs_node_t *parent_out)
+static LONG resolve_object_nodes(handler_global_t *g,
+                                 odfs_lock_t *parent_lock,
+                                 const char *path,
+                                 odfs_node_t *node_out,
+                                 odfs_node_t *parent_out,
+                                 odfs_node_t *grandparent_out,
+                                 int *has_grandparent_out)
 {
     odfs_err_t err;
     const odfs_node_t *start;
     const odfs_node_t *start_parent;
+    const odfs_node_t *start_grandparent;
+
+    if (has_grandparent_out)
+        *has_grandparent_out = 0;
 
     if (!g || !path || !node_out || !parent_out)
         return ERROR_REQUIRED_ARG_MISSING;
@@ -1766,20 +1827,39 @@ LONG odfs_handler_resolve_object_node(handler_global_t *g,
             return err_dos;
         start = lock_node(parent_lock);
         start_parent = lock_parent_node(parent_lock);
+        start_grandparent = lock_grandparent_node(parent_lock);
     } else {
         if (!g->mounted)
             return ERROR_NO_DISK;
         start = &g->mount.root;
         start_parent = &g->mount.root;
+        start_grandparent = &g->mount.root;
     }
 
-    err = resolve_amiga_path(g, start, start_parent, path, node_out,
-                             parent_out);
+    err = resolve_amiga_path(g, start, start_parent, start_grandparent,
+                             path, node_out, parent_out, grandparent_out,
+                             has_grandparent_out);
     if (err != ODFS_OK)
         return odfs_err_to_dos(err);
 
     return 0;
 }
+
+#if ODFS_AMIGA_OS4
+LONG odfs_handler_resolve_object_node(handler_global_t *g,
+                                      odfs_lock_t *parent_lock,
+                                      const char *path,
+                                      odfs_node_t *node_out,
+                                      odfs_node_t *parent_out)
+{
+    return resolve_object_nodes(g, parent_lock, path, node_out, parent_out,
+                                NULL, NULL);
+}
+#endif
+
+/* ------------------------------------------------------------------ */
+/* shared frontend operations                                          */
+/* ------------------------------------------------------------------ */
 
 LONG odfs_handler_lock_object(handler_global_t *g,
                               odfs_lock_t *parent_lock,
@@ -1787,7 +1867,8 @@ LONG odfs_handler_lock_object(handler_global_t *g,
                               LONG access,
                               odfs_lock_t **out)
 {
-    odfs_node_t result, parent_node;
+    odfs_node_t result, parent_node, grandparent_node;
+    int has_grandparent;
     LONG err_dos;
     odfs_lock_t *ol;
 
@@ -1796,15 +1877,17 @@ LONG odfs_handler_lock_object(handler_global_t *g,
     if (!g || !path || !out)
         return ERROR_REQUIRED_ARG_MISSING;
 
-    err_dos = odfs_handler_resolve_object_node(g, parent_lock, path,
-                                               &result, &parent_node);
+    err_dos = resolve_object_nodes(g, parent_lock, path, &result,
+                                   &parent_node, &grandparent_node,
+                                   &has_grandparent);
     if (err_dos != 0)
         return err_dos;
 
     if (result.kind == ODFS_NODE_DIR)
         access = SHARED_LOCK;
 
-    ol = alloc_lock(g, &result, &parent_node, access);
+    ol = alloc_lock(g, &result, &parent_node,
+                    has_grandparent ? &grandparent_node : NULL, access);
     if (!ol)
         return ERROR_NO_FREE_STORE;
 
@@ -1837,7 +1920,8 @@ LONG odfs_handler_dup_lock_object(handler_global_t *g,
     if (!src) {
         if (!g->mounted)
             return ERROR_NO_DISK;
-        ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
+        ol = alloc_lock(g, &g->mount.root, &g->mount.root, &g->mount.root,
+                        SHARED_LOCK);
     } else {
         LONG err_dos;
 
@@ -1871,7 +1955,8 @@ LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
     if (!fh) {
         if (!g->mounted)
             return ERROR_NO_DISK;
-        ol = alloc_lock(g, &g->mount.root, &g->mount.root, SHARED_LOCK);
+        ol = alloc_lock(g, &g->mount.root, &g->mount.root, &g->mount.root,
+                        SHARED_LOCK);
     } else {
         LONG err_dos;
 
@@ -1881,7 +1966,8 @@ LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
         err_dos = validate_object_volume(g, fh_volume(fh));
         if (err_dos != 0)
             return err_dos;
-        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh), SHARED_LOCK);
+        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh),
+                        fh_grandparent_node(fh), SHARED_LOCK);
     }
 
     if (!ol)
@@ -1891,15 +1977,94 @@ LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
     return 0;
 }
 
+static LONG resolve_parent_with_cache(handler_global_t *g,
+                                      const odfs_node_t *parent_node,
+                                      const odfs_node_t *cached_parent,
+                                      odfs_node_t *new_parent,
+                                      odfs_node_t *new_grandparent,
+                                      int *has_new_grandparent)
+{
+    odfs_err_t err;
+
+    if (has_new_grandparent)
+        *has_new_grandparent = 0;
+
+    if (node_is_mount_root(g, parent_node)) {
+        *new_parent = g->mount.root;
+        *new_grandparent = g->mount.root;
+        if (has_new_grandparent)
+            *has_new_grandparent = 1;
+        return 0;
+    }
+
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && nodes_same(parent_node, &g->cdda_root)) {
+        *new_parent = g->mount.root;
+        *new_grandparent = g->mount.root;
+        if (has_new_grandparent)
+            *has_new_grandparent = 1;
+        return 0;
+    }
+#endif
+
+    if (cached_parent) {
+        *new_parent = *cached_parent;
+        if (node_is_mount_root(g, new_parent)) {
+            *new_grandparent = g->mount.root;
+            if (has_new_grandparent)
+                *has_new_grandparent = 1;
+        } else {
+            *new_grandparent = *new_parent;
+        }
+        return 0;
+    }
+
+    err = odfs_resolve_parent_node(&g->mount, parent_node, new_parent,
+                                   new_grandparent);
+    if (err != ODFS_OK)
+        return odfs_err_to_dos(err);
+    if (has_new_grandparent)
+        *has_new_grandparent = 1;
+    return 0;
+}
+
+static LONG parent_entry_object(handler_global_t *g, odfs_entry_t *entry,
+                                odfs_lock_t **out)
+{
+    const odfs_node_t *parent_node;
+    const odfs_node_t *grandparent_node;
+    odfs_node_t new_parent;
+    odfs_node_t new_grandparent;
+    int has_new_grandparent;
+    LONG err_dos;
+    odfs_lock_t *parent;
+
+    if (node_is_mount_root(g, &entry->fnode))
+        return 0;
+
+    parent_node = &entry->parent_node;
+    grandparent_node =
+        entry->has_grandparent ? &entry->grandparent_node : NULL;
+    err_dos = resolve_parent_with_cache(g, parent_node, grandparent_node,
+                                        &new_parent, &new_grandparent,
+                                        &has_new_grandparent);
+    if (err_dos != 0)
+        return err_dos;
+
+    parent = alloc_lock(g, parent_node, &new_parent,
+                        has_new_grandparent ? &new_grandparent : NULL,
+                        SHARED_LOCK);
+    if (!parent)
+        return ERROR_NO_FREE_STORE;
+
+    *out = parent;
+    return 0;
+}
+
 LONG odfs_handler_parent_lock_object(handler_global_t *g,
                                      odfs_lock_t *ol,
                                      odfs_lock_t **out)
 {
-    const odfs_node_t *parent_node;
-    odfs_node_t new_parent;
-    odfs_err_t err;
-    odfs_lock_t *parent;
-
     if (out)
         *out = NULL;
     if (!g || !out)
@@ -1920,40 +2085,13 @@ LONG odfs_handler_parent_lock_object(handler_global_t *g,
             return err_dos;
     }
 
-    if (node_is_mount_root(g, lock_node(ol)))
-        return 0;
-
-    parent_node = lock_parent_node(ol);
-    if (node_is_mount_root(g, parent_node)) {
-        new_parent = g->mount.root;
-#if ODFS_FEATURE_CDDA
-    } else if (g->has_cdda && nodes_same(parent_node, &g->cdda_root)) {
-        new_parent = g->mount.root;
-#endif
-    } else {
-        err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
-                                       NULL);
-        if (err != ODFS_OK)
-            return odfs_err_to_dos(err);
-    }
-
-    parent = alloc_lock(g, parent_node, &new_parent, SHARED_LOCK);
-    if (!parent)
-        return ERROR_NO_FREE_STORE;
-
-    *out = parent;
-    return 0;
+    return parent_entry_object(g, ol->entry, out);
 }
 
 LONG odfs_handler_parent_fh_object(handler_global_t *g,
                                    odfs_fh_t *fh,
                                    odfs_lock_t **out)
 {
-    const odfs_node_t *parent_node;
-    odfs_node_t new_parent;
-    odfs_err_t err;
-    odfs_lock_t *parent;
-
     if (out)
         *out = NULL;
     if (!g || !out)
@@ -1974,29 +2112,7 @@ LONG odfs_handler_parent_fh_object(handler_global_t *g,
             return err_dos;
     }
 
-    if (node_is_mount_root(g, fh_node(fh)))
-        return 0;
-
-    parent_node = fh_parent_node(fh);
-    if (node_is_mount_root(g, parent_node)) {
-        new_parent = g->mount.root;
-#if ODFS_FEATURE_CDDA
-    } else if (g->has_cdda && nodes_same(parent_node, &g->cdda_root)) {
-        new_parent = g->mount.root;
-#endif
-    } else {
-        err = odfs_resolve_parent_node(&g->mount, parent_node, &new_parent,
-                                       NULL);
-        if (err != ODFS_OK)
-            return odfs_err_to_dos(err);
-    }
-
-    parent = alloc_lock(g, parent_node, &new_parent, SHARED_LOCK);
-    if (!parent)
-        return ERROR_NO_FREE_STORE;
-
-    *out = parent;
-    return 0;
+    return parent_entry_object(g, fh->entry, out);
 }
 
 LONG odfs_handler_same_lock_object(handler_global_t *g,
@@ -2077,10 +2193,9 @@ LONG odfs_handler_open_object(handler_global_t *g,
                               LONG mode,
                               odfs_fh_t **out)
 {
-    odfs_node_t result, parent_node;
-    odfs_err_t err;
-    const odfs_node_t *start;
-    const odfs_node_t *start_parent;
+    odfs_node_t result, parent_node, grandparent_node;
+    int has_grandparent;
+    LONG err_dos;
     odfs_entry_t *entry;
     odfs_fh_t *fh;
 
@@ -2092,33 +2207,16 @@ LONG odfs_handler_open_object(handler_global_t *g,
     if (mode != MODE_OLDFILE)
         return ERROR_DISK_WRITE_PROTECTED;
 
-    if (dirlock) {
-        LONG err_dos;
-
-        if (!lock_is_active(g, dirlock))
-            return ERROR_INVALID_LOCK;
-
-        err_dos = validate_object_volume(g, dirlock->entry->volume);
-        if (err_dos != 0)
-            return err_dos;
-        start = lock_node(dirlock);
-        start_parent = lock_parent_node(dirlock);
-    } else {
-        if (!g->mounted)
-            return ERROR_NO_DISK;
-        start = &g->mount.root;
-        start_parent = &g->mount.root;
-    }
-
-    err = resolve_amiga_path(g, start, start_parent, path, &result,
-                             &parent_node);
-    if (err != ODFS_OK)
-        return odfs_err_to_dos(err);
+    err_dos = resolve_object_nodes(g, dirlock, path, &result, &parent_node,
+                                   &grandparent_node, &has_grandparent);
+    if (err_dos != 0)
+        return err_dos;
 
     if (result.kind == ODFS_NODE_DIR)
         return ERROR_OBJECT_WRONG_TYPE;
 
-    entry = alloc_entry(g->current_volume, &result, &parent_node);
+    entry = alloc_entry(g->current_volume, &result, &parent_node,
+                        has_grandparent ? &grandparent_node : NULL);
     if (!entry)
         return ERROR_NO_FREE_STORE;
 
