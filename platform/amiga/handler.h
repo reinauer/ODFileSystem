@@ -49,6 +49,16 @@ typedef struct amiga_media_ctx {
     struct handler_global *g;
 } amiga_media_ctx_t;
 
+#if !ODFS_AMIGA_OS4
+typedef struct odfs_exnext_cursor {
+    ULONG    dir_key;
+    ULONG    previous_key;
+    uint32_t resume;
+    int      valid;
+    int      cdda_emitted;
+} odfs_exnext_cursor_t;
+#endif
+
 /* ---- handler globals ---- */
 
 typedef struct handler_global {
@@ -123,6 +133,10 @@ typedef struct handler_global {
     odfs_node_t         cdda_root;     /* CDDA virtual dir node */
     int                  has_cdda;      /* audio tracks detected */
 
+#if !ODFS_AMIGA_OS4
+    odfs_exnext_cursor_t root_exnext;   /* null-lock root ExNext cursor */
+#endif
+
     /* lock list */
     struct MinList       locklist;      /* active locks */
     struct MinList       fhlist;        /* active file handles */
@@ -156,6 +170,7 @@ struct odfs_lock {
 #else
     struct FileLock lock;           /* DOS lock (MUST be at known offset) */
     ULONG           dos_private[2]; /* reserve fl_SIZEOF..fl_SIZEOF+7 for DOS */
+    odfs_exnext_cursor_t exnext;     /* handler-owned ExNext resume cursor */
 #endif
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
