@@ -690,31 +690,11 @@ static odfs_err_t udf_read(void *backend_ctx,
 
     size_t want = *len;
     if (offset >= fsize) { *len = 0; return ODFS_OK; }
-    if (offset + want > fsize)
+    if (want > fsize - offset)
         want = (size_t)(fsize - offset);
 
-    size_t done = 0;
-    uint8_t *out = buf;
-
-    while (done < want) {
-        uint64_t pos = offset + done;
-        uint32_t slba = data_lba + (uint32_t)(pos / 2048);
-        uint32_t soff = (uint32_t)(pos % 2048);
-        const uint8_t *sector;
-
-        err = odfs_cache_read(cache, slba, &sector);
-        if (err != ODFS_OK) { *len = done; return err; }
-
-        size_t chunk = 2048 - soff;
-        if (chunk > want - done)
-            chunk = want - done;
-
-        memcpy(out + done, sector + soff, chunk);
-        done += chunk;
-    }
-
-    *len = done;
-    return ODFS_OK;
+    *len = want;
+    return odfs_cache_read_bytes(cache, data_lba, offset, buf, len);
 }
 
 /* ------------------------------------------------------------------ */
