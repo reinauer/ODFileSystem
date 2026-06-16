@@ -148,6 +148,7 @@ typedef struct handler_global {
 struct odfs_volume {
     struct MinNode      node;
     struct DeviceList  *volnode;
+    odfs_lock_t        *lock_head;
     ULONG               id;
     ULONG               object_count;
 };
@@ -176,6 +177,8 @@ struct odfs_lock {
 #endif
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
+    odfs_lock_t    *volume_prev;    /* per-volume DOS lock chain */
+    odfs_lock_t    *volume_next;    /* per-volume DOS lock chain */
 };
 
 #if !ODFS_AMIGA_OS4
