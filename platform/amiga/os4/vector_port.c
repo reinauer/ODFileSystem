@@ -920,7 +920,8 @@ static struct ExamineData *vp_examine_obj(struct FSVP *vp,
                                           CONST_STRPTR object)
 {
     handler_global_t *g = vp_require_global(vp, res2);
-    odfs_lock_t *ol = NULL;
+    odfs_node_t node;
+    odfs_node_t parent;
     struct ExamineData *ed;
     LONG err;
 
@@ -928,8 +929,9 @@ static struct ExamineData *vp_examine_obj(struct FSVP *vp,
         return NULL;
 
     fs_lock(g);
-    err = odfs_handler_lock_object(g, lock_from_vector(lock),
-                                   object ? object : "", SHARED_LOCK, &ol);
+    err = odfs_handler_resolve_object_node(g, lock_from_vector(lock),
+                                           object ? object : "", &node,
+                                           &parent);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "FSExamineObj lock=%p obj='%s' -> err=%ld",
                lock, object ? (const char *)object : "", (long)err);
@@ -939,8 +941,7 @@ static struct ExamineData *vp_examine_obj(struct FSVP *vp,
         return NULL;
     }
 
-    ed = alloc_examine_data(g, ol->entry ? &ol->entry->fnode : NULL);
-    (void)odfs_handler_free_lock_object(g, ol);
+    ed = alloc_examine_data(g, &node);
     fs_unlock(g);
     set_dos_error(res2, ed ? 0 : ERROR_NO_FREE_STORE);
     return ed;

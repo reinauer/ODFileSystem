@@ -1805,21 +1805,17 @@ static void fill_root_fib(handler_global_t *g, struct FileInfoBlock *fib,
 /* shared frontend operations                                          */
 /* ------------------------------------------------------------------ */
 
-LONG odfs_handler_lock_object(handler_global_t *g,
-                              odfs_lock_t *parent_lock,
-                              const char *path,
-                              LONG access,
-                              odfs_lock_t **out)
+LONG odfs_handler_resolve_object_node(handler_global_t *g,
+                                      odfs_lock_t *parent_lock,
+                                      const char *path,
+                                      odfs_node_t *node_out,
+                                      odfs_node_t *parent_out)
 {
-    odfs_node_t result, parent_node;
     odfs_err_t err;
     const odfs_node_t *start;
     const odfs_node_t *start_parent;
-    odfs_lock_t *ol;
 
-    if (out)
-        *out = NULL;
-    if (!g || !path || !out)
+    if (!g || !path || !node_out || !parent_out)
         return ERROR_REQUIRED_ARG_MISSING;
 
     if (parent_lock) {
@@ -1840,10 +1836,33 @@ LONG odfs_handler_lock_object(handler_global_t *g,
         start_parent = &g->mount.root;
     }
 
-    err = resolve_amiga_path(g, start, start_parent, path, &result,
-                             &parent_node);
+    err = resolve_amiga_path(g, start, start_parent, path, node_out,
+                             parent_out);
     if (err != ODFS_OK)
         return odfs_err_to_dos(err);
+
+    return 0;
+}
+
+LONG odfs_handler_lock_object(handler_global_t *g,
+                              odfs_lock_t *parent_lock,
+                              const char *path,
+                              LONG access,
+                              odfs_lock_t **out)
+{
+    odfs_node_t result, parent_node;
+    LONG err_dos;
+    odfs_lock_t *ol;
+
+    if (out)
+        *out = NULL;
+    if (!g || !path || !out)
+        return ERROR_REQUIRED_ARG_MISSING;
+
+    err_dos = odfs_handler_resolve_object_node(g, parent_lock, path,
+                                               &result, &parent_node);
+    if (err_dos != 0)
+        return err_dos;
 
     if (result.kind == ODFS_NODE_DIR)
         access = SHARED_LOCK;

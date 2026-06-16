@@ -272,6 +272,11 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
 }
 
 /* shared operations used by packet and OS4 vector frontends */
+LONG odfs_handler_resolve_object_node(handler_global_t *g,
+                                      odfs_lock_t *parent_lock,
+                                      const char *path,
+                                      odfs_node_t *node_out,
+                                      odfs_node_t *parent_out);
 LONG odfs_handler_lock_object(handler_global_t *g,
                               odfs_lock_t *parent_lock,
                               const char *path,
