@@ -464,39 +464,16 @@ static odfs_err_t iso_read(void *backend_ctx,
     (void)backend_ctx;
     (void)log;
     size_t want = *len;
-    size_t done = 0;
-    uint8_t *out = buf;
 
     if (offset >= file->size) {
         *len = 0;
         return ODFS_OK;
     }
-    if (offset + want > file->size)
+    if (want > file->size - offset)
         want = (size_t)(file->size - offset);
 
-    while (done < want) {
-        uint64_t file_pos = offset + done;
-        uint32_t sector_lba = file->extent.lba + (uint32_t)(file_pos / ISO_SECTOR_SIZE);
-        uint32_t sector_off = (uint32_t)(file_pos % ISO_SECTOR_SIZE);
-        const uint8_t *sector;
-        odfs_err_t err;
-
-        err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK) {
-            *len = done;
-            return err;
-        }
-
-        size_t chunk = ISO_SECTOR_SIZE - sector_off;
-        if (chunk > want - done)
-            chunk = want - done;
-
-        memcpy(out + done, sector + sector_off, chunk);
-        done += chunk;
-    }
-
-    *len = done;
-    return ODFS_OK;
+    *len = want;
+    return odfs_cache_read_bytes(cache, file->extent.lba, offset, buf, len);
 }
 
 /* ------------------------------------------------------------------ */

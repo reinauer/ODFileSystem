@@ -623,33 +623,13 @@ static odfs_err_t hfs_read(void *backend_ctx,
     if (offset >= file->size) { *len = 0; return ODFS_OK; }
 
     size_t want = *len;
-    if (offset + want > file->size)
+    if (want > file->size - offset)
         want = (size_t)(file->size - offset);
 
     /* file->extent.lba = first extent start allocation block */
     uint64_t data_start = hfs_ab_to_byte(ctx, (uint16_t)file->extent.lba);
-
-    size_t done = 0;
-    uint8_t *out = buf;
-
-    while (done < want) {
-        uint64_t pos = data_start + offset + done;
-        uint32_t lba = (uint32_t)(pos / 2048);
-        uint32_t lba_off = (uint32_t)(pos % 2048);
-        const uint8_t *sector;
-
-        odfs_err_t err = odfs_cache_read(cache, lba, &sector);
-        if (err != ODFS_OK) { *len = done; return err; }
-
-        size_t chunk = 2048 - lba_off;
-        if (chunk > want - done) chunk = want - done;
-
-        memcpy(out + done, sector + lba_off, chunk);
-        done += chunk;
-    }
-
-    *len = done;
-    return ODFS_OK;
+    *len = want;
+    return odfs_cache_read_bytes(cache, 0, data_start + offset, buf, len);
 }
 
 /* ------------------------------------------------------------------ */

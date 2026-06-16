@@ -51,6 +51,17 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
                              const uint8_t **out);
 
+/*
+ * Read bytes from a contiguous extent. Partial edge sectors and small reads
+ * use the block cache; aligned runs of multiple full sectors bypass it so
+ * streaming file reads can be coalesced by the media layer.
+ */
+odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
+                                  uint32_t start_lba,
+                                  uint64_t offset,
+                                  void *buf,
+                                  size_t *len);
+
 /* invalidate all entries */
 void odfs_cache_flush(odfs_cache_t *cache);
 
