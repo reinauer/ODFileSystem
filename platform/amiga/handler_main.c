@@ -1134,32 +1134,50 @@ static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volno
     return volume;
 }
 
-static void rebuild_volume_locklist(handler_global_t *g, odfs_volume_t *volume)
+static void link_volume_lock(odfs_volume_t *volume, odfs_lock_t *ol)
 {
-    odfs_lock_t *ol;
-    odfs_lock_t *prev = NULL;
-    BPTR head = 0;
-
-    if (!volume || !volume->volnode)
+    if (!volume || !ol)
         return;
 
     Forbid();
-    for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
-         ol->node.mln_Succ != NULL;
-         ol = (odfs_lock_t *)ol->node.mln_Succ) {
-        if (ol->entry->volume != volume)
-            continue;
+    ol->volume_prev = NULL;
+    ol->volume_next = volume->lock_head;
+    ODFS_LOCK_DOS(ol)->fl_Link = volume->lock_head ?
+        LOCK_TO_BPTR(volume->lock_head) : 0;
+    if (volume->lock_head)
+        volume->lock_head->volume_prev = ol;
+    volume->lock_head = ol;
+    if (volume->volnode)
+        volume->volnode->dl_LockList = LOCK_TO_BPTR(ol);
+    Permit();
+}
 
-        if (!head)
-            head = LOCK_TO_BPTR(ol);
-        if (prev)
-            ODFS_LOCK_DOS(prev)->fl_Link = LOCK_TO_BPTR(ol);
-        prev = ol;
+static void unlink_volume_lock(odfs_volume_t *volume, odfs_lock_t *ol)
+{
+    odfs_lock_t *prev;
+    odfs_lock_t *next;
+
+    if (!volume || !ol)
+        return;
+
+    Forbid();
+    prev = ol->volume_prev;
+    next = ol->volume_next;
+
+    if (prev) {
+        prev->volume_next = next;
+        ODFS_LOCK_DOS(prev)->fl_Link = next ? LOCK_TO_BPTR(next) : 0;
+    } else if (volume->lock_head == ol) {
+        volume->lock_head = next;
+        if (volume->volnode)
+            volume->volnode->dl_LockList = next ? LOCK_TO_BPTR(next) : 0;
     }
+    if (next)
+        next->volume_prev = prev;
 
-    if (prev)
-        ODFS_LOCK_DOS(prev)->fl_Link = 0;
-    volume->volnode->dl_LockList = head;
+    ol->volume_prev = NULL;
+    ol->volume_next = NULL;
+    ODFS_LOCK_DOS(ol)->fl_Link = 0;
     Permit();
 }
 
@@ -1192,7 +1210,6 @@ static void release_volume_object(handler_global_t *g, odfs_volume_t *volume)
     if (volume == g->current_volume)
         return;
 
-    rebuild_volume_locklist(g, volume);
     if (volume->object_count == 0)
         destroy_stale_volume(g, volume);
 }
@@ -1423,6 +1440,7 @@ static void drain_all_objects(handler_global_t *g)
 
     while ((node = RemHead((struct List *)&g->locklist)) != NULL) {
         odfs_lock_t *ol = (odfs_lock_t *)node;
+        unlink_volume_lock(ol->entry->volume, ol);
 #if ODFS_AMIGA_OS4
         if (ol->lock)
             FreeDosObject(DOS_LOCK, ol->lock);
@@ -1514,7 +1532,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
 
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
-    rebuild_volume_locklist(g, entry->volume);
+    link_volume_lock(entry->volume, ol);
     return ol;
 }
 
@@ -1522,8 +1540,8 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
 {
     if (!ol)
         return;
+    unlink_volume_lock(ol->entry->volume, ol);
     Remove((struct Node *)&ol->node);
-    rebuild_volume_locklist(g, ol->entry->volume);
 #if ODFS_AMIGA_OS4
     if (ol->lock)
         FreeDosObject(DOS_LOCK, ol->lock);
@@ -1572,7 +1590,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 #endif
     retain_volume_object(ol->entry->volume);
     AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
-    rebuild_volume_locklist(g, ol->entry->volume);
+    link_volume_lock(ol->entry->volume, ol);
     return ol;
 }
 
@@ -4132,7 +4150,6 @@ static void unmount_volume(handler_global_t *g)
     if (!volume)
         return;
 
-    rebuild_volume_locklist(g, volume);
     detach_volume_node(volume->volnode);
     notify_workbench_disk_change(FALSE);
     if (volume->object_count != 0) {
