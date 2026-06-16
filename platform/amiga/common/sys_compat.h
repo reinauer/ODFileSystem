@@ -21,8 +21,6 @@
 #include <stddef.h>
 
 struct Hook;
-struct FileInfoBlock;
-struct DeviceNode;
 
 typedef LONG (*odfs_amiga_interrupt_fn)(APTR data);
 
@@ -62,9 +60,6 @@ void odfs_amiga_init_interrupt(struct Interrupt *intr,
                                APTR data,
                                odfs_amiga_interrupt_fn code);
 
-void odfs_amiga_set_fib_entry_type(struct FileInfoBlock *fib, LONG type);
-void odfs_amiga_copy_device_lock(struct DeviceNode *dst,
-                                 const struct DeviceNode *src);
 ULONG odfs_amiga_call_hook_pkt(struct Hook *hook, APTR object, APTR message);
 
 #endif /* ODFS_AMIGA_SYS_COMPAT_H */

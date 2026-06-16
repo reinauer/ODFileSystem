@@ -1712,7 +1712,9 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
     memcpy(&fib->fib_FileName[1], info.name, name_len);
 
     fib->fib_DirEntryType = info.fib_type;
-    odfs_amiga_set_fib_entry_type(fib, fib->fib_DirEntryType);
+#if !ODFS_AMIGA_OS4
+    fib->fib_EntryType = fib->fib_DirEntryType;
+#endif
     fib->fib_Size = (LONG)info.size;
     fib->fib_NumBlocks = (info.size + 511) / 512;
     fib->fib_Protection = info.protection;
@@ -3441,7 +3443,9 @@ static struct DeviceNode *create_device_node(handler_global_t *g)
     if (!devnode)
         return NULL;
 
-    odfs_amiga_copy_device_lock(devnode, g->devnode);
+#if !ODFS_AMIGA_OS4
+    devnode->dn_Lock = g->devnode ? g->devnode->dn_Lock : 0;
+#endif
     sync_device_node(g, devnode);
 
     return devnode;
