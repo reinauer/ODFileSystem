@@ -338,6 +338,7 @@ vds_done:
     /* store extent as the ICB location (for readdir) */
     root_out->extent.lba    = root_phys;
     root_out->extent.length = (uint32_t)root_out->size;
+    ctx->root = *root_out;
 
     *backend_ctx = ctx;
     return ODFS_OK;
@@ -743,6 +744,206 @@ static odfs_err_t udf_lookup(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* resolve_parent                                                      */
+/* ------------------------------------------------------------------ */
+
+static odfs_err_t udf_read_parent_icb(udf_context_t *ctx,
+                                      odfs_cache_t *cache,
+                                      const odfs_node_t *dir,
+                                      uint32_t *parent_icb_out)
+{
+    uint64_t dir_size;
+    uint32_t dir_data_lba;
+    uint8_t dir_ftype;
+    uint32_t dir_size32;
+    uint32_t offset = 0;
+    odfs_err_t err;
+
+    err = udf_read_icb(ctx, cache, dir->extent.lba,
+                       &dir_size, &dir_data_lba, &dir_ftype, NULL);
+    if (err != ODFS_OK)
+        return err;
+    if (dir_size > UINT32_MAX)
+        return ODFS_ERR_CORRUPT;
+
+    dir_size32 = (uint32_t)dir_size;
+    while (offset < dir_size32) {
+        uint8_t fid[38];
+        uint32_t remaining = dir_size32 - offset;
+        udf_tag_t tag;
+        uint8_t fid_flags;
+        uint8_t name_len;
+        uint16_t impl_len;
+        uint32_t fid_len;
+        uint32_t icb_lba;
+
+        if (remaining < sizeof(fid))
+            break;
+
+        err = udf_read_bytes(cache, dir_data_lba, offset, fid, sizeof(fid));
+        if (err != ODFS_OK)
+            return err;
+
+        if (!udf_read_tag(fid, &tag) || tag.id != UDF_TAG_FID)
+            break;
+
+        fid_flags = fid[18];
+        name_len = fid[19];
+        icb_lba = udf_le32(&fid[20 + 4]);
+        impl_len = udf_le16(&fid[36]);
+        fid_len = (38u + impl_len + name_len + 3u) & ~3u;
+
+        if (fid_len < sizeof(fid) || (uint64_t)fid_len > remaining)
+            return ODFS_ERR_CORRUPT;
+
+        if ((fid_flags & UDF_FID_FLAG_DELETED) == 0 &&
+            (fid_flags & UDF_FID_FLAG_PARENT) != 0) {
+            *parent_icb_out = udf_phys_lba(ctx, icb_lba);
+            return ODFS_OK;
+        }
+
+        offset += fid_len;
+    }
+
+    return ODFS_ERR_UNSUPPORTED;
+}
+
+typedef struct udf_icb_match {
+    uint32_t want_icb;
+    odfs_node_t *out;
+    int found;
+} udf_icb_match_t;
+
+static odfs_err_t udf_icb_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    udf_icb_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_icb) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF;
+    }
+
+    return ODFS_OK;
+}
+
+static odfs_err_t udf_find_child_by_icb(void *backend_ctx,
+                                        odfs_cache_t *cache,
+                                        odfs_log_state_t *log,
+                                        const odfs_node_t *parent_dir,
+                                        uint32_t child_icb,
+                                        odfs_node_t *out)
+{
+    udf_icb_match_t m;
+    odfs_err_t err;
+
+    m.want_icb = child_icb;
+    m.out = out;
+    m.found = 0;
+
+    err = udf_readdir(backend_ctx, cache, log, parent_dir,
+                      udf_icb_match_cb, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+static odfs_node_t udf_dir_stub(uint32_t icb)
+{
+    odfs_node_t n;
+
+    memset(&n, 0, sizeof(n));
+    n.backend = ODFS_BACKEND_UDF;
+    n.kind = ODFS_NODE_DIR;
+    n.extent.lba = icb;
+    return n;
+}
+
+static odfs_err_t udf_resolve_parent(void *backend_ctx,
+                                     odfs_cache_t *cache,
+                                     odfs_log_state_t *log,
+                                     const odfs_node_t *dir,
+                                     odfs_node_t *parent_out,
+                                     odfs_node_t *grandparent_out)
+{
+    udf_context_t *ctx = backend_ctx;
+    uint32_t parent_icb;
+    uint32_t gp_icb;
+    odfs_node_t grandparent;
+    odfs_err_t err;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    if (dir->extent.lba == ctx->root.extent.lba)
+        return ODFS_ERR_NOT_FOUND;
+
+    err = udf_read_parent_icb(ctx, cache, dir, &parent_icb);
+    if (err != ODFS_OK)
+        return err;
+
+    if (parent_icb == dir->extent.lba)
+        return ODFS_ERR_NOT_FOUND;
+
+    if (parent_icb == ctx->root.extent.lba) {
+        *parent_out = ctx->root;
+        if (grandparent_out)
+            *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    {
+        odfs_node_t parent_stub = udf_dir_stub(parent_icb);
+
+        err = udf_read_parent_icb(ctx, cache, &parent_stub, &gp_icb);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    if (gp_icb == ctx->root.extent.lba)
+        grandparent = ctx->root;
+    else
+        grandparent = udf_dir_stub(gp_icb);
+
+    err = udf_find_child_by_icb(backend_ctx, cache, log, &grandparent,
+                                parent_icb, parent_out);
+    if (err != ODFS_OK)
+        return err;
+
+    if (!grandparent_out)
+        return ODFS_OK;
+
+    if (gp_icb == ctx->root.extent.lba) {
+        *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    {
+        odfs_node_t gp_stub = udf_dir_stub(gp_icb);
+        odfs_node_t great;
+        uint32_t ggp_icb;
+
+        err = udf_read_parent_icb(ctx, cache, &gp_stub, &ggp_icb);
+        if (err != ODFS_OK)
+            return err;
+
+        if (ggp_icb == ctx->root.extent.lba)
+            great = ctx->root;
+        else
+            great = udf_dir_stub(ggp_icb);
+
+        err = udf_find_child_by_icb(backend_ctx, cache, log, &great,
+                                    gp_icb, grandparent_out);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -784,6 +985,7 @@ const odfs_backend_ops_t udf_backend_ops = {
     .readdir         = udf_readdir,
     .read            = udf_read,
     .lookup          = udf_lookup,
+    .resolve_parent  = udf_resolve_parent,
     .get_volume_name = udf_get_volume_name,
     .get_volume_size = udf_get_volume_size,
 };

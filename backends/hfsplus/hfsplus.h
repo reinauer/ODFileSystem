@@ -76,6 +76,7 @@ typedef struct hfsplus_context {
     uint32_t    cat_first_leaf;
 
     uint32_t next_node_id;
+    odfs_node_t root;
 } hfsplus_context_t;
 
 extern const odfs_backend_ops_t hfsplus_backend_ops;

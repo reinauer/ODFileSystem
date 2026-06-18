@@ -126,6 +126,7 @@ typedef struct udf_context {
 
     /* node tracking */
     uint32_t next_node_id;
+    odfs_node_t root;
 } udf_context_t;
 
 /* ---- backend ops ---- */
