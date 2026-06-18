@@ -145,6 +145,18 @@ static void udf_make_fid(uint8_t *fid, const char *name, uint32_t icb_lba)
     memcpy(&fid[39], name, name_len);
 }
 
+static void udf_make_parent_fid(uint8_t *fid, uint32_t parent_icb_lba)
+{
+    memset(fid, 0, 40);
+    udf_write_tag(fid, UDF_TAG_FID);
+    udf_write_le16(&fid[16], 1);  /* fid version */
+    fid[18] = UDF_FID_FLAG_PARENT;
+    fid[19] = 0;
+    udf_write_le32(&fid[24], parent_icb_lba);
+    udf_write_le16(&fid[28], 0);  /* partition */
+    udf_write_le16(&fid[36], 0);  /* impl_len */
+}
+
 TEST(udf_readdir_cross_sector_fid)
 {
     udf_mock_media_t mock;
@@ -328,6 +340,69 @@ TEST(udf_lookup_skips_nonmatching_icb_reads)
     ASSERT_EQ(out.size, 7);
     ASSERT_EQ(mock.read_counts[3], 0);
     ASSERT(mock.read_counts[4] > 0);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_resolve_parent_skips_nonmatching_child_icb_reads)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t child;
+    odfs_node_t parent;
+    uint8_t fid[40];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&child, 0, sizeof(child));
+    memset(&parent, 0, sizeof(parent));
+
+    ctx.next_node_id = 1;
+    ctx.root.id = 0;
+    ctx.root.parent_id = 0;
+    ctx.root.backend = ODFS_BACKEND_UDF;
+    ctx.root.kind = ODFS_NODE_DIR;
+    ctx.root.name[0] = '/';
+    ctx.root.name[1] = '\0';
+    ctx.root.extent.lba = 0;
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 80, 1);
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_DIR, 40, 6);
+    udf_make_fe(mock.sectors[4], UDF_ICB_FILETYPE_DIR, 40, 2);
+    udf_make_fe(mock.sectors[5], UDF_ICB_FILETYPE_DIR, 40, 7);
+
+    udf_make_fid(fid, "A", 5);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    udf_make_fid(fid, "P", 3);
+    fid[18] = UDF_FID_FLAG_DIRECTORY;
+    memcpy(&mock.sectors[1][sizeof(fid)], fid, sizeof(fid));
+
+    udf_make_parent_fid(fid, 3);
+    memcpy(&mock.sectors[2][0], fid, sizeof(fid));
+    udf_make_parent_fid(fid, 0);
+    memcpy(&mock.sectors[6][0], fid, sizeof(fid));
+
+    child.id = 42;
+    child.parent_id = 0;
+    child.backend = ODFS_BACKEND_UDF;
+    child.kind = ODFS_NODE_DIR;
+    child.name[0] = 'C';
+    child.name[1] = '\0';
+    child.extent.lba = 4;
+
+    ASSERT_OK(udf_backend_ops.resolve_parent(&ctx, &cache, &log,
+                                             &child, &parent, NULL));
+    ASSERT_STR_EQ(parent.name, "P");
+    ASSERT_EQ(parent.extent.lba, 3);
+    ASSERT_EQ(mock.read_counts[5], 0);
+    ASSERT(mock.read_counts[3] > 0);
 
     odfs_cache_destroy(&cache);
 }
