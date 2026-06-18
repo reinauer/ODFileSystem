@@ -447,6 +447,41 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
     return ODFS_OK;
 }
 
+static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
+                                         odfs_cache_t *cache,
+                                         uint8_t fid_flags,
+                                         uint32_t icb_lba,
+                                         odfs_node_t *node)
+{
+    uint32_t icb_phys = udf_phys_lba(ctx, icb_lba);
+    uint64_t fsize = 0;
+    uint32_t data_lba = 0;
+    uint8_t ftype = 0;
+    odfs_timestamp_t ts;
+    odfs_err_t err;
+
+    memset(&ts, 0, sizeof(ts));
+    err = udf_read_icb(ctx, cache, icb_phys, &fsize, &data_lba,
+                       &ftype, &ts);
+    if (err != ODFS_OK)
+        return err;
+
+    node->size = fsize;
+    node->mtime = ts;
+    node->ctime = ts;
+    node->extent.lba = icb_phys;
+    node->extent.length = (uint32_t)fsize;
+
+    if (fid_flags & UDF_FID_FLAG_DIRECTORY)
+        node->kind = ODFS_NODE_DIR;
+    else if (ftype == UDF_ICB_FILETYPE_SYMLINK)
+        node->kind = ODFS_NODE_SYMLINK;
+    else
+        node->kind = ODFS_NODE_FILE;
+
+    return ODFS_OK;
+}
+
 /* ------------------------------------------------------------------ */
 /* readdir                                                             */
 /* ------------------------------------------------------------------ */
@@ -612,38 +647,15 @@ static odfs_err_t udf_readdir(void *backend_ctx,
             return err;
         }
 
-        /* read the file's ICB for metadata */
-        uint32_t icb_phys = udf_phys_lba(ctx, icb_lba);
-        uint64_t fsize = 0;
-        uint32_t data_lba = 0;
-        uint8_t ftype = 0;
-        odfs_timestamp_t ts;
-        memset(&ts, 0, sizeof(ts));
+        offset += fid_len;
 
-        err = udf_read_icb(ctx, cache, icb_phys,
-                           &fsize, &data_lba, &ftype, &ts);
-        if (err != ODFS_OK) {
-            offset += fid_len;
+        if (entry_start < target_offset) {
             odfs_free(fid_alloc);
             continue;
         }
 
-        node.size = fsize;
-        node.mtime = ts;
-        node.ctime = ts;
-        node.extent.lba = icb_phys; /* store ICB LBA for later reads */
-        node.extent.length = (uint32_t)fsize;
-
-        if (fid_flags & UDF_FID_FLAG_DIRECTORY)
-            node.kind = ODFS_NODE_DIR;
-        else if (ftype == UDF_ICB_FILETYPE_SYMLINK)
-            node.kind = ODFS_NODE_SYMLINK;
-        else
-            node.kind = ODFS_NODE_FILE;
-
-        offset += fid_len;
-
-        if (entry_start < target_offset) {
+        err = udf_fill_node_from_icb(ctx, cache, fid_flags, icb_lba, &node);
+        if (err != ODFS_OK) {
             odfs_free(fid_alloc);
             continue;
         }
@@ -702,23 +714,6 @@ static odfs_err_t udf_read(void *backend_ctx,
 /* lookup                                                              */
 /* ------------------------------------------------------------------ */
 
-typedef struct udf_lookup_ctx {
-    const char   *name;
-    odfs_node_t *result;
-    int           found;
-} udf_lookup_ctx_t;
-
-static odfs_err_t udf_lookup_cb(const odfs_node_t *entry, void *cb_ctx)
-{
-    udf_lookup_ctx_t *lctx = cb_ctx;
-    if (odfs_strcasecmp(entry->name, lctx->name) == 0) {
-        *lctx->result = *entry;
-        lctx->found = 1;
-        return ODFS_ERR_EOF;
-    }
-    return ODFS_OK;
-}
-
 static odfs_err_t udf_lookup(void *backend_ctx,
                                odfs_cache_t *cache,
                                odfs_log_state_t *log,
@@ -726,20 +721,132 @@ static odfs_err_t udf_lookup(void *backend_ctx,
                                const char *name,
                                odfs_node_t *out)
 {
-    udf_lookup_ctx_t lctx;
+    udf_context_t *ctx = backend_ctx;
+    uint64_t dir_size;
+    uint32_t dir_data_lba;
+    uint8_t dir_ftype;
+    uint32_t dir_size32;
+    uint32_t offset = 0;
+    odfs_namefix_state_t namefix;
     odfs_err_t err;
 
-    lctx.name = name;
-    lctx.result = out;
-    lctx.found = 0;
+    (void)log;
 
-    err = udf_readdir(backend_ctx, cache, log, dir, udf_lookup_cb, &lctx, NULL);
-    if (err == ODFS_ERR_EOF && lctx.found)
-        return ODFS_OK;
-    if (err != ODFS_OK)
+    odfs_namefix_init(&namefix);
+
+    err = udf_read_icb(ctx, cache, dir->extent.lba,
+                       &dir_size, &dir_data_lba, &dir_ftype, NULL);
+    if (err != ODFS_OK) {
+        odfs_namefix_destroy(&namefix);
         return err;
-    if (lctx.found)
+    }
+    if (dir_size > UINT32_MAX) {
+        odfs_namefix_destroy(&namefix);
+        return ODFS_ERR_CORRUPT;
+    }
+
+    dir_size32 = (uint32_t)dir_size;
+    while (offset < dir_size32) {
+        uint8_t fid_hdr[38];
+        const uint8_t *fid = fid_hdr;
+        uint8_t *fid_alloc = NULL;
+        uint32_t remaining = dir_size32 - offset;
+        udf_tag_t tag;
+        uint8_t fid_flags;
+        uint8_t name_len;
+        uint32_t icb_lba;
+        uint16_t impl_len;
+        uint32_t fid_len;
+        uint32_t name_off;
+        odfs_node_t node;
+
+        if (remaining < sizeof(fid_hdr))
+            break;
+
+        err = udf_read_bytes(cache, dir_data_lba, offset,
+                             fid_hdr, sizeof(fid_hdr));
+        if (err != ODFS_OK) {
+            odfs_namefix_destroy(&namefix);
+            return err;
+        }
+
+        if (!udf_read_tag(fid, &tag) || tag.id != UDF_TAG_FID)
+            break;
+
+        fid_flags = fid[18];
+        name_len = fid[19];
+        icb_lba = udf_le32(&fid[20 + 4]);
+        impl_len = udf_le16(&fid[36]);
+        fid_len = (38u + impl_len + name_len + 3u) & ~3u;
+
+        if (fid_len < sizeof(fid_hdr) || (uint64_t)fid_len > remaining) {
+            odfs_namefix_destroy(&namefix);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        if (fid_len > sizeof(fid_hdr)) {
+            fid_alloc = odfs_malloc(fid_len);
+            if (!fid_alloc) {
+                odfs_namefix_destroy(&namefix);
+                return ODFS_ERR_NOMEM;
+            }
+
+            err = udf_read_bytes(cache, dir_data_lba, offset,
+                                 fid_alloc, fid_len);
+            if (err != ODFS_OK) {
+                odfs_free(fid_alloc);
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+            fid = fid_alloc;
+        }
+
+        offset += fid_len;
+
+        if (fid_flags & (UDF_FID_FLAG_DELETED | UDF_FID_FLAG_PARENT)) {
+            odfs_free(fid_alloc);
+            continue;
+        }
+
+        name_off = 38u + impl_len;
+        memset(&node, 0, sizeof(node));
+        node.id = ctx->next_node_id++;
+        node.parent_id = dir->id;
+        node.backend = ODFS_BACKEND_UDF;
+
+        if (name_off > fid_len || name_len > fid_len - name_off) {
+            odfs_free(fid_alloc);
+            odfs_namefix_destroy(&namefix);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        if (name_len > 0)
+            udf_decode_cs0(fid + name_off, name_len,
+                           node.name, sizeof(node.name));
+
+        err = odfs_namefix_apply(&namefix, node.name, sizeof(node.name));
+        if (err != ODFS_OK) {
+            odfs_free(fid_alloc);
+            odfs_namefix_destroy(&namefix);
+            return err;
+        }
+
+        if (odfs_strcasecmp(node.name, name) != 0) {
+            odfs_free(fid_alloc);
+            continue;
+        }
+
+        err = udf_fill_node_from_icb(ctx, cache, fid_flags, icb_lba, &node);
+        odfs_free(fid_alloc);
+        if (err != ODFS_OK)
+            continue;
+
+        *out = node;
+        odfs_namefix_destroy(&namefix);
         return ODFS_OK;
+    }
+
+    odfs_namefix_destroy(&namefix);
     return ODFS_ERR_NOT_FOUND;
 }
 
