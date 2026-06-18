@@ -10,8 +10,11 @@
 #include "odfs/error.h"
 #include <stddef.h>
 
+#define ODFS_NAMEFIX_BUCKETS 64u
+
 typedef struct odfs_namefix_entry {
     struct odfs_namefix_entry *next;
+    struct odfs_namefix_entry *hash_next;
     char                       name[1];
 } odfs_namefix_entry_t;
 
@@ -23,6 +26,7 @@ typedef struct odfs_namefix_chunk {
 
 typedef struct odfs_namefix_state {
     odfs_namefix_entry_t *head;
+    odfs_namefix_entry_t *buckets[ODFS_NAMEFIX_BUCKETS];
     odfs_namefix_chunk_t *chunks;
 } odfs_namefix_state_t;
 
