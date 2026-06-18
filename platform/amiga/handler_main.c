@@ -2813,13 +2813,15 @@ static odfs_err_t dir_next_cb(const odfs_node_t *entry, void *ctx)
 LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  odfs_lock_t *ol,
                                  ULONG previous_key,
+                                 uint32_t *resume_io,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out)
 {
     const odfs_node_t *dir;
     ULONG dir_key;
     dir_next_ctx_t dc;
-    uint32_t resume = 0;
+    uint32_t resume = resume_io ? *resume_io : 0;
+    int use_resume = (resume_io != NULL);
 
     if (!g || !entry_out || !key_out)
         return ERROR_REQUIRED_ARG_MISSING;
@@ -2847,16 +2849,30 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
     memset(&dc, 0, sizeof(dc));
     dc.previous_key = previous_key;
     dc.first = (previous_key == 0 || previous_key == dir_key);
+    if (dc.first)
+        resume = 0;
 
 #if ODFS_FEATURE_CDDA
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
+        resume = 0;
+        use_resume = 0;
+        if (resume_io)
+            *resume_io = 0;
+    }
+
     if (g->has_cdda && !dc.first &&
         previous_key == amiga_node_key(&g->cdda_root))
         return ERROR_NO_MORE_ENTRIES;
+#endif
 
+    if (use_resume && resume != 0)
+        dc.first = 1;
+
+#if ODFS_FEATURE_CDDA
     if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
         (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
                                        &g->log, dir, dir_next_cb, &dc,
-                                       &resume);
+                                       NULL);
     } else
 #endif
     {
@@ -2874,6 +2890,8 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
 
     *entry_out = dc.entry;
     *key_out = amiga_node_key(&dc.entry);
+    if (use_resume)
+        *resume_io = resume;
     return 0;
 }
 

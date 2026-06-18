@@ -382,6 +382,7 @@ LONG odfs_handler_get_fh_node(handler_global_t *g,
 LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  odfs_lock_t *ol,
                                  ULONG previous_key,
+                                 uint32_t *resume_io,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out);
 LONG odfs_handler_inhibit(handler_global_t *g, LONG state);

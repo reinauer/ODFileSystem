@@ -1000,6 +1000,7 @@ static int32 vp_examine_dir(struct FSVP *vp,
 {
     handler_global_t *g = vp_require_global(vp, res2);
     odfs_node_t entry;
+    uint32_t resume;
     ULONG key = 0;
     struct ExamineData *ed;
     LONG err;
@@ -1010,15 +1011,19 @@ static int32 vp_examine_dir(struct FSVP *vp,
     if (!ctx)
         return return_dos_status(res2, ERROR_REQUIRED_ARG_MISSING);
 
+    resume = (uint32_t)ctx->FSPrivate[1];
     fs_lock(g);
     err = odfs_handler_next_dir_entry(g, lock_from_vector(ctx->ReferenceLock),
-                                      ctx->FSPrivate[0], &entry, &key);
+                                      ctx->FSPrivate[0], &resume, &entry,
+                                      &key);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
-               "FSExamineDir ctx=%p refLock=%p prevKey=%lx -> "
-               "err=%ld key=%lx name='%s'",
+               "FSExamineDir ctx=%p refLock=%p prevKey=%lx resume=%lu -> "
+               "err=%ld key=%lx nextResume=%lu name='%s'",
                ctx, ctx->ReferenceLock,
                (unsigned long)ctx->FSPrivate[0],
+               (unsigned long)ctx->FSPrivate[1],
                (long)err, (unsigned long)key,
+               (unsigned long)resume,
                (err == 0) ? entry.name : "");
     if (err != 0) {
         fs_unlock(g);
@@ -1032,6 +1037,7 @@ static int32 vp_examine_dir(struct FSVP *vp,
 
     AddTail((struct List *)&ctx->FreshNodeList, (struct Node *)&ed->EXDnode);
     ctx->FSPrivate[0] = key;
+    ctx->FSPrivate[1] = resume;
     return return_dos_status(res2, 0);
 }
 
