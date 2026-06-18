@@ -10,7 +10,7 @@
 
 #define ODFS_CACHE_STREAM_MIN_SECTORS 2u
 
-static void cache_reset_hash(odfs_cache_t *cache)
+static void cache_reset_indices(odfs_cache_t *cache)
 {
     uint32_t i;
 
@@ -24,6 +24,16 @@ static void cache_reset_hash(odfs_cache_t *cache)
     if (cache->next) {
         for (i = 0; i < cache->capacity; i++)
             cache->next[i] = -1;
+    }
+    cache->free_head = cache->capacity ? 0 : -1;
+    cache->lru_head = -1;
+    cache->lru_tail = -1;
+    if (cache->entries) {
+        for (i = 0; i < cache->capacity; i++) {
+            cache->entries[i].lru_prev = -1;
+            cache->entries[i].lru_next =
+                (i + 1u < cache->capacity) ? (int32_t)(i + 1u) : -1;
+        }
     }
 }
 
@@ -85,6 +95,76 @@ static void cache_remove_index(odfs_cache_t *cache, uint32_t idx)
         prev = cur;
         cur = cache->next[cur];
     }
+}
+
+static void cache_lru_remove(odfs_cache_t *cache, uint32_t idx)
+{
+    odfs_cache_entry_t *entry;
+    int32_t prev;
+    int32_t next;
+
+    if (!cache || !cache->entries || idx >= cache->capacity)
+        return;
+
+    entry = &cache->entries[idx];
+    prev = entry->lru_prev;
+    next = entry->lru_next;
+
+    if (prev >= 0)
+        cache->entries[prev].lru_next = next;
+    else if (cache->lru_head == (int32_t)idx)
+        cache->lru_head = next;
+
+    if (next >= 0)
+        cache->entries[next].lru_prev = prev;
+    else if (cache->lru_tail == (int32_t)idx)
+        cache->lru_tail = prev;
+
+    entry->lru_prev = -1;
+    entry->lru_next = -1;
+}
+
+static void cache_lru_insert_head(odfs_cache_t *cache, uint32_t idx)
+{
+    odfs_cache_entry_t *entry;
+
+    if (!cache || !cache->entries || idx >= cache->capacity)
+        return;
+
+    entry = &cache->entries[idx];
+    entry->lru_prev = -1;
+    entry->lru_next = cache->lru_head;
+    if (cache->lru_head >= 0)
+        cache->entries[cache->lru_head].lru_prev = (int32_t)idx;
+    else
+        cache->lru_tail = (int32_t)idx;
+    cache->lru_head = (int32_t)idx;
+}
+
+static void cache_lru_make_mru(odfs_cache_t *cache, uint32_t idx)
+{
+    if (!cache || cache->lru_head == (int32_t)idx)
+        return;
+
+    cache_lru_remove(cache, idx);
+    cache_lru_insert_head(cache, idx);
+}
+
+static int32_t cache_pop_free(odfs_cache_t *cache)
+{
+    int32_t idx;
+
+    if (!cache || !cache->entries)
+        return -1;
+
+    idx = cache->free_head;
+    if (idx < 0)
+        return -1;
+
+    cache->free_head = cache->entries[idx].lru_next;
+    cache->entries[idx].lru_next = -1;
+    cache->entries[idx].lru_prev = -1;
+    return idx;
 }
 
 odfs_err_t odfs_cache_init(odfs_cache_t *cache,
@@ -154,7 +234,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->sector_size = sector_size;
     cache->clock = 0;
     cache->media = media;
-    cache_reset_hash(cache);
+    cache_reset_indices(cache);
 
     return ODFS_OK;
 }
@@ -181,16 +261,14 @@ void odfs_cache_flush(odfs_cache_t *cache)
     for (uint32_t i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
-    cache_reset_hash(cache);
+    cache_reset_indices(cache);
 }
 
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
                              const uint8_t **out)
 {
-    uint32_t i;
     uint32_t victim = 0;
-    uint32_t oldest_age = UINT32_MAX;
     int victim_valid;
     int32_t hit;
     odfs_err_t err;
@@ -204,6 +282,7 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     hit = cache_find_index(cache, lba);
     if (hit >= 0) {
         cache->entries[hit].age = cache->clock;
+        cache_lru_make_mru(cache, (uint32_t)hit);
         cache->stats.hits++;
         *out = cache->entries[hit].data;
         return ODFS_OK;
@@ -212,18 +291,15 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     /* miss — find victim (LRU or first invalid) */
     cache->stats.misses++;
 
-    for (i = 0; i < cache->capacity; i++) {
-        if (!cache->entries[i].valid) {
-            victim = i;
-            goto fill;
-        }
-        if (cache->entries[i].age < oldest_age) {
-            oldest_age = cache->entries[i].age;
-            victim = i;
-        }
+    if (cache->valid_count < cache->capacity) {
+        if (cache->free_head < 0)
+            return ODFS_ERR_CORRUPT;
+        victim = (uint32_t)cache->free_head;
+    } else {
+        if (cache->lru_tail < 0)
+            return ODFS_ERR_CORRUPT;
+        victim = (uint32_t)cache->lru_tail;
     }
-
-fill:
     victim_valid = cache->entries[victim].valid;
     err = odfs_media_read(cache->media, lba, 1, cache->entries[victim].data);
     if (err != ODFS_OK)
@@ -231,8 +307,12 @@ fill:
 
     if (victim_valid) {
         cache_remove_index(cache, victim);
+        cache_lru_remove(cache, victim);
         cache->stats.evictions++;
     } else {
+        int32_t free_idx = cache_pop_free(cache);
+        if (free_idx != (int32_t)victim)
+            return ODFS_ERR_CORRUPT;
         cache->valid_count++;
     }
 
@@ -240,6 +320,7 @@ fill:
     cache->entries[victim].age = cache->clock;
     cache->entries[victim].valid = 1;
     cache_insert_index(cache, victim);
+    cache_lru_insert_head(cache, victim);
 
     if (cache->valid_count > cache->stats.max_used)
         cache->stats.max_used = cache->valid_count;

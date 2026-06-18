@@ -26,6 +26,8 @@ typedef struct odfs_cache_stats {
 typedef struct odfs_cache_entry {
     uint32_t lba;         /* sector this entry holds */
     uint32_t age;         /* for LRU: incremented each access cycle */
+    int32_t  lru_prev;    /* previous entry in LRU list */
+    int32_t  lru_next;    /* next entry in LRU/free list */
     int      valid;       /* is this entry populated? */
     uint8_t *data;        /* sector data */
 } odfs_cache_entry_t;
@@ -40,6 +42,9 @@ typedef struct odfs_cache {
     uint32_t             valid_count;
     uint32_t             sector_size;
     uint32_t             clock;       /* LRU clock */
+    int32_t              free_head;   /* first unused entry */
+    int32_t              lru_head;    /* most recently used valid entry */
+    int32_t              lru_tail;    /* least recently used valid entry */
     odfs_cache_stats_t  stats;
     odfs_media_t       *media;       /* underlying media for miss reads */
 } odfs_cache_t;
