@@ -1,24 +1,44 @@
 name: Publish Aminet releases
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to upload to Aminet
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
 jobs:
   build-amigaos3:
     name: Build AmigaOS 3 Aminet upload
-    if: ${{ !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
     container: stefanreinauer/amiga-gcc:gcc-v13.3
 
     steps:
+      - name: Validate release tag
+        run: |
+          case "${RELEASE_TAG}" in
+            v*) ;;
+            *)
+              echo "Release tag must start with v: ${RELEASE_TAG}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
       - name: Mark git directory as safe
@@ -26,15 +46,19 @@ jobs:
 
       - name: Build AmigaOS 3 archive
         env:
-          ODFS_GIT_VERSION: ${{ github.event.release.tag_name }}
+          ODFS_GIT_VERSION: ${{ env.RELEASE_TAG }}
         run: make amigaos3-lha
 
       - name: Prepare AmigaOS 3 Aminet upload files
         run: |
           set -eu
+          version="${RELEASE_TAG#v}"
           mkdir -p dist
           cp build/amiga/ODFileSystem.lha dist/ODFileSystem.lha
           cp docs/ODFileSystem.readme dist/ODFileSystem.readme
+          sed -i \
+            -e "s/^Version:.*/Version:      ${version}/" \
+            dist/ODFileSystem.readme
 
       - name: Upload AmigaOS 3 Aminet artifact
         uses: actions/upload-artifact@v4
@@ -47,15 +71,24 @@ jobs:
 
   build-amigaos4:
     name: Build AmigaOS 4 Aminet upload
-    if: ${{ !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
     container: stefanreinauer/amigappc-gcc
 
     steps:
+      - name: Validate release tag
+        run: |
+          case "${RELEASE_TAG}" in
+            v*) ;;
+            *)
+              echo "Release tag must start with v: ${RELEASE_TAG}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
       - name: Mark git directory as safe
@@ -68,7 +101,7 @@ jobs:
 
       - name: Build AmigaOS 4 archive
         env:
-          ODFS_GIT_VERSION: ${{ github.event.release.tag_name }}
+          ODFS_GIT_VERSION: ${{ env.RELEASE_TAG }}
         run: |
           make amigaos4-lha \
             CC=ppc-amigaos-gcc \
@@ -78,10 +111,14 @@ jobs:
       - name: Prepare AmigaOS 4 Aminet upload files
         run: |
           set -eu
+          version="${RELEASE_TAG#v}"
           mkdir -p dist
           cp build/amigaos4/ODFileSystem-amigaos4.lha \
             dist/ODFileSystem-amigaos4.lha
           cp docs/ODFileSystem_OS4.readme dist/ODFileSystem_OS4.readme
+          sed -i \
+            -e "s/^Version:.*/Version:      ${version}/" \
+            dist/ODFileSystem_OS4.readme
 
       - name: Upload AmigaOS 4 Aminet artifact
         uses: actions/upload-artifact@v4
@@ -121,7 +158,6 @@ jobs:
           filename: dist/os3/ODFileSystem.lha
           readme: dist/os3/ODFileSystem.readme
           category: disk/cdrom
-          inject-version: true
 
       - name: Upload AmigaOS 4 package to Aminet
         id: aminet-os4
@@ -130,4 +166,3 @@ jobs:
           filename: dist/os4/ODFileSystem-amigaos4.lha
           readme: dist/os4/ODFileSystem_OS4.readme
           category: disk/cdrom
-          inject-version: true

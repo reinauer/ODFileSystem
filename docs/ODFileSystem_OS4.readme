@@ -1,6 +1,6 @@
 Short:        Modern optical-disc filesystem for OS4
 Author:       stefan.reinauer@coreboot.org (Stefan Reinauer)
-Uploader:     stefan reinauer coreboot org (Stefan Reinauer)
+Uploader:     stefan.reinauer@coreboot.org (Stefan Reinauer)
 Type:         disk/cdrom
 Version:      [VERSION]
 Requires:     AmigaOS 4.1 Final Edition
