@@ -103,6 +103,10 @@ typedef struct handler_global {
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
     uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
     ULONG                dma_buf_size;  /* usable size in bytes */
+#if !ODFS_AMIGA_OS4
+    uint8_t             *direct_read_buf; /* ACTION_READ buffer, or NULL */
+    ULONG                direct_read_len; /* allowed direct-read bytes */
+#endif
 
     /* filesystem state */
     odfs_mount_t        mount;

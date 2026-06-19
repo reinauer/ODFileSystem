@@ -118,6 +118,124 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
     return ((sense[2] & 0x0f) == 0x05 && sense[12] == 0x20);
 }
 
+#if !ODFS_AMIGA_OS4
+static int amiga_direct_read_window_ok(handler_global_t *g,
+                                       const void *buf,
+                                       uint32_t len)
+{
+    ULONG start;
+    ULONG end;
+    ULONG win_start;
+    ULONG win_end;
+
+    if (!g->direct_read_buf || g->direct_read_len == 0 || len == 0)
+        return 0;
+
+    start = (ULONG)buf;
+    end = start + len - 1;
+    win_start = (ULONG)g->direct_read_buf;
+    win_end = win_start + g->direct_read_len - 1;
+    if (end < start || win_end < win_start)
+        return 0;
+
+    return start >= win_start && end <= win_end;
+}
+
+static int amiga_direct_memtype_ok(ULONG memtype, const void *buf,
+                                   uint32_t len)
+{
+    ULONG need = memtype & (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST |
+                            MEMF_LOCAL | MEMF_24BITDMA | MEMF_KICK);
+    ULONG start_type;
+    ULONG end_type;
+
+    if (need == MEMF_ANY)
+        return 1;
+
+    start_type = TypeOfMem((CONST_APTR)buf);
+    end_type = TypeOfMem((CONST_APTR)((ULONG)buf + len - 1));
+    return ((start_type & need) == need) && ((end_type & need) == need);
+}
+
+static int amiga_can_read_direct(handler_global_t *g, const void *buf,
+                                 uint32_t len, uint32_t sectors)
+{
+    struct DosEnvec *de;
+    ULONG start;
+    ULONG end;
+    ULONG blocked;
+
+    if (!g || !g->envec || !buf || len == 0 || sectors < 2)
+        return 0;
+    if (!amiga_direct_read_window_ok(g, buf, len))
+        return 0;
+
+    de = g->envec;
+    if (de->de_MaxTransfer != 0 && len > de->de_MaxTransfer)
+        return 0;
+
+    start = (ULONG)buf;
+    end = start + len - 1;
+    if (end < start)
+        return 0;
+
+    blocked = ~de->de_Mask;
+    if ((start & blocked) != 0)
+        return 0;
+
+    return amiga_direct_memtype_ok(de->de_BufMemType, buf, len);
+}
+
+static odfs_err_t amiga_read_direct(handler_global_t *g,
+                                    struct IOStdReq *req,
+                                    uint32_t lba,
+                                    uint32_t count,
+                                    uint32_t bytes,
+                                    void *buf)
+{
+    ULONG byte_offset_lo;
+    ULONG byte_offset_hi = 0;
+
+    (void)count; /* used by diagnostics when logging is enabled */
+
+    if (g->sector_size == 2048) {
+        byte_offset_lo = lba << 11;
+        byte_offset_hi = lba >> 21;
+    } else {
+        byte_offset_lo = lba * g->sector_size;
+    }
+
+    req->io_Offset = byte_offset_lo;
+    req->io_Actual = byte_offset_hi;
+    req->io_Length = bytes;
+    req->io_Data = buf;
+
+    if (byte_offset_hi != 0)
+        req->io_Command = TD_READ64;
+    else
+        req->io_Command = CMD_READ;
+
+    if (DoIO((struct IORequest *)req) != 0 ||
+        req->io_Error != 0 ||
+        req->io_Actual != bytes) {
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "direct read failed unit=%lu lba=%lu count=%lu "
+                   "bytes=%lu off=%lu io_Error=%ld actual=%lu cmd=%lu",
+                   (unsigned long)g->devunit,
+                   (unsigned long)lba,
+                   (unsigned long)count,
+                   (unsigned long)bytes,
+                   (unsigned long)req->io_Offset,
+                   (long)req->io_Error,
+                   (unsigned long)req->io_Actual,
+                   (unsigned long)req->io_Command);
+        return ODFS_ERR_IO;
+    }
+
+    return ODFS_OK;
+}
+#endif
+
 static LONG changeint_signal(APTR data)
 {
     odfs_changeint_data_t *ci = data;
@@ -294,6 +412,11 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
         if (!req)
             return ODFS_ERR_NOMEM;
     }
+#endif
+
+#if !ODFS_AMIGA_OS4
+    if (amiga_can_read_direct(g, out, total_bytes, count))
+        return amiga_read_direct(g, req, lba, count, total_bytes, out);
 #endif
 
     /*
@@ -2312,7 +2435,20 @@ LONG odfs_handler_read_object(handler_global_t *g,
     }
 
     actual = (size_t)len;
+#if !ODFS_AMIGA_OS4
+    {
+        uint8_t *prev_buf = g->direct_read_buf;
+        ULONG prev_len = g->direct_read_len;
+
+        g->direct_read_buf = buf;
+        g->direct_read_len = (ULONG)actual;
+        err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
+        g->direct_read_buf = prev_buf;
+        g->direct_read_len = prev_len;
+    }
+#else
     err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
+#endif
     if (err != ODFS_OK && actual == 0)
         return odfs_err_to_dos(err);
 
