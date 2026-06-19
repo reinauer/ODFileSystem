@@ -3642,6 +3642,50 @@ static void device_node_name_from_bstr(BSTR bstr, char *buf, int bufsize)
     trim_trailing_colon(buf);
 }
 
+static int device_node_name_conflicts(handler_global_t *g, char *name,
+                                      size_t name_size)
+{
+    struct DeviceNode *iter;
+    char want[32];
+    char have[32];
+    ULONG flags = LDF_DEVICES | LDF_READ;
+    int conflict = 0;
+
+    if (!g || !g->devnode)
+        return 0;
+
+    device_node_name_from_bstr(g->devnode->dn_Name, want, sizeof(want));
+    if (want[0] == '\0')
+        return 0;
+
+    if (name && name_size != 0) {
+        size_t len = strlen(want);
+        if (len >= name_size)
+            len = name_size - 1;
+        memcpy(name, want, len);
+        name[len] = '\0';
+    }
+
+    iter = (struct DeviceNode *)AttemptLockDosList(flags);
+    if (!iter)
+        return 0;
+
+    while ((iter = (struct DeviceNode *)NextDosEntry((struct DosList *)iter,
+                                                     LDF_DEVICES)) != NULL) {
+        if (iter == g->devnode)
+            continue;
+
+        device_node_name_from_bstr(iter->dn_Name, have, sizeof(have));
+        if (ascii_strieq(have, want)) {
+            conflict = 1;
+            break;
+        }
+    }
+
+    UnLockDosList(flags);
+    return conflict;
+}
+
 static void sync_device_node(handler_global_t *g, struct DeviceNode *devnode)
 {
     if (!g || !g->devnode || !devnode)
@@ -3687,10 +3731,8 @@ static void destroy_device_node(struct DeviceNode *devnode)
 static void publish_device_node(handler_global_t *g)
 {
     struct DeviceNode *iter;
-    struct DeviceNode *name_match = NULL;
     struct DeviceNode *shadow;
     char want[32];
-    char have[32];
 
     if (!g->devnode || g->published_devnode)
         return;
@@ -3710,16 +3752,7 @@ static void publish_device_node(handler_global_t *g)
             g->published_devnode = iter;
             break;
         }
-
-        if (!name_match) {
-            device_node_name_from_bstr(iter->dn_Name, have, sizeof(have));
-            if (ascii_strieq(have, want))
-                name_match = iter;
-        }
     }
-
-    if (!g->published_devnode && name_match)
-        g->published_devnode = name_match;
 
     if (g->published_devnode) {
         sync_device_node(g, g->published_devnode);
@@ -4434,6 +4467,21 @@ void handler_main_startup(struct Message *startup_msg)
     ODFS_INFO(&g->log, ODFS_SUB_CORE, "libraries open, device=%s unit=%lu",
               g->devname, (unsigned long)g->devunit);
 
+    {
+        char devnode_name[32];
+
+        devnode_name[0] = '\0';
+        if (device_node_name_conflicts(g, devnode_name, sizeof(devnode_name))) {
+            ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                       "device node %s already exists; refusing duplicate",
+                       devnode_name[0] ? devnode_name : "<unnamed>");
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_EXISTS;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+    }
+
     /* open device */
     g->devport = odfs_amiga_create_msg_port();
     if (!g->devport) {
@@ -4693,7 +4741,7 @@ shutdown:
         odfs_amiga_free_mem(g->dma_buf_raw,
                             DMA_BUF_SECTORS * g->sector_size + 15);
 
-    if (g->devnode)
+    if (g->devnode && g->devnode->dn_Task == g->dosport)
         g->devnode->dn_Task = NULL;
 
 #if ODFS_AMIGA_OS4

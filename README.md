@@ -285,6 +285,11 @@ Change `FileSystem` in CD0 to L:ODFileSystem.
 Then edit the `Device` and `Unit` tooltypes on the `CD0` icon to match your
 hardware.
 
+Only one active DOSDriver may use a given device name. If another CD
+filesystem is already mounted as `CD0:`, either replace or disable that
+entry before mounting ODFileSystem as `CD0:`, or rename the ODFileSystem
+DOSDriver to another name such as `OD0:`.
+
 If you want a plain Mountlist entry instead, add one such as:
 
 ```text

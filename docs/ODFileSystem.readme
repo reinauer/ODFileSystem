@@ -79,6 +79,11 @@ Typical examples:
 - A1200 IDE slave:   Device = scsi.device, Unit = 1
 - WinUAE/FS-UAE:     use the emulator's configured CD device/unit
 
+Only one active DOSDriver may use a given device name. If another CD
+filesystem is already mounted as CD0:, either replace or disable that
+entry before mounting ODFileSystem as CD0:, or rename the ODFileSystem
+DOSDriver to another name such as OD0:.
+
 Mount the device from Workbench by double-clicking the DOSDriver icon,
 or from Shell with:
 
