@@ -4528,10 +4528,11 @@ void handler_main_startup(struct Message *startup_msg)
     /*
      * Allocate DMA-safe bounce buffer using de_BufMemType.
      * 16-byte aligned for 68040 DMA performance (CDVDFS pattern).
-     * Size: 8 sectors (16KB) — enough for multi-sector reads.
+     * Size: 32 sectors (64KB) to cover common 32KB file reads in a
+     * single device request while leaving room for larger callers.
      */
     {
-        #define DMA_BUF_SECTORS  8
+        #define DMA_BUF_SECTORS  32
         ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
         ULONG raw_size = DMA_BUF_SECTORS * g->sector_size + 15;
         g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
