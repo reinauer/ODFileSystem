@@ -299,7 +299,7 @@ If you want a plain Mountlist entry instead, add one such as:
 ```text
 CD0:
     FileSystem = L:ODFileSystem
-    Stacksize = 8192
+    Stacksize = 16384
     Priority  = 5
     GlobVec   = -1
     DosType   = 0x43443031
