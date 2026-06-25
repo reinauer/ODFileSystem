@@ -36,8 +36,13 @@
 #define MEMF_PUBLIC	0x00000001
 #define MEMF_CLEAR	0x00010000
 
-#define MIN_STACK	4096
-#define SWAP_STACK	8192
+/*
+ * The handler's deep paths (directory traversal, name normalization) can use
+ * more stack than a mountlist typically grants. Guarantee a minimum by swapping
+ * to a private stack of this size when the supplied one is smaller.
+ */
+#define MIN_STACK	16384
+#define SWAP_STACK	16384
 
 _start:
 _entrypoint:
