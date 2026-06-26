@@ -128,7 +128,7 @@ AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -static
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__AROS__
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
@@ -140,7 +140,7 @@ AMIGA_CPUFLAGS ?= -mcpu=powerpc
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.
 LIBS           = -lc -lgcc
@@ -156,7 +156,7 @@ AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -noixemul
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
@@ -168,7 +168,7 @@ CFLAGS = -Os $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
          -Wstrict-prototypes -Wmissing-prototypes \
          -Wno-array-bounds \
          -MMD -MP \
-         $(AMIGA_DEFS) $(FEATURE_DEFS)
+         $(AMIGA_DEFS) $(FEATURE_DEFS) $(LTO)
 
 # ---- build directories ----
 
