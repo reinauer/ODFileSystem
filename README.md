@@ -294,7 +294,7 @@ If you want a plain Mountlist entry instead, add one such as:
 
 ```text
 CD0:
-    Handler   = L:ODFileSystem
+    FileSystem = L:ODFileSystem
     Stacksize = 8192
     Priority  = 5
     GlobVec   = -1
