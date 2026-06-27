@@ -29,6 +29,7 @@
 #endif
 
 #include <exec/execbase.h>
+#include <exec/errors.h>
 #include <exec/io.h>
 #include <devices/trackdisk.h>
 #include <devices/scsidisk.h>
@@ -4720,7 +4721,11 @@ void handler_main_startup(struct Message *startup_msg)
                   "geometry rc=%ld sector=%lu", (long)geo_rc,
                   (unsigned long)geom.dg_SectorSize);
 
-        if (geo_rc != 0) {
+        if (geo_rc == IOERR_NOCMD) {
+            ODFS_INFO(&g->log, ODFS_SUB_IO,
+                      "geometry unavailable; using mountlist sector=%lu",
+                      (unsigned long)g->sector_size);
+        } else if (geo_rc != 0) {
             ODFS_WARN(&g->log, ODFS_SUB_IO,
                       "no usable device on unit %lu (geometry rc=%ld) - "
                       "declining mount",
