@@ -3235,16 +3235,60 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
 {
     struct ExAllData *ed = *cursor;
     odfs_handler_node_info_t info;
+    const char *name;
     size_t name_len;
     size_t comment_len;
     size_t need;
+    size_t fixed;
     UBYTE *p;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "exall-fill data=%ld rem=%ld kind=%lu name=%s size_lo=%lu",
+               (long)data,
+               (long)*remaining,
+               entry ? (unsigned long)entry->kind : 0,
+               entry ? entry->name : "<null>",
+               entry ? (unsigned long)entry->size : 0);
+#endif
+
+    if (data <= ED_SIZE) {
+        fixed = exall_fixed_size(data);
+        name = (g && node_is_mount_root(g, entry)) ? g->volname :
+            entry->name;
+        name_len = strlen(name) + 1u;
+        need = exall_align_size(fixed + name_len);
+
+        if (need > (size_t)*remaining)
+            return 0;
+
+        memset(ed, 0, fixed);
+        p = ((UBYTE *)ed) + fixed;
+        ed->ed_Name = (STRPTR)p;
+        memcpy(p, name, name_len);
+
+        if (data >= ED_TYPE) {
+            if (g && node_is_mount_root(g, entry))
+                ed->ed_Type = ST_ROOT;
+            else
+                ed->ed_Type = (entry->kind == ODFS_NODE_DIR) ? ST_USERDIR :
+                    ST_FILE;
+        }
+        if (data >= ED_SIZE)
+            ed->ed_Size = (ULONG)entry->size;
+
+        ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
+        *cursor = ed->ed_Next;
+        *remaining -= (LONG)need;
+        return 1;
+    }
 
     odfs_handler_fill_node_info(g, entry, &info);
     name_len = strlen(info.name) + 1u;
     comment_len = strlen(info.comment) + 1u;
 
-    need = exall_fixed_size(data) + name_len;
+    fixed = exall_fixed_size(data);
+    need = fixed + name_len;
     if (data >= ED_COMMENT)
         need += comment_len;
     need = exall_align_size(need);
@@ -3252,9 +3296,9 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
     if (need > (size_t)*remaining)
         return 0;
 
-    memset(ed, 0, exall_fixed_size(data));
+    memset(ed, 0, fixed);
 
-    p = ((UBYTE *)ed) + exall_fixed_size(data);
+    p = ((UBYTE *)ed) + fixed;
     if (data >= ED_COMMENT) {
         ed->ed_Comment = (STRPTR)p;
         memcpy(p, info.comment, comment_len);
@@ -3362,6 +3406,21 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res2 = ERROR_BAD_NUMBER;
         return;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "exall-enter lock=%08lx buf=%08lx size=%ld data=%ld "
+               "ctrl=%08lx last=%lu match=%08lx hook=%08lx",
+               (unsigned long)ol,
+               (unsigned long)buf,
+               (long)size,
+               (long)data,
+               (unsigned long)control,
+               control ? (unsigned long)control->eac_LastKey : 0,
+               control ? (unsigned long)control->eac_MatchString : 0,
+               control ? (unsigned long)control->eac_MatchFunc : 0);
+    trace_node(g, "exall-dir", dir);
+#endif
 
     if (ol) {
         LONG err_dos = validate_object_volume(g, ol->entry->volume);
