@@ -408,9 +408,8 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
         if (full_sectors < ODFS_CACHE_STREAM_MIN_SECTORS)
             break;
 
-        if (full_sectors > UINT32_MAX)
-            count = UINT32_MAX;
-        else
+        count = UINT32_MAX;
+        if ((uint64_t)full_sectors < (uint64_t)count)
             count = (uint32_t)full_sectors;
 
         if ((size_t)count > ((size_t)-1) / sector_size)
