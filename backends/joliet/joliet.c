@@ -64,7 +64,15 @@ static int joliet_parse_dir_record(const uint8_t *data, size_t avail,
     if (33 + name_len > rec_len)
         return 0;
 
-    memset(node, 0, sizeof(*node));
+    /* Initialize the fields a record may leave untouched instead of
+     * clearing the whole node: the embedded name buffer dominates
+     * sizeof(*node) and this runs for every record of every scan. */
+    node->parent_id = 0;
+    node->mode = 0;
+    node->backend_data = NULL;
+    node->amiga_as.has_protection = 0;
+    node->amiga_as.has_comment = 0;
+
     node->id = (*next_id)++;
     node->backend = ODFS_BACKEND_JOLIET;
 
