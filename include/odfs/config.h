@@ -132,10 +132,11 @@
 
 #ifdef ODFS_PROFILE_ROM
   #define ODFS_BLOCK_CACHE_SIZE     16
-  #define ODFS_META_CACHE_SIZE       0
+  #define ODFS_META_CACHE_KIB        0
 #else
   #define ODFS_BLOCK_CACHE_SIZE    128
-  #define ODFS_META_CACHE_SIZE      64
+  /* parsed-directory cache budget in KiB (0 disables) */
+  #define ODFS_META_CACHE_KIB       96
 #endif
 
 /* ---------- platform ---------- */

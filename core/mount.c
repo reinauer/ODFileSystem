@@ -300,6 +300,7 @@ void odfs_mount_opts_default(odfs_mount_opts_t *opts)
     opts->lowercase_iso = 0; /* preserve original case */
     opts->prefer_aiff = 0; /* expose CDDA tracks as WAV by default */
     opts->cache_blocks = 0; /* use default from config.h */
+    opts->meta_cache_kib = ODFS_META_CACHE_KIB;
 }
 
 void odfs_mount_register_backend(odfs_mount_t *mnt,
@@ -361,6 +362,17 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                "cache initialized: %" PRIu32 " blocks", cache_size);
 
+#if ODFS_FEATURE_CACHE_META
+    {
+        uint32_t meta_kib = mnt->opts.meta_cache_kib;
+
+        /* keep the byte conversion away from overflow */
+        if (meta_kib > (1UL << 20))
+            meta_kib = 1UL << 20;
+        odfs_meta_cache_init(&mnt->meta, meta_kib << 10);
+    }
+#endif
+
     /* determine session start */
     uint32_t session_start = 0;
 #if ODFS_FEATURE_MULTISESSION
@@ -407,6 +419,9 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     if (err != ODFS_OK) {
         ODFS_WARN(&mnt->log, ODFS_SUB_MOUNT,
                    "no recognized filesystem format found");
+#if ODFS_FEATURE_CACHE_META
+        odfs_meta_cache_destroy(&mnt->meta);
+#endif
         odfs_cache_destroy(&mnt->cache);
         return ODFS_ERR_BAD_FORMAT;
     }
@@ -464,6 +479,9 @@ void odfs_unmount(odfs_mount_t *mnt)
     if (!primary_seen && mnt->backend_ops && mnt->backend_ops->unmount)
         mnt->backend_ops->unmount(mnt->backend_ctx);
 
+#if ODFS_FEATURE_CACHE_META
+    odfs_meta_cache_destroy(&mnt->meta);
+#endif
     odfs_cache_destroy(&mnt->cache);
     odfs_media_close(&mnt->media);
 
@@ -488,6 +506,16 @@ odfs_err_t odfs_readdir(odfs_mount_t *mnt,
     if (!mount_backend_for_type(mnt, dir->backend, &ops, &backend_ctx) ||
         !ops || !ops->readdir)
         return ODFS_ERR_UNSUPPORTED;
+
+#if ODFS_FEATURE_CACHE_META
+    {
+        odfs_err_t err = odfs_meta_readdir(&mnt->meta, ops, backend_ctx,
+                                           &mnt->cache, &mnt->log, dir,
+                                           callback, ctx, resume_offset);
+        if (err != ODFS_ERR_UNSUPPORTED)
+            return err;
+    }
+#endif
 
     return ops->readdir(backend_ctx, &mnt->cache, &mnt->log, dir,
                         callback, ctx, resume_offset);
@@ -533,6 +561,16 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
     if (!mount_backend_for_type(mnt, dir->backend, &ops, &backend_ctx) ||
         !ops || !ops->lookup)
         return ODFS_ERR_UNSUPPORTED;
+
+#if ODFS_FEATURE_CACHE_META
+    {
+        odfs_err_t err = odfs_meta_lookup(&mnt->meta, ops, backend_ctx,
+                                          &mnt->cache, &mnt->log, dir,
+                                          name, out);
+        if (err != ODFS_ERR_UNSUPPORTED)
+            return err;
+    }
+#endif
 
     return ops->lookup(backend_ctx, &mnt->cache, &mnt->log, dir, name, out);
 }

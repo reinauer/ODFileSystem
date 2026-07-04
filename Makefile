@@ -187,6 +187,7 @@ CORE_SRCS = \
     core/node.c \
     core/namefix.c \
     core/cache_block.c \
+    core/cache_meta.c \
     core/charset.c \
     core/ancestry.c \
     core/mount.c \

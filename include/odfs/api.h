@@ -12,6 +12,7 @@
 #include "odfs/node.h"
 #include "odfs/media.h"
 #include "odfs/cache.h"
+#include "odfs/cache_meta.h"
 #include "odfs/log.h"
 #include "odfs/backend.h"
 
@@ -26,12 +27,17 @@ typedef struct odfs_mount_opts {
     int      lowercase_iso;      /* lowercase plain ISO names */
     int      prefer_aiff;        /* expose CDDA tracks as AIFF instead of WAV */
     uint32_t cache_blocks;       /* block cache size (0 = use default) */
+    uint32_t meta_cache_kib;     /* parsed-dir cache budget in KiB
+                                    (default from config.h; 0 disables) */
 } odfs_mount_opts_t;
 
 /* mounted volume */
 typedef struct odfs_mount {
     odfs_media_t             media;
     odfs_cache_t             cache;
+#if ODFS_FEATURE_CACHE_META
+    odfs_meta_cache_t        meta;
+#endif
     odfs_log_state_t         log;
     odfs_mount_opts_t        opts;
 
