@@ -186,6 +186,7 @@ struct odfs_lock {
 #endif
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
+    ULONG           magic;          /* liveness check for BPTR validation */
     odfs_lock_t    *volume_prev;    /* per-volume DOS lock chain */
     odfs_lock_t    *volume_next;    /* per-volume DOS lock chain */
 };
@@ -207,6 +208,7 @@ struct odfs_fh {
     odfs_entry_t  *entry;          /* shared object metadata */
     LONG            access;         /* originating DOS access mode */
     uint64_t        pos;            /* current read position */
+    ULONG           magic;          /* liveness check for handle validation */
 };
 
 /* ---- helper macros ---- */

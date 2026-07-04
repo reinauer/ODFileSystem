@@ -1138,6 +1138,9 @@ static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
  * Objects are recycled per handler process and returned to the system
  * at shutdown.
  */
+#define ODFS_LOCK_MAGIC 0x4f4c4b31UL /* 'OLK1' */
+#define ODFS_FH_MAGIC   0x4f464831UL /* 'OFH1' */
+
 static void *pool_pop(void **head)
 {
     void *p = *head;
@@ -1246,36 +1249,56 @@ static odfs_volume_t *fh_volume(odfs_fh_t *fh)
     return fh ? fh->entry->volume : NULL;
 }
 
+/*
+ * Liveness checks for caller-supplied lock and file-handle pointers.
+ * The magic word is set on allocation and cleared on free, so a stale
+ * or foreign pointer fails in constant time instead of walking the
+ * object lists on every packet. Debug builds keep the exhaustive walk
+ * to also catch objects with a valid-looking magic that were never
+ * linked to this handler.
+ */
 static int lock_is_active(handler_global_t *g, odfs_lock_t *needle)
 {
-    odfs_lock_t *ol;
-
     if (!g || !needle)
         return 0;
 
-    for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
-         ol->node.mln_Succ != NULL;
-         ol = (odfs_lock_t *)ol->node.mln_Succ) {
-        if (ol == needle)
-            return 1;
+#if ODFS_SERIAL_DEBUG
+    {
+        odfs_lock_t *ol;
+
+        for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
+             ol->node.mln_Succ != NULL;
+             ol = (odfs_lock_t *)ol->node.mln_Succ) {
+            if (ol == needle)
+                return needle->magic == ODFS_LOCK_MAGIC;
+        }
+        return 0;
     }
-    return 0;
+#else
+    return needle->magic == ODFS_LOCK_MAGIC;
+#endif
 }
 
 static int fh_is_active(handler_global_t *g, odfs_fh_t *needle)
 {
-    odfs_fh_t *fh;
-
     if (!g || !needle)
         return 0;
 
-    for (fh = (odfs_fh_t *)g->fhlist.mlh_Head;
-         fh->node.mln_Succ != NULL;
-         fh = (odfs_fh_t *)fh->node.mln_Succ) {
-        if (fh == needle)
-            return 1;
+#if ODFS_SERIAL_DEBUG
+    {
+        odfs_fh_t *fh;
+
+        for (fh = (odfs_fh_t *)g->fhlist.mlh_Head;
+             fh->node.mln_Succ != NULL;
+             fh = (odfs_fh_t *)fh->node.mln_Succ) {
+            if (fh == needle)
+                return needle->magic == ODFS_FH_MAGIC;
+        }
+        return 0;
     }
-    return 0;
+#else
+    return needle->magic == ODFS_FH_MAGIC;
+#endif
 }
 
 static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
@@ -1674,6 +1697,7 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
 #endif
     ol->entry = entry;
     ol->key = amiga_node_key(fnode);
+    ol->magic = ODFS_LOCK_MAGIC;
 #if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
@@ -1708,6 +1732,7 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
 #endif
     release_volume_object(g, ol->entry->volume);
     release_entry(g, ol->entry);
+    ol->magic = 0;
     pool_push(&g->lock_pool, ol);
 }
 
@@ -1737,6 +1762,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 #endif
     ol->entry = retain_entry(src->entry);
     ol->key = src->key;
+    ol->magic = ODFS_LOCK_MAGIC;
 #if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
@@ -1777,6 +1803,7 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     fh->entry = retain_entry(entry);
     fh->access = access;
     fh->pos = 0;
+    fh->magic = ODFS_FH_MAGIC;
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
@@ -1789,6 +1816,7 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
     Remove((struct Node *)&fh->node);
     release_volume_object(g, fh->entry->volume);
     release_entry(g, fh->entry);
+    fh->magic = 0;
     pool_push(&g->fh_pool, fh);
 }
 
