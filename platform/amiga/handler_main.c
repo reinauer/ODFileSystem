@@ -4137,6 +4137,7 @@ static void detach_volume_node(struct DeviceList *volnode)
  *   HF=HFSFIRST/S       — prefer HFS over ISO on hybrid discs
  *   UDF/S               — prefer UDF on bridge discs
  *   FB=FILEBUFFERS/K/N  — block cache size
+ *   MC=METACACHE/K/N    — parsed-directory cache budget in KiB (0 = off)
  */
 
 #include <dos/rdargs.h>
@@ -4149,6 +4150,7 @@ enum {
     CTRL_UDF,
     CTRL_AIFF,
     CTRL_FILEBUFFERS,
+    CTRL_METACACHE,
     CTRL__COUNT
 };
 
@@ -4211,7 +4213,8 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
                   "HF=HFSFIRST/S,"
                   "UDF/S,"
                   "AIFF/S,"
-                  "FB=FILEBUFFERS/K/N",
+                  "FB=FILEBUFFERS/K/N,"
+                  "MC=METACACHE/K/N",
                   (LONG *)args, rdargs)) {
 
         if (args[CTRL_LOWERCASE])
@@ -4228,6 +4231,11 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
             opts->prefer_aiff = 1;
         if (args[CTRL_FILEBUFFERS])
             opts->cache_blocks = *(LONG *)args[CTRL_FILEBUFFERS];
+        if (args[CTRL_METACACHE]) {
+            LONG kib = *(LONG *)args[CTRL_METACACHE];
+
+            opts->meta_cache_kib = (kib > 0) ? (uint32_t)kib : 0;
+        }
 
         FreeArgs(rdargs);
     }
