@@ -100,6 +100,11 @@ typedef struct handler_global {
     struct DosEnvec     *envec;         /* for control string parsing */
 
     /* DMA-safe bounce buffer */
+    /* free-list pools for per-packet objects (entry/lock/fh) */
+    void                *entry_pool;
+    void                *lock_pool;
+    void                *fh_pool;
+
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
     uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
     ULONG                dma_buf_size;  /* usable size in bytes */

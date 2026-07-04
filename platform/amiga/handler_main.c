@@ -1131,14 +1131,47 @@ static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
     return volume ? volume->volnode : NULL;
 }
 
-static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
+/*
+ * Free-list pools for the per-packet objects. Every Lock/Open/Examine
+ * allocates and frees an entry plus a lock or file handle; popping a
+ * free list avoids the Forbid-protected AllocMem walk on each packet.
+ * Objects are recycled per handler process and returned to the system
+ * at shutdown.
+ */
+static void *pool_pop(void **head)
+{
+    void *p = *head;
+
+    if (p)
+        *head = *(void **)p;
+    return p;
+}
+
+static void pool_push(void **head, void *p)
+{
+    *(void **)p = *head;
+    *head = p;
+}
+
+static void pool_drain(void **head, ULONG obj_size)
+{
+    void *p;
+
+    while ((p = pool_pop(head)) != NULL)
+        odfs_amiga_free_mem(p, obj_size);
+}
+
+static odfs_entry_t *alloc_entry(handler_global_t *g,
+                                 odfs_volume_t *volume,
                                  const odfs_node_t *fnode,
                                  const odfs_node_t *parent,
                                  const odfs_node_t *grandparent)
 {
     odfs_entry_t *entry;
 
-    entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC | MEMF_CLEAR);
+    entry = pool_pop(&g->entry_pool);
+    if (!entry)
+        entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC);
     if (!entry)
         return NULL;
 
@@ -1166,12 +1199,12 @@ static odfs_entry_t *retain_entry(odfs_entry_t *entry)
     return entry;
 }
 
-static void release_entry(odfs_entry_t *entry)
+static void release_entry(handler_global_t *g, odfs_entry_t *entry)
 {
     if (!entry)
         return;
     if (--entry->refcount == 0)
-        odfs_amiga_free_mem(entry, sizeof(*entry));
+        pool_push(&g->entry_pool, entry);
 }
 
 static odfs_node_t *lock_node(odfs_lock_t *ol)
@@ -1558,7 +1591,7 @@ static void drain_all_objects(handler_global_t *g)
     while ((node = RemHead((struct List *)&g->fhlist)) != NULL) {
         odfs_fh_t *fh = (odfs_fh_t *)node;
         release_volume_object(g, fh->entry->volume);
-        release_entry(fh->entry);
+        release_entry(g, fh->entry);
         odfs_amiga_free_mem(fh, sizeof(*fh));
     }
 
@@ -1570,7 +1603,7 @@ static void drain_all_objects(handler_global_t *g)
             FreeDosObject(DOS_LOCK, ol->lock);
 #endif
         release_volume_object(g, ol->entry->volume);
-        release_entry(ol->entry);
+        release_entry(g, ol->entry);
         odfs_amiga_free_mem(ol, sizeof(*ol));
     }
 }
@@ -1617,22 +1650,25 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
     if (!g->current_volume)
         return NULL;
 
-    entry = alloc_entry(g->current_volume, fnode, parent, grandparent);
+    entry = alloc_entry(g, g->current_volume, fnode, parent, grandparent);
     if (!entry)
         return NULL;
 
-    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    ol = pool_pop(&g->lock_pool);
+    if (!ol)
+        ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC);
     if (!ol) {
-        release_entry(entry);
+        release_entry(g, entry);
         return NULL;
     }
+    memset(ol, 0, sizeof(*ol));
 #if ODFS_AMIGA_OS4
     ol->lock = AllocDosObjectTags(DOS_LOCK,
                                   ADO_DOSType, ODFS_OS4_CD_DOSTYPE,
                                   TAG_DONE);
     if (!ol->lock) {
         odfs_amiga_free_mem(ol, sizeof(*ol));
-        release_entry(entry);
+        release_entry(g, entry);
         return NULL;
     }
 #endif
@@ -1671,8 +1707,8 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
         FreeDosObject(DOS_LOCK, ol->lock);
 #endif
     release_volume_object(g, ol->entry->volume);
-    release_entry(ol->entry);
-    odfs_amiga_free_mem(ol, sizeof(*ol));
+    release_entry(g, ol->entry);
+    pool_push(&g->lock_pool, ol);
 }
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
@@ -1683,9 +1719,12 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
     if (!src)
         return NULL;
 
-    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    ol = pool_pop(&g->lock_pool);
+    if (!ol)
+        ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC);
     if (!ol)
         return NULL;
+    memset(ol, 0, sizeof(*ol));
 
 #if ODFS_AMIGA_OS4
     ol->lock = AllocDosObjectTags(DOS_LOCK,
@@ -1729,7 +1768,9 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     if (!entry)
         return NULL;
 
-    fh = odfs_amiga_alloc_mem(sizeof(*fh), MEMF_PUBLIC | MEMF_CLEAR);
+    fh = pool_pop(&g->fh_pool);
+    if (!fh)
+        fh = odfs_amiga_alloc_mem(sizeof(*fh), MEMF_PUBLIC);
     if (!fh)
         return NULL;
 
@@ -1747,8 +1788,8 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
         return;
     Remove((struct Node *)&fh->node);
     release_volume_object(g, fh->entry->volume);
-    release_entry(fh->entry);
-    odfs_amiga_free_mem(fh, sizeof(*fh));
+    release_entry(g, fh->entry);
+    pool_push(&g->fh_pool, fh);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2383,13 +2424,13 @@ LONG odfs_handler_open_object(handler_global_t *g,
     if (result.kind == ODFS_NODE_DIR)
         return ERROR_OBJECT_WRONG_TYPE;
 
-    entry = alloc_entry(g->current_volume, &result, &parent_node,
+    entry = alloc_entry(g, g->current_volume, &result, &parent_node,
                         has_grandparent ? &grandparent_node : NULL);
     if (!entry)
         return ERROR_NO_FREE_STORE;
 
     fh = alloc_fh(g, entry, SHARED_LOCK);
-    release_entry(entry);
+    release_entry(g, entry);
     if (!fh)
         return ERROR_NO_FREE_STORE;
 
@@ -4970,6 +5011,10 @@ shutdown:
     }
     if (g->devport)
         odfs_amiga_delete_msg_port(g->devport);
+
+    pool_drain(&g->entry_pool, sizeof(odfs_entry_t));
+    pool_drain(&g->lock_pool, sizeof(odfs_lock_t));
+    pool_drain(&g->fh_pool, sizeof(odfs_fh_t));
 
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
