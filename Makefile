@@ -177,6 +177,11 @@ AMIGA_BUILD = build/amiga
 ROM_BUILD   = build/amiga-rom
 AMIGA_TEST_BUILD = build/amiga-test
 ROM_TEST_BUILD   = build/amiga-rom-test
+AMIGA_020_BUILD  = build/amiga-020
+
+# 68020 release variant: hardware mul/div and 020 addressing modes make
+# the handler both faster and smaller than the 68000 build.
+AMIGA_020_CPUFLAGS ?= -m68020 -msoft-float
 
 # ---- shared source lists ----
 
@@ -258,6 +263,7 @@ TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 # ---- handler target (Amiga) ----
 
 HANDLER      = $(AMIGA_BUILD)/ODFileSystem
+HANDLER_020  = $(AMIGA_020_BUILD)/ODFileSystem
 KICKSTART_MODULE =
 AMIGA_ARTIFACTS = $(HANDLER)
 ifeq ($(AMIGA_TARGET),os4)
@@ -285,7 +291,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 # targets
 # ==================================================================
 
-.PHONY: all host amiga amiga-test adf rom rom-test lib tests tools fuzz
+.PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
 .PHONY: check golden-check malformed-check fuzz-check integration-check
 .PHONY: clean size amigaos3-lha amigaos4-lha
 
@@ -315,7 +321,18 @@ amiga-test:
 		SERIAL_DEBUG=1 \
 		amiga
 
-adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
+amiga-020:
+	@if [ "$(AMIGA_TARGET)" != "os3" ]; then \
+		echo "  ERROR: amiga-020 requires CC=m68k-amigaos-gcc"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory \
+		AMIGA_BUILD=$(AMIGA_020_BUILD) \
+		AMIGA_CPUFLAGS="$(AMIGA_020_CPUFLAGS)" \
+		SIZE_LIMIT_DESC="release Amiga 68020 handler" \
+		amiga
+
+adf: amiga-test amiga-020 $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
 	@mkdir -p $(dir $(ADF))
 	@echo "  ADF   $(ADF)"
 	@$(XDFTOOL) -f $(ADF) \
@@ -324,6 +341,7 @@ adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefi
 		makedir L + \
 		makedir C + \
 		write $(TEST_HANDLER) L + \
+		write $(HANDLER_020) L/ODFileSystem020 + \
 		write $(AMIGA_TEST_TOOL) C/test_handler + \
 		write $(ADF_DOSDRIVER) + \
 		write $(ADF_DOSDRIVER_ICON)
@@ -335,6 +353,8 @@ amigaos3-lha:
 		exit 1; \
 	fi
 	@$(MAKE) --no-print-directory AMIGA_BUILD=$(AMIGA_BUILD) amiga
+	@$(MAKE) --no-print-directory AMIGA_020_BUILD=$(AMIGA_020_BUILD) \
+		amiga-020
 	@$(MAKE) --no-print-directory AMIGA_TEST_BUILD=$(AMIGA_TEST_BUILD) \
 		amiga-test
 	@$(MAKE) --no-print-directory ROM_BUILD=$(ROM_BUILD) rom
@@ -343,6 +363,7 @@ amigaos3-lha:
 	@rm -rf "$(AMIGAOS3_PACKAGE_DIR)" "$(AMIGAOS3_PACKAGE)"
 	@mkdir -p "$(AMIGAOS3_PACKAGE_DIR)"
 	@cp "$(HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem"
+	@cp "$(HANDLER_020)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem020"
 	@cp "$(TEST_HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-test"
 	@cp "$(ROM_BUILD)/ODFileSystem" \
 		"$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-rom"
@@ -352,7 +373,7 @@ amigaos3-lha:
 	@echo "  LHA   $(AMIGAOS3_PACKAGE)"
 	@(cd "$(AMIGAOS3_PACKAGE_DIR)" && \
 		$(LHA) -aq "$(CURDIR)/$(AMIGAOS3_PACKAGE)" \
-		ODFileSystem ODFileSystem-test \
+		ODFileSystem ODFileSystem020 ODFileSystem-test \
 		ODFileSystem-rom ODFileSystem-rom-test README.md)
 	@echo "  LHA archive ready: $(AMIGAOS3_PACKAGE)"
 

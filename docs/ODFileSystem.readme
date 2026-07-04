@@ -23,7 +23,12 @@ Archive Contents
 
 - ODFileSystem
   Normal disk-loadable filesystem handler.  Copy this to
-  L:ODFileSystem for regular use.
+  L:ODFileSystem for regular use.  Runs on any 68000 or better.
+
+- ODFileSystem020
+  Handler built for 68020 and higher processors.  Faster and smaller
+  than the 68000 build; use it on 68020/030/040/060 machines by
+  copying it to L:ODFileSystem instead of the 68000 version.
 
 - ODFileSystem-test
   Test build with serial debug output enabled.
