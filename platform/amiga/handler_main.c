@@ -1768,6 +1768,14 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
  * when available. When an ascent needs an unknown ancestor, reconstruct it with
  * an iterative directory walk.
  */
+static void swap_node_ptrs(odfs_node_t **a, odfs_node_t **b)
+{
+    odfs_node_t *t = *a;
+
+    *a = *b;
+    *b = t;
+}
+
 static odfs_err_t resolve_amiga_path(handler_global_t *g,
                                       const odfs_node_t *start,
                                       const odfs_node_t *start_parent,
@@ -1778,23 +1786,36 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
                                       odfs_node_t *grandparent_out,
                                       int *has_grandparent_out)
 {
-    odfs_node_t cur = *start;
-    odfs_node_t parent = start_parent ? *start_parent : *start;
-    odfs_node_t grandparent =
-        start_grandparent ? *start_grandparent : parent;
+    /* Three node buffers; ascents and descents rotate the pointers
+     * instead of copying nodes, so each path component moves pointers,
+     * not sizeof(odfs_node_t) bytes. */
+    odfs_node_t nodes[3];
+    odfs_node_t *cur = &nodes[0];
+    odfs_node_t *parent = &nodes[1];
+    odfs_node_t *grandparent = &nodes[2];
     int has_grandparent = start_grandparent != NULL;
     const char *p = path;
     char comp[256];
     odfs_err_t err;
 
+    *cur = *start;
+    if (start_parent)
+        *parent = *start_parent;
+    else
+        *parent = *start;
+    if (start_grandparent)
+        *grandparent = *start_grandparent;
+    else
+        *grandparent = *parent;
+
     if (!start_parent || node_is_mount_root(g, start)) {
-        parent = g->mount.root;
-        grandparent = g->mount.root;
+        *parent = g->mount.root;
+        *grandparent = g->mount.root;
         has_grandparent = 1;
 #if ODFS_FEATURE_CDDA
     } else if (g->has_cdda && nodes_same(start, &g->cdda_root)) {
-        parent = g->mount.root;
-        grandparent = g->mount.root;
+        *parent = g->mount.root;
+        *grandparent = g->mount.root;
         has_grandparent = 1;
 #endif
     }
@@ -1813,25 +1834,24 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
     while (*p) {
         /* "/" at current position = go to parent */
         if (*p == '/') {
-            if (!node_is_mount_root(g, &cur)) {
-                cur = parent;
-                if (node_is_mount_root(g, &cur)) {
-                    parent = g->mount.root;
-                    grandparent = g->mount.root;
+            if (!node_is_mount_root(g, cur)) {
+                swap_node_ptrs(&cur, &parent);
+                if (node_is_mount_root(g, cur)) {
+                    *parent = g->mount.root;
+                    *grandparent = g->mount.root;
                     has_grandparent = 1;
 #if ODFS_FEATURE_CDDA
-                } else if (g->has_cdda && nodes_same(&cur, &g->cdda_root)) {
-                    parent = g->mount.root;
-                    grandparent = g->mount.root;
+                } else if (g->has_cdda && nodes_same(cur, &g->cdda_root)) {
+                    *parent = g->mount.root;
+                    *grandparent = g->mount.root;
                     has_grandparent = 1;
 #endif
                 } else if (has_grandparent) {
-                    parent = grandparent;
-                    grandparent = parent;
+                    swap_node_ptrs(&parent, &grandparent);
                     has_grandparent = 0;
                 } else {
-                    err = odfs_resolve_parent_node(&g->mount, &cur,
-                                                   &parent, &grandparent);
+                    err = odfs_resolve_parent_node(&g->mount, cur,
+                                                   parent, grandparent);
                     if (err != ODFS_OK)
                         return err;
                     has_grandparent = 1;
@@ -1853,26 +1873,32 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         comp[len] = '\0';
 
         /* look up in current directory */
-        if (cur.kind != ODFS_NODE_DIR)
+        if (cur->kind != ODFS_NODE_DIR)
             return ODFS_ERR_NOT_DIR;
 
 #if ODFS_FEATURE_CDDA
         /* intercept "CDDA" virtual directory on mixed-mode discs */
-        if (g->has_cdda && cur.extent.lba == g->mount.root.extent.lba &&
+        if (g->has_cdda && cur->extent.lba == g->mount.root.extent.lba &&
             odfs_strcasecmp(comp, "CDDA") == 0) {
-            grandparent = parent;
+            swap_node_ptrs(&grandparent, &parent);
+            swap_node_ptrs(&parent, &cur);
+            *cur = g->cdda_root;
             has_grandparent = 1;
-            parent = cur;
-            cur = g->cdda_root;
             p = end;
             continue;
         }
 #endif
 
-        grandparent = parent;
+        /* rotate: grandparent := parent, parent := cur, cur := scratch */
+        {
+            odfs_node_t *scratch = grandparent;
+
+            grandparent = parent;
+            parent = cur;
+            cur = scratch;
+        }
         has_grandparent = 1;
-        parent = cur;
-        err = lookup_child_node(g, &cur, comp, &cur);
+        err = lookup_child_node(g, parent, comp, cur);
         if (err != ODFS_OK)
             return err;
 
@@ -1881,10 +1907,10 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
             p++;
     }
 
-    *result = cur;
-    *parent_out = parent;
+    *result = *cur;
+    *parent_out = *parent;
     if (grandparent_out)
-        *grandparent_out = grandparent;
+        *grandparent_out = *grandparent;
     if (has_grandparent_out)
         *has_grandparent_out = has_grandparent;
     return ODFS_OK;
