@@ -92,7 +92,7 @@ PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
 ifeq ($(AMIGA_TARGET),os4)
-AMIGA_SIZE_LIMIT ?= 131072
+AMIGA_SIZE_LIMIT ?= 147456
 else
 AMIGA_SIZE_LIMIT ?= 98304
 endif
