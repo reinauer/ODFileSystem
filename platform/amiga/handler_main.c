@@ -246,34 +246,37 @@ static LONG changeint_signal(APTR data)
     return 0;
 }
 
+/*
+ * Days from 1978-01-01 (the AmigaDOS epoch) for a civil date, computed
+ * in closed form. A per-year loop here costs ~150 divisions per
+ * conversion, and a conversion runs for every FileInfoBlock filled by
+ * Examine, ExNext, and ExAll.
+ */
+static LONG days_since_1978(int year, int month, int day)
+{
+    LONG y = year;
+    LONG era, yoe, doy, doe;
+
+    /* shift so the year starts in March; Jan/Feb belong to y-1 */
+    y -= month <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;                          /* [0, 399] */
+    doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;  /* [0, 146096] */
+
+    /* 719468 days from 0000-03-01 to 1970-01-01, 2922 more to 1978 */
+    return era * 146097 + doe - 719468 - 2922;
+}
+
 static int odfs_timestamp_to_datestamp(const odfs_timestamp_t *ts,
                                        struct DateStamp *stamp)
 {
-    static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-    LONG days = 0;
-    int y;
-    int m;
-
     if (!ts || !stamp || ts->year < 1978 || ts->month < 1 || ts->month > 12 ||
         ts->day < 1 || ts->day > 31 || ts->hour > 23 || ts->minute > 59 ||
         ts->second > 59)
         return 0;
 
-    for (y = 1978; y < ts->year; y++) {
-        days += 365;
-        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
-            days++;
-    }
-
-    for (m = 1; m < ts->month; m++) {
-        days += mdays[m];
-        if (m == 2 && ((ts->year % 4 == 0 && ts->year % 100 != 0) ||
-            ts->year % 400 == 0))
-            days++;
-    }
-
-    days += ts->day - 1;
-    stamp->ds_Days = days;
+    stamp->ds_Days = days_since_1978(ts->year, ts->month, ts->day);
     stamp->ds_Minute = ts->hour * 60 + ts->minute;
     stamp->ds_Tick = ts->second * TICKS_PER_SECOND;
     return 1;
@@ -1504,32 +1507,14 @@ static void node_date(const odfs_node_t *node, struct DateStamp *ds)
     if (!node || node->mtime.year < 1978)
         return;
 
-    {
-        LONG days = 0;
-        int y;
+    if (node->mtime.month < 1 || node->mtime.month > 12 ||
+        node->mtime.day < 1)
+        return;
 
-        for (y = 1978; y < node->mtime.year; y++) {
-            days += 365;
-            if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
-                days++;
-        }
-        {
-            static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-            int m;
-            for (m = 1; m < node->mtime.month && m <= 12; m++) {
-                days += mdays[m];
-                if (m == 2 && ((node->mtime.year % 4 == 0 &&
-                    node->mtime.year % 100 != 0) ||
-                    node->mtime.year % 400 == 0))
-                    days++;
-            }
-        }
-        days += node->mtime.day - 1;
-
-        ds->ds_Days   = days;
-        ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
-        ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
-    }
+    ds->ds_Days   = days_since_1978(node->mtime.year, node->mtime.month,
+                                    node->mtime.day);
+    ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
+    ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
 }
 
 void odfs_handler_fill_node_info(handler_global_t *g,
