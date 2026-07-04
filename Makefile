@@ -80,6 +80,10 @@ HOSTLDFLAGS =
 
 # ---- Amiga build options ----
 
+# Optimization level. Speed is the release priority; the ROM profile
+# overrides this with -Os to stay within its size budget.
+AMIGA_OPT ?= -O2
+
 # Serial debug output (override with: make SERIAL_DEBUG=1)
 SERIAL_DEBUG ?= 0
 
@@ -90,7 +94,7 @@ PACKET_TRACE ?= 0
 ifeq ($(AMIGA_TARGET),os4)
 AMIGA_SIZE_LIMIT ?= 131072
 else
-AMIGA_SIZE_LIMIT ?= 60000
+AMIGA_SIZE_LIMIT ?= 98304
 endif
 ROM_SIZE_LIMIT   ?= 40960
 SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
@@ -162,7 +166,7 @@ HANDLER_LDFLAGS = -nostartfiles
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 endif
 
-CFLAGS = -Os $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
+CFLAGS = $(AMIGA_OPT) $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
          -Wall -Wextra -Werror \
          $(AMIGA_WARNFLAGS) \
          -Wstrict-prototypes -Wmissing-prototypes \
@@ -406,6 +410,7 @@ amigaos4-lha:
 rom:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_BUILD) \
+		AMIGA_OPT=-Os \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		AMIGA_SIZE_LIMIT=$(ROM_SIZE_LIMIT) \
 		SIZE_LIMIT_NAME=ROM_SIZE_LIMIT \
@@ -421,6 +426,7 @@ rom:
 rom-test:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_TEST_BUILD) \
+		AMIGA_OPT=-Os \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \
