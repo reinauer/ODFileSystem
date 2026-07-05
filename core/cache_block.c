@@ -10,6 +10,15 @@
 
 #define ODFS_CACHE_STREAM_MIN_SECTORS 2u
 
+/*
+ * Clustered miss reads: on a cache miss, read up to this many contiguous
+ * sectors in one device request and install them all. Directory extents
+ * and small sequential reads are contiguous, so this replaces N device
+ * round trips with one. Only enabled for caches large enough that the
+ * cluster cannot churn a meaningful share of the entries.
+ */
+#define ODFS_CACHE_READAHEAD 8u
+
 static void cache_reset_indices(odfs_cache_t *cache)
 {
     uint32_t i;
@@ -234,6 +243,12 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->sector_size = sector_size;
     cache->clock = 0;
     cache->media = media;
+    cache->stream_buf = NULL;
+    if (capacity >= 4u * ODFS_CACHE_READAHEAD) {
+        /* optional: read-ahead is skipped when this allocation fails */
+        cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD *
+                                        sector_size);
+    }
     cache_reset_indices(cache);
 
     return ODFS_OK;
@@ -246,6 +261,7 @@ void odfs_cache_destroy(odfs_cache_t *cache)
 
     for (uint32_t i = 0; i < cache->capacity; i++)
         odfs_free(cache->entries[i].data);
+    odfs_free(cache->stream_buf);
     odfs_free(cache->buckets);
     odfs_free(cache->next);
     odfs_free(cache->entries);
@@ -262,6 +278,50 @@ void odfs_cache_flush(odfs_cache_t *cache)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
     cache_reset_indices(cache);
+}
+
+/* place one sector's data into a victim entry and index it */
+static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
+                             const uint8_t *src)
+{
+    uint32_t victim;
+    int victim_valid;
+
+    if (cache->valid_count < cache->capacity) {
+        if (cache->free_head < 0)
+            return -1;
+        victim = (uint32_t)cache->free_head;
+    } else {
+        if (cache->lru_tail < 0)
+            return -1;
+        victim = (uint32_t)cache->lru_tail;
+    }
+
+    victim_valid = cache->entries[victim].valid;
+    memcpy(cache->entries[victim].data, src, cache->sector_size);
+
+    if (victim_valid) {
+        cache_remove_index(cache, victim);
+        cache_lru_remove(cache, victim);
+        cache->stats.evictions++;
+    } else {
+        int32_t free_idx = cache_pop_free(cache);
+
+        if (free_idx != (int32_t)victim)
+            return -1;
+        cache->valid_count++;
+    }
+
+    cache->entries[victim].lba = lba;
+    cache->entries[victim].age = cache->clock;
+    cache->entries[victim].valid = 1;
+    cache_insert_index(cache, victim);
+    cache_lru_insert_head(cache, victim);
+
+    if (cache->valid_count > cache->stats.max_used)
+        cache->stats.max_used = cache->valid_count;
+
+    return (int32_t)victim;
 }
 
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
@@ -290,6 +350,44 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
 
     /* miss — find victim (LRU or first invalid) */
     cache->stats.misses++;
+
+    /* Cluster only sequential miss patterns (directory scans, small
+     * sequential reads); random misses would fetch data that is
+     * evicted unused while paying for the larger transfer. */
+    if (cache->stream_buf && lba == cache->last_miss_lba + 1u) {
+        uint32_t run = 1;
+
+        while (run < ODFS_CACHE_READAHEAD &&
+               lba + run > lba &&
+               cache_find_index(cache, lba + run) < 0)
+            run++;
+
+        if (run > 1 &&
+            odfs_media_read(cache->media, lba, run,
+                            cache->stream_buf) == ODFS_OK) {
+            uint32_t i;
+            int32_t idx = -1;
+
+            /* install the requested sector last so the later installs
+             * cannot evict it before it is returned */
+            for (i = run; i-- > 0; ) {
+                idx = cache_install(cache, lba + i,
+                                    cache->stream_buf +
+                                    (size_t)i * cache->sector_size);
+                if (idx < 0)
+                    break;
+            }
+            if (idx >= 0) {
+                cache->last_miss_lba = lba + run - 1u;
+                *out = cache->entries[idx].data;
+                return ODFS_OK;
+            }
+        }
+        /* short run, media error (e.g. the run crosses the end of the
+         * disc), or install failure: fall back to a single sector */
+    }
+
+    cache->last_miss_lba = lba;
 
     if (cache->valid_count < cache->capacity) {
         if (cache->free_head < 0)
