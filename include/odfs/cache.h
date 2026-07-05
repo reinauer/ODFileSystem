@@ -41,6 +41,7 @@ typedef struct odfs_cache {
     uint32_t             hash_size;
     uint32_t             valid_count;
     uint32_t             sector_size;
+    uint32_t             sector_shift; /* log2(sector_size), 0 if not pow2 */
     uint32_t             clock;       /* LRU clock */
     int32_t              free_head;   /* first unused entry */
     int32_t              lru_head;    /* most recently used valid entry */

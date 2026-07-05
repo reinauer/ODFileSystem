@@ -241,6 +241,20 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     cache->capacity = capacity;
     cache->sector_size = sector_size;
+    /* every supported medium uses power-of-two sectors; enforcing it
+     * here lets byte addressing use shifts instead of pulling the
+     * 64-bit division helpers out of libgcc */
+    if ((sector_size & (sector_size - 1u)) != 0)
+        return ODFS_ERR_INVAL;
+    cache->sector_shift = 0;
+    {
+        uint32_t sz = sector_size;
+
+        while (sz > 1u) {
+            sz >>= 1;
+            cache->sector_shift++;
+        }
+    }
     cache->clock = 0;
     cache->media = media;
     cache->stream_buf = NULL;
@@ -470,11 +484,11 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
     if (want == 0)
         return ODFS_OK;
 
-    lba64 = (uint64_t)start_lba + offset / sector_size;
+    lba64 = (uint64_t)start_lba + (offset >> cache->sector_shift);
+    sector_off = (uint32_t)offset & (sector_size - 1u);
     if (lba64 > UINT32_MAX)
         return ODFS_ERR_RANGE;
     lba = (uint32_t)lba64;
-    sector_off = (uint32_t)(offset % sector_size);
 
     if (sector_off != 0) {
         size_t chunk = sector_size - sector_off;
