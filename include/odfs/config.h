@@ -39,6 +39,13 @@
     #define ODFS_FEATURE_JOLIET     1
   #endif
 #endif
+#ifndef ODFS_FEATURE_HIGH_SIERRA
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_HIGH_SIERRA 0
+  #else
+    #define ODFS_FEATURE_HIGH_SIERRA 1
+  #endif
+#endif
 #ifndef ODFS_FEATURE_MULTISESSION
   #ifdef ODFS_PROFILE_ROM
     #define ODFS_FEATURE_MULTISESSION 1

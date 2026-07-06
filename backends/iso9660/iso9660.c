@@ -27,8 +27,10 @@
 
 /*
  * Parse a 7-byte directory record date/time (ECMA-119 9.1.5).
+ * High Sierra records carry the same 6 leading bytes but no timezone.
  */
-static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
+static void iso_parse_dir_date(const uint8_t *d, int high_sierra,
+                               odfs_timestamp_t *ts)
 {
     ts->year   = 1900 + d[0];
     ts->month  = d[1];
@@ -36,7 +38,10 @@ static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
     ts->hour   = d[3];
     ts->minute = d[4];
     ts->second = d[5];
-    ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
+    if (high_sierra)
+        ts->tz_offset = 0;
+    else
+        ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
 }
 
 #if ODFS_FEATURE_ROCK_RIDGE
@@ -99,6 +104,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
                                 uint32_t session_start,
                                 uint32_t *next_id,
                                 int lowercase,
+                                int high_sierra,
                                 odfs_node_t *node,
                                 const uint8_t **sua_out,
                                 size_t *sua_len_out)
@@ -143,11 +149,11 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->size          = node->extent.length;
 
     /* flags */
-    flags = data[ISO_DR_FLAGS];
+    flags = data[high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS];
     node->kind = (flags & ISO_DR_FLAG_DIRECTORY) ? ODFS_NODE_DIR : ODFS_NODE_FILE;
 
     /* timestamps */
-    iso_parse_dir_date(&data[ISO_DR_DATE], &node->mtime);
+    iso_parse_dir_date(&data[ISO_DR_DATE], high_sierra, &node->mtime);
     node->ctime = node->mtime;
 
     /* name */
@@ -165,11 +171,12 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     }
 
     /* System Use Area starts after filename, padded to even offset.
-     * ECMA-119: if name_len is even, a pad byte follows the name. */
+     * ECMA-119: if name_len is even, a pad byte follows the name.
+     * High Sierra predates SUSP, so no System Use Area is reported. */
     name_end = 33 + name_len;
     if ((name_len & 1) == 0)
         name_end++; /* pad byte after even-length filename */
-    if (name_end < rec_len && sua_out && sua_len_out) {
+    if (!high_sierra && name_end < rec_len && sua_out && sua_len_out) {
         *sua_out = &data[name_end];
         *sua_len_out = rec_len - name_end;
     }
@@ -194,6 +201,20 @@ static odfs_err_t iso_probe(odfs_cache_t *cache,
 
     /* check standard identifier "CD001" */
     if (memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0) {
+#if ODFS_FEATURE_HIGH_SIERRA
+        /* High Sierra: "CDROM" identifier after the 8-byte descriptor LBN */
+        if (memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0) {
+            if (sector[HS_VD_TYPE] != ISO_VD_TYPE_PRIMARY) {
+                ODFS_DEBUG(log, ODFS_SUB_ISO, "HSF VD type %u (expected 1)",
+                            sector[HS_VD_TYPE]);
+                return ODFS_ERR_BAD_FORMAT;
+            }
+            ODFS_INFO(log, ODFS_SUB_ISO,
+                       "High Sierra SFS descriptor found at LBA %" PRIu32,
+                       session_start + ISO_VD_START_LBA);
+            return ODFS_OK;
+        }
+#endif
         ODFS_DEBUG(log, ODFS_SUB_ISO, "no CD001 signature at LBA %" PRIu32,
                     session_start + ISO_VD_START_LBA);
         return ODFS_ERR_BAD_FORMAT;
@@ -239,20 +260,39 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
         return err;
     }
 
-    /* parse PVD fields */
-    iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
-                      ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
-    iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
-                      ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+#if ODFS_FEATURE_HIGH_SIERRA
+    if (memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0 &&
+        memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0)
+        ctx->high_sierra = 1;
+#endif
 
-    ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
-    ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
-    ctx->pvd.path_table_size = iso_read_le32(&sector[ISO_PVD_PATH_TABLE_SIZE]);
+    /* parse PVD fields — High Sierra fields sit 8+ bytes later */
+    if (ctx->high_sierra) {
+        iso_copy_strfield(&sector[HS_PVD_SYSTEM_ID], 32,
+                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+        iso_copy_strfield(&sector[HS_PVD_VOLUME_ID], 32,
+                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
 
-    /* root directory record (34 bytes embedded in PVD) */
-    memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
-    ctx->pvd.root_dir_lba  = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_EXTENT_LBA]);
-    ctx->pvd.root_dir_size = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_DATA_LENGTH]);
+        ctx->pvd.volume_space_size = iso_read_le32(&sector[HS_PVD_VOLUME_SPACE_SIZE]);
+        ctx->pvd.logical_block_size = iso_read_le16(&sector[HS_PVD_LOGICAL_BLK_SIZE]);
+        ctx->pvd.path_table_size = iso_read_le32(&sector[HS_PVD_PATH_TABLE_SIZE]);
+
+        memcpy(ctx->pvd.root_dir_record, &sector[HS_PVD_ROOT_DIR_RECORD], 34);
+    } else {
+        iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
+                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+        iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
+                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+
+        ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
+        ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
+        ctx->pvd.path_table_size = iso_read_le32(&sector[ISO_PVD_PATH_TABLE_SIZE]);
+
+        memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
+    }
+    /* extent and length offsets inside the record match in both variants */
+    ctx->pvd.root_dir_lba  = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_EXTENT_LBA]);
+    ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
 
     /*
      * Multisession: if the PVD's root LBA is already >= session_start,
@@ -271,7 +311,8 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     }
 
     ODFS_INFO(log, ODFS_SUB_ISO,
-               "volume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
+               "%svolume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
+               ctx->high_sierra ? "High Sierra " : "",
                ctx->pvd.volume_id, ctx->pvd.system_id,
                ctx->pvd.volume_space_size, ctx->pvd.logical_block_size);
     ODFS_INFO(log, ODFS_SUB_ISO,
@@ -297,12 +338,14 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     root_out->size          = ctx->pvd.root_dir_size;
 
     /* parse timestamps from root dir record */
-    iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE], &root_out->mtime);
+    iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE],
+                       ctx->high_sierra, &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
 #if ODFS_FEATURE_ROCK_RIDGE
-    /* detect Rock Ridge by reading the root directory's "." entry */
-    {
+    /* detect Rock Ridge by reading the root directory's "." entry;
+     * High Sierra predates SUSP, so skip the probe entirely */
+    if (!ctx->high_sierra) {
         const uint8_t *root_sector;
         err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
         if (err == ODFS_OK) {
@@ -401,6 +444,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         size_t sua_len = 0;
         int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
                                             &ctx->next_node_id, lowercase,
+                                            ctx->high_sierra,
                                             &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;

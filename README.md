@@ -24,6 +24,7 @@ ODFileSystem can:
 ODFileSystem currently includes backends for:
 
 - ISO 9660
+- High Sierra
 - Rock Ridge
 - Joliet
 - UDF
@@ -47,6 +48,7 @@ ODFileSystem currently includes backends for:
 | Filesystem | Status | Notes |
 | --- | --- | --- |
 | ISO 9660 | Supported | Plain ISO 9660 names and directory traversal |
+| High Sierra | Supported | Pre-ISO 9660 (1986) variant, detected automatically; not in the ROM profile |
 | Rock Ridge | Supported | Preferred over plain ISO when present |
 | Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
 | UDF | Supported | Bridge discs default to ISO-family content unless forced |
