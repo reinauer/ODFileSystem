@@ -60,4 +60,16 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
  */
 void odfs_sanitize_name(char *name, size_t len, char replacement);
 
+/*
+ * Convert a POSIX-style symlink target to AmigaDOS path syntax.
+ * "." components vanish, each surviving leading ".." becomes a "/"
+ * (AmigaDOS parent reference), and an absolute path is rooted with ":".
+ * Interior ".." components are collapsed textually first ("a/../b" →
+ * "b"), so parent references only remain where AmigaDOS can express
+ * them. Output is NUL-terminated; an empty result means "current
+ * directory" (e.g. for a "." target).
+ */
+odfs_err_t odfs_posix_to_amiga_path(const char *posix,
+                                    char *out, size_t out_size);
+
 #endif /* ODFS_CHARSET_H */

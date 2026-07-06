@@ -11,6 +11,10 @@
  * the documentation for your CD-ROM drive to find the exact SCSI 
  * address.
  * Note that most SCSI drives let you change this number using jumpers.
+ *
+ * Do not keep another active DOSDriver or ROM CDFS mounted with the
+ * same name. If CD0: already exists, replace or disable that entry
+ * before using this one, or rename this DOSDriver to another name.
  */
 
 /* Change to L:ODFileSystem after copying ODFileSystem to

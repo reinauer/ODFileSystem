@@ -100,9 +100,18 @@ typedef struct handler_global {
     struct DosEnvec     *envec;         /* for control string parsing */
 
     /* DMA-safe bounce buffer */
+    /* free-list pools for per-packet objects (entry/lock/fh) */
+    void                *entry_pool;
+    void                *lock_pool;
+    void                *fh_pool;
+
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
     uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
     ULONG                dma_buf_size;  /* usable size in bytes */
+#if !ODFS_AMIGA_OS4
+    uint8_t             *direct_read_buf; /* ACTION_READ buffer, or NULL */
+    ULONG                direct_read_len; /* allowed direct-read bytes */
+#endif
 
     /* filesystem state */
     odfs_mount_t        mount;
@@ -177,6 +186,7 @@ struct odfs_lock {
 #endif
     odfs_entry_t  *entry;          /* shared object metadata */
     ULONG           key;            /* unique key */
+    ULONG           magic;          /* liveness check for BPTR validation */
     odfs_lock_t    *volume_prev;    /* per-volume DOS lock chain */
     odfs_lock_t    *volume_next;    /* per-volume DOS lock chain */
 };
@@ -198,6 +208,7 @@ struct odfs_fh {
     odfs_entry_t  *entry;          /* shared object metadata */
     LONG            access;         /* originating DOS access mode */
     uint64_t        pos;            /* current read position */
+    ULONG           magic;          /* liveness check for handle validation */
 };
 
 /* ---- helper macros ---- */
@@ -284,6 +295,7 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
     case ODFS_ERR_NAME_TOO_LONG: return ERROR_LINE_TOO_LONG;
     case ODFS_ERR_NOT_DIR:     return ERROR_OBJECT_WRONG_TYPE;
     case ODFS_ERR_IS_DIR:      return ERROR_OBJECT_WRONG_TYPE;
+    case ODFS_ERR_IS_SYMLINK:  return ERROR_IS_SOFT_LINK;
     case ODFS_ERR_READ_ONLY:   return ERROR_DISK_WRITE_PROTECTED;
     case ODFS_ERR_TOO_MANY_OPEN: return ERROR_TOO_MANY_LEVELS;
     case ODFS_ERR_EOF:         return 0;
@@ -382,6 +394,7 @@ LONG odfs_handler_get_fh_node(handler_global_t *g,
 LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  odfs_lock_t *ol,
                                  ULONG previous_key,
+                                 uint32_t *resume_io,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out);
 LONG odfs_handler_inhibit(handler_global_t *g, LONG state);

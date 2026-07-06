@@ -18,6 +18,7 @@
 void odfs_namefix_init(odfs_namefix_state_t *state)
 {
     state->head = NULL;
+    memset(state->buckets, 0, sizeof(state->buckets));
     state->chunks = NULL;
 }
 
@@ -32,6 +33,7 @@ void odfs_namefix_destroy(odfs_namefix_state_t *state)
     }
 
     state->head = NULL;
+    memset(state->buckets, 0, sizeof(state->buckets));
     state->chunks = NULL;
 }
 
@@ -76,23 +78,38 @@ static void *odfs_namefix_alloc(odfs_namefix_state_t *state, size_t size)
     return (void *)(chunk + 1);
 }
 
-static int odfs_namefix_contains(const odfs_namefix_state_t *state,
-                                 const char *name)
+static unsigned int odfs_namefix_hash(const char *name)
 {
-    const odfs_namefix_entry_t *entry = state->head;
+    unsigned int hash = 2166136261u;
+
+    while (*name) {
+        hash ^= odfs_ascii_tolower((unsigned char)*name++);
+        hash *= 16777619u;
+    }
+
+    return hash;
+}
+
+static int odfs_namefix_contains(const odfs_namefix_state_t *state,
+                                 const char *name, unsigned int hash)
+{
+    const odfs_namefix_entry_t *entry =
+        state->buckets[hash % ODFS_NAMEFIX_BUCKETS];
+
     while (entry) {
         if (odfs_strcasecmp(entry->name, name) == 0)
             return 1;
-        entry = entry->next;
+        entry = entry->hash_next;
     }
     return 0;
 }
 
 static odfs_err_t odfs_namefix_remember(odfs_namefix_state_t *state,
-                                        const char *name)
+                                        const char *name, unsigned int hash)
 {
     size_t len = strlen(name) + 1u;
     odfs_namefix_entry_t *entry;
+    unsigned int bucket = hash % ODFS_NAMEFIX_BUCKETS;
 
     entry = odfs_namefix_alloc(state, sizeof(*entry) + len);
     if (!entry)
@@ -101,6 +118,8 @@ static odfs_err_t odfs_namefix_remember(odfs_namefix_state_t *state,
     memcpy(entry->name, name, len);
     entry->next = state->head;
     state->head = entry;
+    entry->hash_next = state->buckets[bucket];
+    state->buckets[bucket] = entry;
     return ODFS_OK;
 }
 
@@ -108,12 +127,14 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
                               char *name, size_t name_size)
 {
     char base[ODFS_NAME_MAX];
+    unsigned int hash;
 
     if (name_size == 0)
         return ODFS_ERR_INVAL;
 
-    if (!odfs_namefix_contains(state, name))
-        return odfs_namefix_remember(state, name);
+    hash = odfs_namefix_hash(name);
+    if (!odfs_namefix_contains(state, name, hash))
+        return odfs_namefix_remember(state, name, hash);
 
     memcpy(base, name, name_size);
     base[name_size - 1] = '\0';
@@ -135,8 +156,9 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
         memcpy(name, base, base_len);
         memcpy(name + base_len, suffix, (size_t)suffix_len + 1);
 
-        if (!odfs_namefix_contains(state, name))
-            return odfs_namefix_remember(state, name);
+        hash = odfs_namefix_hash(name);
+        if (!odfs_namefix_contains(state, name, hash))
+            return odfs_namefix_remember(state, name, hash);
     }
 
     return ODFS_ERR_OVERFLOW;

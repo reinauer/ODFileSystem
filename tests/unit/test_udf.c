@@ -16,6 +16,7 @@
 
 typedef struct udf_mock_media {
     uint8_t sectors[MOCK_SECTOR_COUNT][MOCK_SECTOR_SIZE];
+    int     read_counts[MOCK_SECTOR_COUNT];
 } udf_mock_media_t;
 
 static odfs_err_t udf_mock_read_sectors(void *ctx, uint32_t lba,
@@ -25,6 +26,9 @@ static odfs_err_t udf_mock_read_sectors(void *ctx, uint32_t lba,
 
     if (lba + count > MOCK_SECTOR_COUNT)
         return ODFS_ERR_RANGE;
+
+    for (uint32_t i = 0; i < count; i++)
+        media->read_counts[lba + i]++;
 
     memcpy(buf, &media->sectors[lba][0], (size_t)count * MOCK_SECTOR_SIZE);
     return ODFS_OK;
@@ -119,6 +123,40 @@ static odfs_err_t collect_one(const odfs_node_t *entry, void *ctx)
     return ODFS_OK;
 }
 
+static odfs_err_t collect_one_and_stop(const odfs_node_t *entry, void *ctx)
+{
+    collect_one(entry, ctx);
+    return ODFS_ERR_EOF;
+}
+
+static void udf_make_fid(uint8_t *fid, const char *name, uint32_t icb_lba)
+{
+    size_t name_len = strlen(name);
+
+    memset(fid, 0, 40);
+    udf_write_tag(fid, UDF_TAG_FID);
+    udf_write_le16(&fid[16], 1);  /* fid version */
+    fid[18] = 0;                  /* flags */
+    fid[19] = (uint8_t)(name_len + 1u);
+    udf_write_le32(&fid[24], icb_lba);
+    udf_write_le16(&fid[28], 0);  /* partition */
+    udf_write_le16(&fid[36], 0);  /* impl_len */
+    fid[38] = 8;                  /* CS0 8-bit */
+    memcpy(&fid[39], name, name_len);
+}
+
+static void udf_make_parent_fid(uint8_t *fid, uint32_t parent_icb_lba)
+{
+    memset(fid, 0, 40);
+    udf_write_tag(fid, UDF_TAG_FID);
+    udf_write_le16(&fid[16], 1);  /* fid version */
+    fid[18] = UDF_FID_FLAG_PARENT;
+    fid[19] = 0;
+    udf_write_le32(&fid[24], parent_icb_lba);
+    udf_write_le16(&fid[28], 0);  /* partition */
+    udf_write_le16(&fid[36], 0);  /* impl_len */
+}
+
 TEST(udf_readdir_cross_sector_fid)
 {
     udf_mock_media_t mock;
@@ -190,6 +228,181 @@ TEST(udf_readdir_cross_sector_fid)
     ASSERT_STR_EQ(collect.node.name, "A");
     ASSERT_EQ(collect.node.kind, ODFS_NODE_FILE);
     ASSERT_EQ(collect.node.size, 5);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_readdir_resume_skips_prior_icb_reads)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint32_t resume = 0;
+    uint8_t fid[40];
+    odfs_err_t err;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    ctx.next_node_id = 1;
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 80, 1);
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+    udf_make_fe(mock.sectors[4], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    udf_make_fid(fid, "A", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    udf_make_fid(fid, "B", 4);
+    memcpy(&mock.sectors[1][sizeof(fid)], fid, sizeof(fid));
+
+    dir.id = 0;
+    dir.parent_id = 0;
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.name[0] = '/';
+    dir.name[1] = '\0';
+    dir.extent.lba = 0;
+
+    err = udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                  collect_one_and_stop, &collect, &resume);
+    ASSERT_EQ(err, ODFS_ERR_EOF);
+    ASSERT_EQ(collect.count, 1);
+    ASSERT_STR_EQ(collect.node.name, "A");
+    ASSERT(resume > 0);
+
+    memset(&collect, 0, sizeof(collect));
+    memset(mock.read_counts, 0, sizeof(mock.read_counts));
+    odfs_cache_flush(&cache);
+
+    err = udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                  collect_one, &collect, &resume);
+    ASSERT_OK(err);
+    ASSERT_EQ(collect.count, 1);
+    ASSERT_STR_EQ(collect.node.name, "B");
+    ASSERT_EQ(collect.node.size, 7);
+    ASSERT_EQ(mock.read_counts[3], 0);
+    ASSERT(mock.read_counts[4] > 0);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_lookup_skips_nonmatching_icb_reads)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t out;
+    uint8_t fid[40];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&out, 0, sizeof(out));
+
+    ctx.next_node_id = 1;
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 80, 1);
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+    udf_make_fe(mock.sectors[4], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    udf_make_fid(fid, "A", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    udf_make_fid(fid, "B", 4);
+    memcpy(&mock.sectors[1][sizeof(fid)], fid, sizeof(fid));
+
+    dir.id = 0;
+    dir.parent_id = 0;
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.name[0] = '/';
+    dir.name[1] = '\0';
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "B", &out));
+    ASSERT_STR_EQ(out.name, "B");
+    ASSERT_EQ(out.size, 7);
+    ASSERT_EQ(mock.read_counts[3], 0);
+    ASSERT(mock.read_counts[4] > 0);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_resolve_parent_skips_nonmatching_child_icb_reads)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t child;
+    odfs_node_t parent;
+    uint8_t fid[40];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&child, 0, sizeof(child));
+    memset(&parent, 0, sizeof(parent));
+
+    ctx.next_node_id = 1;
+    ctx.root.id = 0;
+    ctx.root.parent_id = 0;
+    ctx.root.backend = ODFS_BACKEND_UDF;
+    ctx.root.kind = ODFS_NODE_DIR;
+    ctx.root.name[0] = '/';
+    ctx.root.name[1] = '\0';
+    ctx.root.extent.lba = 0;
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 80, 1);
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_DIR, 40, 6);
+    udf_make_fe(mock.sectors[4], UDF_ICB_FILETYPE_DIR, 40, 2);
+    udf_make_fe(mock.sectors[5], UDF_ICB_FILETYPE_DIR, 40, 7);
+
+    udf_make_fid(fid, "A", 5);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    udf_make_fid(fid, "P", 3);
+    fid[18] = UDF_FID_FLAG_DIRECTORY;
+    memcpy(&mock.sectors[1][sizeof(fid)], fid, sizeof(fid));
+
+    udf_make_parent_fid(fid, 3);
+    memcpy(&mock.sectors[2][0], fid, sizeof(fid));
+    udf_make_parent_fid(fid, 0);
+    memcpy(&mock.sectors[6][0], fid, sizeof(fid));
+
+    child.id = 42;
+    child.parent_id = 0;
+    child.backend = ODFS_BACKEND_UDF;
+    child.kind = ODFS_NODE_DIR;
+    child.name[0] = 'C';
+    child.name[1] = '\0';
+    child.extent.lba = 4;
+
+    ASSERT_OK(udf_backend_ops.resolve_parent(&ctx, &cache, &log,
+                                             &child, &parent, NULL));
+    ASSERT_STR_EQ(parent.name, "P");
+    ASSERT_EQ(parent.extent.lba, 3);
+    ASSERT_EQ(mock.read_counts[5], 0);
+    ASSERT(mock.read_counts[3] > 0);
 
     odfs_cache_destroy(&cache);
 }

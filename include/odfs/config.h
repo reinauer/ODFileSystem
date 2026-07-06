@@ -39,6 +39,13 @@
     #define ODFS_FEATURE_JOLIET     1
   #endif
 #endif
+#ifndef ODFS_FEATURE_HIGH_SIERRA
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_HIGH_SIERRA 0
+  #else
+    #define ODFS_FEATURE_HIGH_SIERRA 1
+  #endif
+#endif
 #ifndef ODFS_FEATURE_MULTISESSION
   #ifdef ODFS_PROFILE_ROM
     #define ODFS_FEATURE_MULTISESSION 1
@@ -77,14 +84,22 @@
 
 /* ---------- cache feature flags ---------- */
 
-#ifdef ODFS_PROFILE_ROM
+#ifndef ODFS_FEATURE_CACHE_BLOCK
   #define ODFS_FEATURE_CACHE_BLOCK    1
-  #define ODFS_FEATURE_CACHE_META     0
-  #define ODFS_FEATURE_CACHE_STREAM   0
-#else
-  #define ODFS_FEATURE_CACHE_BLOCK    1
-  #define ODFS_FEATURE_CACHE_META     1
-  #define ODFS_FEATURE_CACHE_STREAM   1
+#endif
+#ifndef ODFS_FEATURE_CACHE_META
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_CACHE_META   0
+  #else
+    #define ODFS_FEATURE_CACHE_META   1
+  #endif
+#endif
+#ifndef ODFS_FEATURE_CACHE_STREAM
+  #ifdef ODFS_PROFILE_ROM
+    #define ODFS_FEATURE_CACHE_STREAM 0
+  #else
+    #define ODFS_FEATURE_CACHE_STREAM 1
+  #endif
 #endif
 
 /* ---------- logging feature flags ---------- */
@@ -124,10 +139,11 @@
 
 #ifdef ODFS_PROFILE_ROM
   #define ODFS_BLOCK_CACHE_SIZE     16
-  #define ODFS_META_CACHE_SIZE       0
+  #define ODFS_META_CACHE_KIB        0
 #else
   #define ODFS_BLOCK_CACHE_SIZE    128
-  #define ODFS_META_CACHE_SIZE      64
+  /* parsed-directory cache budget in KiB (0 disables) */
+  #define ODFS_META_CACHE_KIB       96
 #endif
 
 /* ---------- platform ---------- */

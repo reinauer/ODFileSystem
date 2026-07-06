@@ -950,9 +950,20 @@ static odfs_err_t cdda_read(void *backend_ctx,
      * to the caller; do not mask it by synthesizing silence.
      */
     while (done < want) {
-        uint64_t audio_pos = (offset + done) - header_size;
-        uint32_t frame_num = (uint32_t)(audio_pos / CDDA_FRAME_SIZE);
-        uint32_t frame_off = (uint32_t)(audio_pos % CDDA_FRAME_SIZE);
+        uint64_t audio_pos64 = (offset + done) - header_size;
+        uint32_t audio_pos;
+        uint32_t frame_num;
+        uint32_t frame_off;
+
+        /* an audio track is far below 4 GiB, so 32-bit math suffices;
+         * this keeps the 64-bit division helpers out of the binary */
+        if (audio_pos64 > 0xffffffffUL) {
+            *len = 0;
+            return ODFS_ERR_RANGE;
+        }
+        audio_pos = (uint32_t)audio_pos64;
+        frame_num = audio_pos / CDDA_FRAME_SIZE;
+        frame_off = audio_pos % CDDA_FRAME_SIZE;
         uint32_t start_frame = trk->start_lba + frame_num;
 
         if (!ctx->media || !ctx->media->ops->read_audio) {

@@ -326,6 +326,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     /* parse MDB modification date for root timestamp */
     hfs_parse_mac_date(hfs_be32(&mdb[HFS_MDB_LSMOD]), &root_out->mtime);
     root_out->ctime = root_out->mtime;
+    ctx->root = *root_out;
 
     *backend_ctx = ctx;
     return ODFS_OK;
@@ -674,6 +675,179 @@ static odfs_err_t hfs_lookup(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* resolve_parent                                                      */
+/* ------------------------------------------------------------------ */
+
+typedef struct hfs_thread_info {
+    uint32_t parent_cnid;
+    int found;
+} hfs_thread_info_t;
+
+static odfs_err_t hfs_thread_cb(const uint8_t *key, size_t key_len,
+                                  const uint8_t *data, size_t data_len,
+                                  void *cb_ctx)
+{
+    hfs_thread_info_t *info = cb_ctx;
+
+    (void)key;
+    (void)key_len;
+
+    if (data_len < 14 || data[0] != HFS_CAT_DTHREAD)
+        return ODFS_OK;
+
+    info->parent_cnid = hfs_be32(&data[10]);
+    info->found = 1;
+    return ODFS_ERR_EOF;
+}
+
+static odfs_err_t hfs_read_thread(hfs_context_t *ctx,
+                                    odfs_cache_t *cache,
+                                    uint32_t cnid,
+                                    hfs_thread_info_t *info)
+{
+    odfs_err_t err;
+
+    info->parent_cnid = 0;
+    info->found = 0;
+
+    err = hfs_walk_catalog(ctx, cache, cnid, hfs_thread_cb, info);
+    if (info->found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+typedef struct hfs_cnid_match {
+    uint32_t want_cnid;
+    odfs_node_t *out;
+    int found;
+} hfs_cnid_match_t;
+
+static odfs_err_t hfs_cnid_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    hfs_cnid_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_cnid) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF;
+    }
+
+    return ODFS_OK;
+}
+
+static odfs_err_t hfs_find_child_by_cnid(void *backend_ctx,
+                                           odfs_cache_t *cache,
+                                           odfs_log_state_t *log,
+                                           const odfs_node_t *parent_dir,
+                                           uint32_t child_cnid,
+                                           odfs_node_t *out)
+{
+    hfs_cnid_match_t m;
+    odfs_err_t err;
+
+    m.want_cnid = child_cnid;
+    m.out = out;
+    m.found = 0;
+
+    err = hfs_readdir(backend_ctx, cache, log, parent_dir,
+                      hfs_cnid_match_cb, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+static odfs_node_t hfs_dir_stub(uint32_t cnid)
+{
+    odfs_node_t n;
+
+    memset(&n, 0, sizeof(n));
+    n.backend = ODFS_BACKEND_HFS;
+    n.kind = ODFS_NODE_DIR;
+    n.extent.lba = cnid;
+    return n;
+}
+
+static odfs_err_t hfs_resolve_parent(void *backend_ctx,
+                                       odfs_cache_t *cache,
+                                       odfs_log_state_t *log,
+                                       const odfs_node_t *dir,
+                                       odfs_node_t *parent_out,
+                                       odfs_node_t *grandparent_out)
+{
+    hfs_context_t *ctx = backend_ctx;
+    hfs_thread_info_t thread;
+    hfs_thread_info_t parent_thread;
+    odfs_node_t grandparent;
+    odfs_err_t err;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    if (dir->extent.lba == HFS_CNID_ROOT_DIR)
+        return ODFS_ERR_NOT_FOUND;
+
+    err = hfs_read_thread(ctx, cache, dir->extent.lba, &thread);
+    if (err != ODFS_OK)
+        return err;
+
+    if (thread.parent_cnid == HFS_CNID_ROOT_DIR) {
+        *parent_out = ctx->root;
+        if (grandparent_out)
+            *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    err = hfs_read_thread(ctx, cache, thread.parent_cnid, &parent_thread);
+    if (err != ODFS_OK)
+        return err;
+
+    if (parent_thread.parent_cnid == HFS_CNID_ROOT_DIR)
+        grandparent = ctx->root;
+    else
+        grandparent = hfs_dir_stub(parent_thread.parent_cnid);
+
+    err = hfs_find_child_by_cnid(backend_ctx, cache, log, &grandparent,
+                                 thread.parent_cnid, parent_out);
+    if (err != ODFS_OK)
+        return err;
+
+    if (!grandparent_out)
+        return ODFS_OK;
+
+    if (parent_thread.parent_cnid == HFS_CNID_ROOT_DIR) {
+        *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    {
+        hfs_thread_info_t gp_thread;
+        odfs_node_t great;
+
+        err = hfs_read_thread(ctx, cache, parent_thread.parent_cnid,
+                              &gp_thread);
+        if (err != ODFS_OK)
+            return err;
+
+        if (gp_thread.parent_cnid == HFS_CNID_ROOT_DIR)
+            great = ctx->root;
+        else
+            great = hfs_dir_stub(gp_thread.parent_cnid);
+
+        err = hfs_find_child_by_cnid(backend_ctx, cache, log, &great,
+                                     parent_thread.parent_cnid,
+                                     grandparent_out);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -714,6 +888,7 @@ const odfs_backend_ops_t hfs_backend_ops = {
     .readdir         = hfs_readdir,
     .read            = hfs_read,
     .lookup          = hfs_lookup,
+    .resolve_parent  = hfs_resolve_parent,
     .get_volume_name = hfs_get_volume_name,
     .get_volume_size = hfs_get_volume_size,
 };

@@ -104,6 +104,32 @@ static inline void iso_copy_strfield(const uint8_t *src, size_t src_len,
 #define ISO_DR_NAME_LEN          32     /* 1 byte  */
 #define ISO_DR_NAME              33     /* variable */
 
+/* --- High Sierra (pre-ISO 9660, 1986) --- */
+
+/*
+ * High Sierra volume descriptors carry an 8-byte both-endian descriptor LBN
+ * before the type byte, so every header field sits 8 bytes later than in
+ * ISO 9660, and the identifier is "CDROM" instead of "CD001". Directory
+ * records share the ISO layout except for a 6-byte recording date (no
+ * timezone byte) which puts the flags byte at offset 24 instead of 25.
+ */
+
+#define HS_STANDARD_ID           "CDROM"
+#define HS_STANDARD_ID_LEN       5
+
+#define HS_VD_TYPE               8     /* 1 byte  */
+#define HS_VD_ID                 9     /* 5 bytes "CDROM" */
+#define HS_VD_VERSION           14     /* 1 byte  */
+#define HS_PVD_SYSTEM_ID        16     /* 32 bytes */
+#define HS_PVD_VOLUME_ID        48     /* 32 bytes */
+#define HS_PVD_VOLUME_SPACE_SIZE 88    /* 8 bytes 7.3.3 */
+#define HS_PVD_LOGICAL_BLK_SIZE 136    /* 4 bytes 7.3.3 */
+#define HS_PVD_PATH_TABLE_SIZE  140    /* 8 bytes 7.3.3 */
+#define HS_PVD_ROOT_DIR_RECORD  180    /* 34 bytes */
+
+#define HS_DR_DATE              18     /* 6 bytes, no timezone */
+#define HS_DR_FLAGS             24     /* 1 byte  */
+
 /* directory record flag bits */
 #define ISO_DR_FLAG_HIDDEN       0x01
 #define ISO_DR_FLAG_DIRECTORY    0x02
@@ -132,6 +158,7 @@ typedef struct iso_context {
     uint32_t       session_start;
     uint32_t       next_node_id;
     int            lowercase;     /* lowercase ISO names for display */
+    int            high_sierra;   /* High Sierra variant, not ISO 9660 */
     int            has_rock_ridge; /* Rock Ridge extensions detected */
     int            rr_skip;       /* SP skip bytes for RR entries */
     odfs_node_t    root;          /* verbatim root node, for parent resolution */
@@ -154,6 +181,27 @@ odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
 /* synthesize the minimal directory node needed to enumerate an extent */
 odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
                               uint32_t lba, uint32_t size);
+
+/*
+ * Merge the continuation records of a multi-extent file (ISO 9660 Level 3,
+ * ECMA-119 6.5.1). Called after parsing a directory record whose
+ * multi-extent flag is set; first_rec must still point at that raw record.
+ * Consumes every continuation record by advancing *offset past it and
+ * accumulates their data lengths into node->size. Only contiguous extents
+ * can be represented by the single-extent node model; when a part is
+ * non-contiguous the file is truncated to the contiguous prefix and a
+ * warning is logged. Shared by the ISO 9660 (plain and High Sierra) and
+ * Joliet backends — the record fields involved sit at identical offsets.
+ */
+odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+                                       odfs_log_state_t *log,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t dir_size,
+                                       uint32_t *offset,
+                                       int high_sierra,
+                                       const uint8_t *first_rec,
+                                       odfs_node_t *node);
 
 /* --- backend ops (exposed for registration) --- */
 

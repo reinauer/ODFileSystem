@@ -80,6 +80,10 @@ HOSTLDFLAGS =
 
 # ---- Amiga build options ----
 
+# Optimization level. Speed is the release priority; the ROM profile
+# overrides this with -Os to stay within its size budget.
+AMIGA_OPT ?= -O2
+
 # Serial debug output (override with: make SERIAL_DEBUG=1)
 SERIAL_DEBUG ?= 0
 
@@ -88,9 +92,9 @@ PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
 ifeq ($(AMIGA_TARGET),os4)
-AMIGA_SIZE_LIMIT ?= 131072
+AMIGA_SIZE_LIMIT ?= 147456
 else
-AMIGA_SIZE_LIMIT ?= 60000
+AMIGA_SIZE_LIMIT ?= 98304
 endif
 ROM_SIZE_LIMIT   ?= 40960
 SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
@@ -128,7 +132,7 @@ AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -static
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__AROS__
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
@@ -140,7 +144,7 @@ AMIGA_CPUFLAGS ?= -mcpu=powerpc
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.
 LIBS           = -lc -lgcc
@@ -156,19 +160,19 @@ AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -noixemul
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA
-LDFLAGS        = $(AMIGA_SYSFLAGS)
+LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 endif
 
-CFLAGS = -Os $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
+CFLAGS = $(AMIGA_OPT) $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
          -Wall -Wextra -Werror \
          $(AMIGA_WARNFLAGS) \
          -Wstrict-prototypes -Wmissing-prototypes \
          -Wno-array-bounds \
          -MMD -MP \
-         $(AMIGA_DEFS) $(FEATURE_DEFS)
+         $(AMIGA_DEFS) $(FEATURE_DEFS) $(LTO)
 
 # ---- build directories ----
 
@@ -177,6 +181,11 @@ AMIGA_BUILD = build/amiga
 ROM_BUILD   = build/amiga-rom
 AMIGA_TEST_BUILD = build/amiga-test
 ROM_TEST_BUILD   = build/amiga-rom-test
+AMIGA_020_BUILD  = build/amiga-020
+
+# 68020 release variant: hardware mul/div and 020 addressing modes make
+# the handler both faster and smaller than the 68000 build.
+AMIGA_020_CPUFLAGS ?= -m68020 -msoft-float
 
 # ---- shared source lists ----
 
@@ -187,6 +196,7 @@ CORE_SRCS = \
     core/node.c \
     core/namefix.c \
     core/cache_block.c \
+    core/cache_meta.c \
     core/charset.c \
     core/ancestry.c \
     core/mount.c \
@@ -257,6 +267,7 @@ TOOL_DEPS  = $(patsubst %,$(HOST_BUILD)/tools/%.d,$(TOOL_NAMES))
 # ---- handler target (Amiga) ----
 
 HANDLER      = $(AMIGA_BUILD)/ODFileSystem
+HANDLER_020  = $(AMIGA_020_BUILD)/ODFileSystem
 KICKSTART_MODULE =
 AMIGA_ARTIFACTS = $(HANDLER)
 ifeq ($(AMIGA_TARGET),os4)
@@ -284,7 +295,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 # targets
 # ==================================================================
 
-.PHONY: all host amiga amiga-test adf rom rom-test lib tests tools fuzz
+.PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
 .PHONY: check golden-check malformed-check fuzz-check integration-check
 .PHONY: clean size amigaos3-lha amigaos4-lha
 
@@ -314,7 +325,18 @@ amiga-test:
 		SERIAL_DEBUG=1 \
 		amiga
 
-adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
+amiga-020:
+	@if [ "$(AMIGA_TARGET)" != "os3" ]; then \
+		echo "  ERROR: amiga-020 requires CC=m68k-amigaos-gcc"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory \
+		AMIGA_BUILD=$(AMIGA_020_BUILD) \
+		AMIGA_CPUFLAGS="$(AMIGA_020_CPUFLAGS)" \
+		SIZE_LIMIT_DESC="release Amiga 68020 handler" \
+		amiga
+
+adf: amiga-test amiga-020 $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefile
 	@mkdir -p $(dir $(ADF))
 	@echo "  ADF   $(ADF)"
 	@$(XDFTOOL) -f $(ADF) \
@@ -323,6 +345,7 @@ adf: amiga-test $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_ICON) Makefi
 		makedir L + \
 		makedir C + \
 		write $(TEST_HANDLER) L + \
+		write $(HANDLER_020) L/ODFileSystem020 + \
 		write $(AMIGA_TEST_TOOL) C/test_handler + \
 		write $(ADF_DOSDRIVER) + \
 		write $(ADF_DOSDRIVER_ICON)
@@ -334,6 +357,8 @@ amigaos3-lha:
 		exit 1; \
 	fi
 	@$(MAKE) --no-print-directory AMIGA_BUILD=$(AMIGA_BUILD) amiga
+	@$(MAKE) --no-print-directory AMIGA_020_BUILD=$(AMIGA_020_BUILD) \
+		amiga-020
 	@$(MAKE) --no-print-directory AMIGA_TEST_BUILD=$(AMIGA_TEST_BUILD) \
 		amiga-test
 	@$(MAKE) --no-print-directory ROM_BUILD=$(ROM_BUILD) rom
@@ -342,6 +367,7 @@ amigaos3-lha:
 	@rm -rf "$(AMIGAOS3_PACKAGE_DIR)" "$(AMIGAOS3_PACKAGE)"
 	@mkdir -p "$(AMIGAOS3_PACKAGE_DIR)"
 	@cp "$(HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem"
+	@cp "$(HANDLER_020)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem020"
 	@cp "$(TEST_HANDLER)" "$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-test"
 	@cp "$(ROM_BUILD)/ODFileSystem" \
 		"$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-rom"
@@ -351,7 +377,7 @@ amigaos3-lha:
 	@echo "  LHA   $(AMIGAOS3_PACKAGE)"
 	@(cd "$(AMIGAOS3_PACKAGE_DIR)" && \
 		$(LHA) -aq "$(CURDIR)/$(AMIGAOS3_PACKAGE)" \
-		ODFileSystem ODFileSystem-test \
+		ODFileSystem ODFileSystem020 ODFileSystem-test \
 		ODFileSystem-rom ODFileSystem-rom-test README.md)
 	@echo "  LHA archive ready: $(AMIGAOS3_PACKAGE)"
 
@@ -384,6 +410,7 @@ amigaos4-lha:
 rom:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_BUILD) \
+		AMIGA_OPT=-Os \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		AMIGA_SIZE_LIMIT=$(ROM_SIZE_LIMIT) \
 		SIZE_LIMIT_NAME=ROM_SIZE_LIMIT \
@@ -399,6 +426,7 @@ rom:
 rom-test:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_TEST_BUILD) \
+		AMIGA_OPT=-Os \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \

@@ -29,6 +29,7 @@
 #endif
 
 #include <exec/execbase.h>
+#include <exec/errors.h>
 #include <exec/io.h>
 #include <devices/trackdisk.h>
 #include <devices/scsidisk.h>
@@ -45,6 +46,7 @@
 #include "odfs/error.h"
 #include "odfs/ancestry.h"
 #include "odfs/alloc.h"
+#include "odfs/charset.h"
 #include "odfs/string.h"
 
 #ifndef ODFS_GIT_VERSION
@@ -118,6 +120,124 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
     return ((sense[2] & 0x0f) == 0x05 && sense[12] == 0x20);
 }
 
+#if !ODFS_AMIGA_OS4
+static int amiga_direct_read_window_ok(handler_global_t *g,
+                                       const void *buf,
+                                       uint32_t len)
+{
+    ULONG start;
+    ULONG end;
+    ULONG win_start;
+    ULONG win_end;
+
+    if (!g->direct_read_buf || g->direct_read_len == 0 || len == 0)
+        return 0;
+
+    start = (ULONG)buf;
+    end = start + len - 1;
+    win_start = (ULONG)g->direct_read_buf;
+    win_end = win_start + g->direct_read_len - 1;
+    if (end < start || win_end < win_start)
+        return 0;
+
+    return start >= win_start && end <= win_end;
+}
+
+static int amiga_direct_memtype_ok(ULONG memtype, const void *buf,
+                                   uint32_t len)
+{
+    ULONG need = memtype & (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST |
+                            MEMF_LOCAL | MEMF_24BITDMA | MEMF_KICK);
+    ULONG start_type;
+    ULONG end_type;
+
+    if (need == MEMF_ANY)
+        return 1;
+
+    start_type = TypeOfMem((CONST_APTR)buf);
+    end_type = TypeOfMem((CONST_APTR)((ULONG)buf + len - 1));
+    return ((start_type & need) == need) && ((end_type & need) == need);
+}
+
+static int amiga_can_read_direct(handler_global_t *g, const void *buf,
+                                 uint32_t len, uint32_t sectors)
+{
+    struct DosEnvec *de;
+    ULONG start;
+    ULONG end;
+    ULONG blocked;
+
+    if (!g || !g->envec || !buf || len == 0 || sectors < 2)
+        return 0;
+    if (!amiga_direct_read_window_ok(g, buf, len))
+        return 0;
+
+    de = g->envec;
+    if (de->de_MaxTransfer != 0 && len > de->de_MaxTransfer)
+        return 0;
+
+    start = (ULONG)buf;
+    end = start + len - 1;
+    if (end < start)
+        return 0;
+
+    blocked = ~de->de_Mask;
+    if ((start & blocked) != 0)
+        return 0;
+
+    return amiga_direct_memtype_ok(de->de_BufMemType, buf, len);
+}
+
+static odfs_err_t amiga_read_direct(handler_global_t *g,
+                                    struct IOStdReq *req,
+                                    uint32_t lba,
+                                    uint32_t count,
+                                    uint32_t bytes,
+                                    void *buf)
+{
+    ULONG byte_offset_lo;
+    ULONG byte_offset_hi = 0;
+
+    (void)count; /* used by diagnostics when logging is enabled */
+
+    if (g->sector_size == 2048) {
+        byte_offset_lo = lba << 11;
+        byte_offset_hi = lba >> 21;
+    } else {
+        byte_offset_lo = lba * g->sector_size;
+    }
+
+    req->io_Offset = byte_offset_lo;
+    req->io_Actual = byte_offset_hi;
+    req->io_Length = bytes;
+    req->io_Data = buf;
+
+    if (byte_offset_hi != 0)
+        req->io_Command = TD_READ64;
+    else
+        req->io_Command = CMD_READ;
+
+    if (DoIO((struct IORequest *)req) != 0 ||
+        req->io_Error != 0 ||
+        req->io_Actual != bytes) {
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "direct read failed unit=%lu lba=%lu count=%lu "
+                   "bytes=%lu off=%lu io_Error=%ld actual=%lu cmd=%lu",
+                   (unsigned long)g->devunit,
+                   (unsigned long)lba,
+                   (unsigned long)count,
+                   (unsigned long)bytes,
+                   (unsigned long)req->io_Offset,
+                   (long)req->io_Error,
+                   (unsigned long)req->io_Actual,
+                   (unsigned long)req->io_Command);
+        return ODFS_ERR_IO;
+    }
+
+    return ODFS_OK;
+}
+#endif
+
 static LONG changeint_signal(APTR data)
 {
     odfs_changeint_data_t *ci = data;
@@ -127,34 +247,37 @@ static LONG changeint_signal(APTR data)
     return 0;
 }
 
+/*
+ * Days from 1978-01-01 (the AmigaDOS epoch) for a civil date, computed
+ * in closed form. A per-year loop here costs ~150 divisions per
+ * conversion, and a conversion runs for every FileInfoBlock filled by
+ * Examine, ExNext, and ExAll.
+ */
+static LONG days_since_1978(int year, int month, int day)
+{
+    LONG y = year;
+    LONG era, yoe, doy, doe;
+
+    /* shift so the year starts in March; Jan/Feb belong to y-1 */
+    y -= month <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;                          /* [0, 399] */
+    doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;  /* [0, 146096] */
+
+    /* 719468 days from 0000-03-01 to 1970-01-01, 2922 more to 1978 */
+    return era * 146097 + doe - 719468 - 2922;
+}
+
 static int odfs_timestamp_to_datestamp(const odfs_timestamp_t *ts,
                                        struct DateStamp *stamp)
 {
-    static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-    LONG days = 0;
-    int y;
-    int m;
-
     if (!ts || !stamp || ts->year < 1978 || ts->month < 1 || ts->month > 12 ||
         ts->day < 1 || ts->day > 31 || ts->hour > 23 || ts->minute > 59 ||
         ts->second > 59)
         return 0;
 
-    for (y = 1978; y < ts->year; y++) {
-        days += 365;
-        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
-            days++;
-    }
-
-    for (m = 1; m < ts->month; m++) {
-        days += mdays[m];
-        if (m == 2 && ((ts->year % 4 == 0 && ts->year % 100 != 0) ||
-            ts->year % 400 == 0))
-            days++;
-    }
-
-    days += ts->day - 1;
-    stamp->ds_Days = days;
+    stamp->ds_Days = days_since_1978(ts->year, ts->month, ts->day);
     stamp->ds_Minute = ts->hour * 60 + ts->minute;
     stamp->ds_Tick = ts->second * TICKS_PER_SECOND;
     return 1;
@@ -294,6 +417,11 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
         if (!req)
             return ODFS_ERR_NOMEM;
     }
+#endif
+
+#if !ODFS_AMIGA_OS4
+    if (amiga_can_read_direct(g, out, total_bytes, count))
+        return amiga_read_direct(g, req, lba, count, total_bytes, out);
 #endif
 
     /*
@@ -1007,14 +1135,50 @@ static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
     return volume ? volume->volnode : NULL;
 }
 
-static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
+/*
+ * Free-list pools for the per-packet objects. Every Lock/Open/Examine
+ * allocates and frees an entry plus a lock or file handle; popping a
+ * free list avoids the Forbid-protected AllocMem walk on each packet.
+ * Objects are recycled per handler process and returned to the system
+ * at shutdown.
+ */
+#define ODFS_LOCK_MAGIC 0x4f4c4b31UL /* 'OLK1' */
+#define ODFS_FH_MAGIC   0x4f464831UL /* 'OFH1' */
+
+static void *pool_pop(void **head)
+{
+    void *p = *head;
+
+    if (p)
+        *head = *(void **)p;
+    return p;
+}
+
+static void pool_push(void **head, void *p)
+{
+    *(void **)p = *head;
+    *head = p;
+}
+
+static void pool_drain(void **head, ULONG obj_size)
+{
+    void *p;
+
+    while ((p = pool_pop(head)) != NULL)
+        odfs_amiga_free_mem(p, obj_size);
+}
+
+static odfs_entry_t *alloc_entry(handler_global_t *g,
+                                 odfs_volume_t *volume,
                                  const odfs_node_t *fnode,
                                  const odfs_node_t *parent,
                                  const odfs_node_t *grandparent)
 {
     odfs_entry_t *entry;
 
-    entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC | MEMF_CLEAR);
+    entry = pool_pop(&g->entry_pool);
+    if (!entry)
+        entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC);
     if (!entry)
         return NULL;
 
@@ -1035,6 +1199,25 @@ static odfs_entry_t *alloc_entry(odfs_volume_t *volume,
     return entry;
 }
 
+/* pop an entry whose node fields the caller will fill in place */
+static odfs_entry_t *alloc_entry_blank(handler_global_t *g,
+                                       odfs_volume_t *volume)
+{
+    odfs_entry_t *entry;
+
+    if (!volume)
+        return NULL;
+    entry = pool_pop(&g->entry_pool);
+    if (!entry)
+        entry = odfs_amiga_alloc_mem(sizeof(*entry), MEMF_PUBLIC);
+    if (!entry)
+        return NULL;
+    entry->volume = volume;
+    entry->has_grandparent = 0;
+    entry->refcount = 1;
+    return entry;
+}
+
 static odfs_entry_t *retain_entry(odfs_entry_t *entry)
 {
     if (entry)
@@ -1042,12 +1225,12 @@ static odfs_entry_t *retain_entry(odfs_entry_t *entry)
     return entry;
 }
 
-static void release_entry(odfs_entry_t *entry)
+static void release_entry(handler_global_t *g, odfs_entry_t *entry)
 {
     if (!entry)
         return;
     if (--entry->refcount == 0)
-        odfs_amiga_free_mem(entry, sizeof(*entry));
+        pool_push(&g->entry_pool, entry);
 }
 
 static odfs_node_t *lock_node(odfs_lock_t *ol)
@@ -1072,53 +1255,61 @@ static odfs_node_t *fh_node(odfs_fh_t *fh)
     return fh ? &fh->entry->fnode : NULL;
 }
 
-static odfs_node_t *fh_parent_node(odfs_fh_t *fh)
-{
-    return fh ? &fh->entry->parent_node : NULL;
-}
-
-static odfs_node_t *fh_grandparent_node(odfs_fh_t *fh)
-{
-    if (!fh || !fh->entry->has_grandparent)
-        return NULL;
-    return &fh->entry->grandparent_node;
-}
-
 static odfs_volume_t *fh_volume(odfs_fh_t *fh)
 {
     return fh ? fh->entry->volume : NULL;
 }
 
+/*
+ * Liveness checks for caller-supplied lock and file-handle pointers.
+ * The magic word is set on allocation and cleared on free, so a stale
+ * or foreign pointer fails in constant time instead of walking the
+ * object lists on every packet. Debug builds keep the exhaustive walk
+ * to also catch objects with a valid-looking magic that were never
+ * linked to this handler.
+ */
 static int lock_is_active(handler_global_t *g, odfs_lock_t *needle)
 {
-    odfs_lock_t *ol;
-
     if (!g || !needle)
         return 0;
 
-    for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
-         ol->node.mln_Succ != NULL;
-         ol = (odfs_lock_t *)ol->node.mln_Succ) {
-        if (ol == needle)
-            return 1;
+#if ODFS_SERIAL_DEBUG
+    {
+        odfs_lock_t *ol;
+
+        for (ol = (odfs_lock_t *)g->locklist.mlh_Head;
+             ol->node.mln_Succ != NULL;
+             ol = (odfs_lock_t *)ol->node.mln_Succ) {
+            if (ol == needle)
+                return needle->magic == ODFS_LOCK_MAGIC;
+        }
+        return 0;
     }
-    return 0;
+#else
+    return needle->magic == ODFS_LOCK_MAGIC;
+#endif
 }
 
 static int fh_is_active(handler_global_t *g, odfs_fh_t *needle)
 {
-    odfs_fh_t *fh;
-
     if (!g || !needle)
         return 0;
 
-    for (fh = (odfs_fh_t *)g->fhlist.mlh_Head;
-         fh->node.mln_Succ != NULL;
-         fh = (odfs_fh_t *)fh->node.mln_Succ) {
-        if (fh == needle)
-            return 1;
+#if ODFS_SERIAL_DEBUG
+    {
+        odfs_fh_t *fh;
+
+        for (fh = (odfs_fh_t *)g->fhlist.mlh_Head;
+             fh->node.mln_Succ != NULL;
+             fh = (odfs_fh_t *)fh->node.mln_Succ) {
+            if (fh == needle)
+                return needle->magic == ODFS_FH_MAGIC;
+        }
+        return 0;
     }
-    return 0;
+#else
+    return needle->magic == ODFS_FH_MAGIC;
+#endif
 }
 
 static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volnode)
@@ -1324,32 +1515,14 @@ static void node_date(const odfs_node_t *node, struct DateStamp *ds)
     if (!node || node->mtime.year < 1978)
         return;
 
-    {
-        LONG days = 0;
-        int y;
+    if (node->mtime.month < 1 || node->mtime.month > 12 ||
+        node->mtime.day < 1)
+        return;
 
-        for (y = 1978; y < node->mtime.year; y++) {
-            days += 365;
-            if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)
-                days++;
-        }
-        {
-            static const int mdays[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-            int m;
-            for (m = 1; m < node->mtime.month && m <= 12; m++) {
-                days += mdays[m];
-                if (m == 2 && ((node->mtime.year % 4 == 0 &&
-                    node->mtime.year % 100 != 0) ||
-                    node->mtime.year % 400 == 0))
-                    days++;
-            }
-        }
-        days += node->mtime.day - 1;
-
-        ds->ds_Days   = days;
-        ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
-        ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
-    }
+    ds->ds_Days   = days_since_1978(node->mtime.year, node->mtime.month,
+                                    node->mtime.day);
+    ds->ds_Minute = node->mtime.hour * 60 + node->mtime.minute;
+    ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
 }
 
 void odfs_handler_fill_node_info(handler_global_t *g,
@@ -1373,7 +1546,12 @@ void odfs_handler_fill_node_info(handler_global_t *g,
     info->protection = node_protection(node);
     info->size = node->size;
     info->is_dir = (node->kind == ODFS_NODE_DIR);
-    info->fib_type = info->is_dir ? ST_USERDIR : ST_FILE;
+    if (info->is_dir)
+        info->fib_type = ST_USERDIR;
+    else if (node->kind == ODFS_NODE_SYMLINK)
+        info->fib_type = ST_SOFTLINK;
+    else
+        info->fib_type = ST_FILE;
     if (g && node_is_mount_root(g, node))
         info->fib_type = ST_ROOT;
     node_date(node, &info->date);
@@ -1434,7 +1612,7 @@ static void drain_all_objects(handler_global_t *g)
     while ((node = RemHead((struct List *)&g->fhlist)) != NULL) {
         odfs_fh_t *fh = (odfs_fh_t *)node;
         release_volume_object(g, fh->entry->volume);
-        release_entry(fh->entry);
+        release_entry(g, fh->entry);
         odfs_amiga_free_mem(fh, sizeof(*fh));
     }
 
@@ -1446,7 +1624,7 @@ static void drain_all_objects(handler_global_t *g)
             FreeDosObject(DOS_LOCK, ol->lock);
 #endif
         release_volume_object(g, ol->entry->volume);
-        release_entry(ol->entry);
+        release_entry(g, ol->entry);
         odfs_amiga_free_mem(ol, sizeof(*ol));
     }
 }
@@ -1474,46 +1652,40 @@ static int packet_needs_live_mount(const struct DosPacket *pkt)
     case ACTION_READ:
     case ACTION_SEEK:
     case ACTION_FH_FROM_LOCK:
+    case ACTION_READ_LINK:
         return 0;
     default:
         return 1;
     }
 }
 
-static odfs_lock_t *alloc_lock(handler_global_t *g,
-                                const odfs_node_t *fnode,
-                                const odfs_node_t *parent,
-                                const odfs_node_t *grandparent,
-                                LONG access)
+/* wrap an already-populated entry in a DOS lock; consumes the entry
+ * reference on success and leaves it to the caller on failure */
+static odfs_lock_t *lock_from_entry(handler_global_t *g,
+                                    odfs_entry_t *entry,
+                                    LONG access)
 {
     odfs_lock_t *ol;
-    odfs_entry_t *entry;
     struct FileLock *lock;
 
-    if (!g->current_volume)
+    ol = pool_pop(&g->lock_pool);
+    if (!ol)
+        ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC);
+    if (!ol)
         return NULL;
-
-    entry = alloc_entry(g->current_volume, fnode, parent, grandparent);
-    if (!entry)
-        return NULL;
-
-    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!ol) {
-        release_entry(entry);
-        return NULL;
-    }
+    memset(ol, 0, sizeof(*ol));
 #if ODFS_AMIGA_OS4
     ol->lock = AllocDosObjectTags(DOS_LOCK,
                                   ADO_DOSType, ODFS_OS4_CD_DOSTYPE,
                                   TAG_DONE);
     if (!ol->lock) {
         odfs_amiga_free_mem(ol, sizeof(*ol));
-        release_entry(entry);
         return NULL;
     }
 #endif
     ol->entry = entry;
-    ol->key = amiga_node_key(fnode);
+    ol->key = amiga_node_key(&entry->fnode);
+    ol->magic = ODFS_LOCK_MAGIC;
 #if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
@@ -1536,6 +1708,28 @@ static odfs_lock_t *alloc_lock(handler_global_t *g,
     return ol;
 }
 
+static odfs_lock_t *alloc_lock(handler_global_t *g,
+                                const odfs_node_t *fnode,
+                                const odfs_node_t *parent,
+                                const odfs_node_t *grandparent,
+                                LONG access)
+{
+    odfs_entry_t *entry;
+    odfs_lock_t *ol;
+
+    if (!g->current_volume)
+        return NULL;
+
+    entry = alloc_entry(g, g->current_volume, fnode, parent, grandparent);
+    if (!entry)
+        return NULL;
+
+    ol = lock_from_entry(g, entry, access);
+    if (!ol)
+        release_entry(g, entry);
+    return ol;
+}
+
 static void free_lock(handler_global_t *g, odfs_lock_t *ol)
 {
     if (!ol)
@@ -1547,8 +1741,9 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
         FreeDosObject(DOS_LOCK, ol->lock);
 #endif
     release_volume_object(g, ol->entry->volume);
-    release_entry(ol->entry);
-    odfs_amiga_free_mem(ol, sizeof(*ol));
+    release_entry(g, ol->entry);
+    ol->magic = 0;
+    pool_push(&g->lock_pool, ol);
 }
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
@@ -1559,9 +1754,12 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
     if (!src)
         return NULL;
 
-    ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC | MEMF_CLEAR);
+    ol = pool_pop(&g->lock_pool);
+    if (!ol)
+        ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC);
     if (!ol)
         return NULL;
+    memset(ol, 0, sizeof(*ol));
 
 #if ODFS_AMIGA_OS4
     ol->lock = AllocDosObjectTags(DOS_LOCK,
@@ -1574,6 +1772,7 @@ static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 #endif
     ol->entry = retain_entry(src->entry);
     ol->key = src->key;
+    ol->magic = ODFS_LOCK_MAGIC;
 #if !ODFS_AMIGA_OS4
     ol->dos_private[0] = 0;
     ol->dos_private[1] = 0;
@@ -1605,13 +1804,16 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     if (!entry)
         return NULL;
 
-    fh = odfs_amiga_alloc_mem(sizeof(*fh), MEMF_PUBLIC | MEMF_CLEAR);
+    fh = pool_pop(&g->fh_pool);
+    if (!fh)
+        fh = odfs_amiga_alloc_mem(sizeof(*fh), MEMF_PUBLIC);
     if (!fh)
         return NULL;
 
     fh->entry = retain_entry(entry);
     fh->access = access;
     fh->pos = 0;
+    fh->magic = ODFS_FH_MAGIC;
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
@@ -1623,8 +1825,9 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
         return;
     Remove((struct Node *)&fh->node);
     release_volume_object(g, fh->entry->volume);
-    release_entry(fh->entry);
-    odfs_amiga_free_mem(fh, sizeof(*fh));
+    release_entry(g, fh->entry);
+    fh->magic = 0;
+    pool_push(&g->fh_pool, fh);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1644,6 +1847,26 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
  * when available. When an ascent needs an unknown ancestor, reconstruct it with
  * an iterative directory walk.
  */
+static void swap_node_ptrs(odfs_node_t **a, odfs_node_t **b)
+{
+    odfs_node_t *t = *a;
+
+    *a = *b;
+    *b = t;
+}
+
+/*
+ * Details of the symbolic link that stopped a path walk, for
+ * ACTION_READ_LINK: the directory holding the link, the link's name,
+ * and the unconsumed remainder of the path (pointing into the caller's
+ * path string, beginning with '/' or empty).
+ */
+typedef struct odfs_link_hit {
+    odfs_node_t parent;
+    char        name[256];
+    const char *rest;
+} odfs_link_hit_t;
+
 static odfs_err_t resolve_amiga_path(handler_global_t *g,
                                       const odfs_node_t *start,
                                       const odfs_node_t *start_parent,
@@ -1652,25 +1875,39 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
                                       odfs_node_t *result,
                                       odfs_node_t *parent_out,
                                       odfs_node_t *grandparent_out,
-                                      int *has_grandparent_out)
+                                      int *has_grandparent_out,
+                                      odfs_link_hit_t *link_hit)
 {
-    odfs_node_t cur = *start;
-    odfs_node_t parent = start_parent ? *start_parent : *start;
-    odfs_node_t grandparent =
-        start_grandparent ? *start_grandparent : parent;
+    /* Three node buffers; ascents and descents rotate the pointers
+     * instead of copying nodes, so each path component moves pointers,
+     * not sizeof(odfs_node_t) bytes. */
+    odfs_node_t nodes[3];
+    odfs_node_t *cur = &nodes[0];
+    odfs_node_t *parent = &nodes[1];
+    odfs_node_t *grandparent = &nodes[2];
     int has_grandparent = start_grandparent != NULL;
     const char *p = path;
     char comp[256];
     odfs_err_t err;
 
+    *cur = *start;
+    if (start_parent)
+        *parent = *start_parent;
+    else
+        *parent = *start;
+    if (start_grandparent)
+        *grandparent = *start_grandparent;
+    else
+        *grandparent = *parent;
+
     if (!start_parent || node_is_mount_root(g, start)) {
-        parent = g->mount.root;
-        grandparent = g->mount.root;
+        *parent = g->mount.root;
+        *grandparent = g->mount.root;
         has_grandparent = 1;
 #if ODFS_FEATURE_CDDA
     } else if (g->has_cdda && nodes_same(start, &g->cdda_root)) {
-        parent = g->mount.root;
-        grandparent = g->mount.root;
+        *parent = g->mount.root;
+        *grandparent = g->mount.root;
         has_grandparent = 1;
 #endif
     }
@@ -1689,25 +1926,24 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
     while (*p) {
         /* "/" at current position = go to parent */
         if (*p == '/') {
-            if (!node_is_mount_root(g, &cur)) {
-                cur = parent;
-                if (node_is_mount_root(g, &cur)) {
-                    parent = g->mount.root;
-                    grandparent = g->mount.root;
+            if (!node_is_mount_root(g, cur)) {
+                swap_node_ptrs(&cur, &parent);
+                if (node_is_mount_root(g, cur)) {
+                    *parent = g->mount.root;
+                    *grandparent = g->mount.root;
                     has_grandparent = 1;
 #if ODFS_FEATURE_CDDA
-                } else if (g->has_cdda && nodes_same(&cur, &g->cdda_root)) {
-                    parent = g->mount.root;
-                    grandparent = g->mount.root;
+                } else if (g->has_cdda && nodes_same(cur, &g->cdda_root)) {
+                    *parent = g->mount.root;
+                    *grandparent = g->mount.root;
                     has_grandparent = 1;
 #endif
                 } else if (has_grandparent) {
-                    parent = grandparent;
-                    grandparent = parent;
+                    swap_node_ptrs(&parent, &grandparent);
                     has_grandparent = 0;
                 } else {
-                    err = odfs_resolve_parent_node(&g->mount, &cur,
-                                                   &parent, &grandparent);
+                    err = odfs_resolve_parent_node(&g->mount, cur,
+                                                   parent, grandparent);
                     if (err != ODFS_OK)
                         return err;
                     has_grandparent = 1;
@@ -1729,38 +1965,63 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         comp[len] = '\0';
 
         /* look up in current directory */
-        if (cur.kind != ODFS_NODE_DIR)
+        if (cur->kind != ODFS_NODE_DIR)
             return ODFS_ERR_NOT_DIR;
 
 #if ODFS_FEATURE_CDDA
         /* intercept "CDDA" virtual directory on mixed-mode discs */
-        if (g->has_cdda && cur.extent.lba == g->mount.root.extent.lba &&
+        if (g->has_cdda && cur->extent.lba == g->mount.root.extent.lba &&
             odfs_strcasecmp(comp, "CDDA") == 0) {
-            grandparent = parent;
+            swap_node_ptrs(&grandparent, &parent);
+            swap_node_ptrs(&parent, &cur);
+            *cur = g->cdda_root;
             has_grandparent = 1;
-            parent = cur;
-            cur = g->cdda_root;
             p = end;
             continue;
         }
 #endif
 
-        grandparent = parent;
+        /* rotate: grandparent := parent, parent := cur, cur := scratch */
+        {
+            odfs_node_t *scratch = grandparent;
+
+            grandparent = parent;
+            parent = cur;
+            cur = scratch;
+        }
         has_grandparent = 1;
-        parent = cur;
-        err = lookup_child_node(g, &cur, comp, &cur);
+        err = lookup_child_node(g, parent, comp, cur);
         if (err != ODFS_OK)
             return err;
+
+        /*
+         * A soft link anywhere in the path stops resolution: DOS gets
+         * ERROR_IS_SOFT_LINK and reissues the request with the target
+         * it obtains via ACTION_READ_LINK.
+         */
+        if (cur->kind == ODFS_NODE_SYMLINK) {
+            if (link_hit) {
+                size_t nlen = strlen(comp);
+
+                if (nlen >= sizeof(link_hit->name))
+                    nlen = sizeof(link_hit->name) - 1;
+                memcpy(link_hit->name, comp, nlen);
+                link_hit->name[nlen] = '\0';
+                link_hit->parent = *parent;
+                link_hit->rest = end;
+            }
+            return ODFS_ERR_IS_SYMLINK;
+        }
 
         p = end;
         if (*p == '/')
             p++;
     }
 
-    *result = cur;
-    *parent_out = parent;
+    *result = *cur;
+    *parent_out = *parent;
     if (grandparent_out)
-        *grandparent_out = grandparent;
+        *grandparent_out = *grandparent;
     if (has_grandparent_out)
         *has_grandparent_out = has_grandparent;
     return ODFS_OK;
@@ -1815,6 +2076,7 @@ static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnod
     return odfs_node_matches_identity(fnode, &g->mount.root);
 }
 
+#if ODFS_AMIGA_OS4
 static LONG resolve_object_nodes(handler_global_t *g,
                                  odfs_lock_t *parent_lock,
                                  const char *path,
@@ -1856,14 +2118,13 @@ static LONG resolve_object_nodes(handler_global_t *g,
 
     err = resolve_amiga_path(g, start, start_parent, start_grandparent,
                              path, node_out, parent_out, grandparent_out,
-                             has_grandparent_out);
+                             has_grandparent_out, NULL);
     if (err != ODFS_OK)
         return odfs_err_to_dos(err);
 
     return 0;
 }
 
-#if ODFS_AMIGA_OS4
 LONG odfs_handler_resolve_object_node(handler_global_t *g,
                                       odfs_lock_t *parent_lock,
                                       const char *path,
@@ -1879,14 +2140,128 @@ LONG odfs_handler_resolve_object_node(handler_global_t *g,
 /* shared frontend operations                                          */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Resolve an AmigaDOS path directly into a preallocated entry's node
+ * storage. The zero- and one-component forms — which cover almost
+ * every Lock() and Open() — are served with a single lookup and no
+ * intermediate node copies; paths with '/' fall back to the iterative
+ * walker, which still writes its results straight into the entry.
+ */
+static LONG resolve_object_into_entry(handler_global_t *g,
+                                      odfs_lock_t *parent_lock,
+                                      const char *path,
+                                      odfs_entry_t *entry)
+{
+    const odfs_node_t *start;
+    const odfs_node_t *start_parent;
+    const odfs_node_t *start_grandparent;
+    const char *p;
+    const char *colon;
+    odfs_err_t err;
+
+    if (parent_lock) {
+        LONG err_dos;
+
+        if (!lock_is_active(g, parent_lock))
+            return ERROR_INVALID_LOCK;
+
+        err_dos = validate_object_volume(g, parent_lock->entry->volume);
+        if (err_dos != 0)
+            return err_dos;
+        start = lock_node(parent_lock);
+        start_parent = lock_parent_node(parent_lock);
+        start_grandparent = lock_grandparent_node(parent_lock);
+    } else {
+        if (!g->mounted)
+            return ERROR_NO_DISK;
+        start = &g->mount.root;
+        start_parent = &g->mount.root;
+        start_grandparent = &g->mount.root;
+    }
+
+    /* DOS strips device prefixes; tolerate callers that keep them */
+    p = path;
+    colon = strchr(p, ':');
+    if (colon)
+        p = colon + 1;
+
+    if (strchr(p, '/') != NULL) {
+        int has_grandparent = 0;
+
+        err = resolve_amiga_path(g, start, start_parent, start_grandparent,
+                                 path, &entry->fnode, &entry->parent_node,
+                                 &entry->grandparent_node, &has_grandparent,
+                                 NULL);
+        if (err != ODFS_OK)
+            return odfs_err_to_dos(err);
+        entry->has_grandparent = has_grandparent;
+        if (!has_grandparent)
+            entry->grandparent_node = entry->parent_node;
+        return 0;
+    }
+
+    if (*p == '\0') {
+        /* duplicate of the starting object */
+        entry->fnode = *start;
+        if (!parent_lock || node_is_mount_root(g, start)) {
+            entry->parent_node = g->mount.root;
+            entry->grandparent_node = g->mount.root;
+#if ODFS_FEATURE_CDDA
+        } else if (g->has_cdda && nodes_same(start, &g->cdda_root)) {
+            entry->parent_node = g->mount.root;
+            entry->grandparent_node = g->mount.root;
+#endif
+        } else {
+            entry->parent_node = *start_parent;
+            entry->grandparent_node = start_grandparent ?
+                *start_grandparent : entry->parent_node;
+            entry->has_grandparent = start_grandparent != NULL;
+            return 0;
+        }
+        entry->has_grandparent = 1;
+        return 0;
+    }
+
+    /* single component: one lookup, parent and grandparent are known */
+    if (start->kind != ODFS_NODE_DIR)
+        return odfs_err_to_dos(ODFS_ERR_NOT_DIR);
+
+#if ODFS_FEATURE_CDDA
+    if (g->has_cdda && start->extent.lba == g->mount.root.extent.lba &&
+        odfs_strcasecmp(p, "CDDA") == 0) {
+        entry->fnode = g->cdda_root;
+    } else
+#endif
+    {
+        err = lookup_child_node(g, start, p, &entry->fnode);
+        if (err != ODFS_OK)
+            return odfs_err_to_dos(err);
+        if (entry->fnode.kind == ODFS_NODE_SYMLINK)
+            return odfs_err_to_dos(ODFS_ERR_IS_SYMLINK);
+    }
+
+    entry->parent_node = *start;
+    if (!parent_lock || node_is_mount_root(g, start)) {
+        entry->grandparent_node = g->mount.root;
+#if ODFS_FEATURE_CDDA
+    } else if (g->has_cdda && nodes_same(start, &g->cdda_root)) {
+        entry->grandparent_node = g->mount.root;
+#endif
+    } else {
+        entry->grandparent_node = start_parent ?
+            *start_parent : entry->parent_node;
+    }
+    entry->has_grandparent = 1;
+    return 0;
+}
+
 LONG odfs_handler_lock_object(handler_global_t *g,
                               odfs_lock_t *parent_lock,
                               const char *path,
                               LONG access,
                               odfs_lock_t **out)
 {
-    odfs_node_t result, parent_node, grandparent_node;
-    int has_grandparent;
+    odfs_entry_t *entry;
     LONG err_dos;
     odfs_lock_t *ol;
 
@@ -1895,19 +2270,24 @@ LONG odfs_handler_lock_object(handler_global_t *g,
     if (!g || !path || !out)
         return ERROR_REQUIRED_ARG_MISSING;
 
-    err_dos = resolve_object_nodes(g, parent_lock, path, &result,
-                                   &parent_node, &grandparent_node,
-                                   &has_grandparent);
-    if (err_dos != 0)
-        return err_dos;
+    entry = alloc_entry_blank(g, g->current_volume);
+    if (!entry)
+        return ERROR_NO_FREE_STORE;
 
-    if (result.kind == ODFS_NODE_DIR)
+    err_dos = resolve_object_into_entry(g, parent_lock, path, entry);
+    if (err_dos != 0) {
+        release_entry(g, entry);
+        return err_dos;
+    }
+
+    if (entry->fnode.kind == ODFS_NODE_DIR)
         access = SHARED_LOCK;
 
-    ol = alloc_lock(g, &result, &parent_node,
-                    has_grandparent ? &grandparent_node : NULL, access);
-    if (!ol)
+    ol = lock_from_entry(g, entry, access);
+    if (!ol) {
+        release_entry(g, entry);
         return ERROR_NO_FREE_STORE;
+    }
 
     *out = ol;
     return 0;
@@ -1984,8 +2364,9 @@ LONG odfs_handler_dup_lock_from_fh(handler_global_t *g,
         err_dos = validate_object_volume(g, fh_volume(fh));
         if (err_dos != 0)
             return err_dos;
-        ol = alloc_lock(g, fh_node(fh), fh_parent_node(fh),
-                        fh_grandparent_node(fh), SHARED_LOCK);
+        ol = lock_from_entry(g, retain_entry(fh->entry), SHARED_LOCK);
+        if (!ol)
+            release_entry(g, fh->entry);
     }
 
     if (!ol)
@@ -2049,31 +2430,38 @@ static LONG resolve_parent_with_cache(handler_global_t *g,
 static LONG parent_entry_object(handler_global_t *g, odfs_entry_t *entry,
                                 odfs_lock_t **out)
 {
-    const odfs_node_t *parent_node;
-    const odfs_node_t *grandparent_node;
-    odfs_node_t new_parent;
-    odfs_node_t new_grandparent;
     int has_new_grandparent;
     LONG err_dos;
+    odfs_entry_t *pe;
     odfs_lock_t *parent;
 
     if (node_is_mount_root(g, &entry->fnode))
         return 0;
 
-    parent_node = &entry->parent_node;
-    grandparent_node =
-        entry->has_grandparent ? &entry->grandparent_node : NULL;
-    err_dos = resolve_parent_with_cache(g, parent_node, grandparent_node,
-                                        &new_parent, &new_grandparent,
-                                        &has_new_grandparent);
-    if (err_dos != 0)
-        return err_dos;
-
-    parent = alloc_lock(g, parent_node, &new_parent,
-                        has_new_grandparent ? &new_grandparent : NULL,
-                        SHARED_LOCK);
-    if (!parent)
+    pe = alloc_entry_blank(g, g->current_volume);
+    if (!pe)
         return ERROR_NO_FREE_STORE;
+
+    pe->fnode = entry->parent_node;
+    err_dos = resolve_parent_with_cache(g, &entry->parent_node,
+                                        entry->has_grandparent ?
+                                            &entry->grandparent_node : NULL,
+                                        &pe->parent_node,
+                                        &pe->grandparent_node,
+                                        &has_new_grandparent);
+    if (err_dos != 0) {
+        release_entry(g, pe);
+        return err_dos;
+    }
+    pe->has_grandparent = has_new_grandparent;
+    if (!has_new_grandparent)
+        pe->grandparent_node = pe->parent_node;
+
+    parent = lock_from_entry(g, pe, SHARED_LOCK);
+    if (!parent) {
+        release_entry(g, pe);
+        return ERROR_NO_FREE_STORE;
+    }
 
     *out = parent;
     return 0;
@@ -2211,8 +2599,6 @@ LONG odfs_handler_open_object(handler_global_t *g,
                               LONG mode,
                               odfs_fh_t **out)
 {
-    odfs_node_t result, parent_node, grandparent_node;
-    int has_grandparent;
     LONG err_dos;
     odfs_entry_t *entry;
     odfs_fh_t *fh;
@@ -2225,21 +2611,23 @@ LONG odfs_handler_open_object(handler_global_t *g,
     if (mode != MODE_OLDFILE)
         return ERROR_DISK_WRITE_PROTECTED;
 
-    err_dos = resolve_object_nodes(g, dirlock, path, &result, &parent_node,
-                                   &grandparent_node, &has_grandparent);
-    if (err_dos != 0)
-        return err_dos;
-
-    if (result.kind == ODFS_NODE_DIR)
-        return ERROR_OBJECT_WRONG_TYPE;
-
-    entry = alloc_entry(g->current_volume, &result, &parent_node,
-                        has_grandparent ? &grandparent_node : NULL);
+    entry = alloc_entry_blank(g, g->current_volume);
     if (!entry)
         return ERROR_NO_FREE_STORE;
 
+    err_dos = resolve_object_into_entry(g, dirlock, path, entry);
+    if (err_dos != 0) {
+        release_entry(g, entry);
+        return err_dos;
+    }
+
+    if (entry->fnode.kind == ODFS_NODE_DIR) {
+        release_entry(g, entry);
+        return ERROR_OBJECT_WRONG_TYPE;
+    }
+
     fh = alloc_fh(g, entry, SHARED_LOCK);
-    release_entry(entry);
+    release_entry(g, entry);
     if (!fh)
         return ERROR_NO_FREE_STORE;
 
@@ -2312,7 +2700,20 @@ LONG odfs_handler_read_object(handler_global_t *g,
     }
 
     actual = (size_t)len;
+#if !ODFS_AMIGA_OS4
+    {
+        uint8_t *prev_buf = g->direct_read_buf;
+        ULONG prev_len = g->direct_read_len;
+
+        g->direct_read_buf = buf;
+        g->direct_read_len = (ULONG)actual;
+        err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
+        g->direct_read_buf = prev_buf;
+        g->direct_read_len = prev_len;
+    }
+#else
     err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
+#endif
     if (err != ODFS_OK && actual == 0)
         return odfs_err_to_dos(err);
 
@@ -2588,6 +2989,123 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 #endif
 }
 
+/*
+ * ACTION_READ_LINK: Arg1 = dir lock, Arg2 = path that stopped with
+ * ERROR_IS_SOFT_LINK (a plain C string, unlike other packets), Arg3 =
+ * output buffer, Arg4 = buffer size. Res1 = result length, -1 on error,
+ * -2 if the buffer is too small (per the ReadLink() autodoc). The link
+ * target is returned in AmigaDOS path syntax with any unconsumed path
+ * remainder re-appended, so DOS can retry the original request with it.
+ */
+static void action_read_link(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_lock_t *parent_lock = LOCK_FROM_BPTR(pkt->dp_Arg1);
+    const char *path = (const char *)pkt->dp_Arg2;
+    char *user_buf = (char *)pkt->dp_Arg3;
+    LONG user_size = pkt->dp_Arg4;
+    const odfs_node_t *start;
+    const odfs_node_t *start_parent;
+    const odfs_node_t *start_grandparent;
+    odfs_node_t result, parent, grandparent;
+    odfs_link_hit_t hit;
+    char target[512];
+    char apath[512]; /* "amiga" is a predefined macro on m68k-amigaos-gcc */
+    size_t alen;
+    odfs_err_t err;
+
+    pkt->dp_Res1 = -1;
+
+    if (!path || !user_buf || user_size <= 0) {
+        pkt->dp_Res2 = ERROR_REQUIRED_ARG_MISSING;
+        return;
+    }
+
+    if (parent_lock) {
+        LONG err_dos;
+
+        if (!lock_is_active(g, parent_lock)) {
+            pkt->dp_Res2 = ERROR_INVALID_LOCK;
+            return;
+        }
+        err_dos = validate_object_volume(g, parent_lock->entry->volume);
+        if (err_dos != 0) {
+            pkt->dp_Res2 = err_dos;
+            return;
+        }
+        start = lock_node(parent_lock);
+        start_parent = lock_parent_node(parent_lock);
+        start_grandparent = lock_grandparent_node(parent_lock);
+    } else {
+        if (!g->mounted) {
+            pkt->dp_Res2 = ERROR_NO_DISK;
+            return;
+        }
+        start = &g->mount.root;
+        start_parent = &g->mount.root;
+        start_grandparent = &g->mount.root;
+    }
+
+    memset(&hit, 0, sizeof(hit));
+    err = resolve_amiga_path(g, start, start_parent, start_grandparent,
+                             path, &result, &parent, &grandparent,
+                             NULL, &hit);
+    if (err == ODFS_OK) {
+        /* the object exists but is not a soft link */
+        pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
+        return;
+    }
+    if (err != ODFS_ERR_IS_SYMLINK || hit.name[0] == '\0') {
+        pkt->dp_Res2 = odfs_err_to_dos(err);
+        return;
+    }
+
+    err = odfs_readlink(&g->mount, &hit.parent, hit.name,
+                        target, sizeof(target));
+    if (err != ODFS_OK) {
+        pkt->dp_Res2 = odfs_err_to_dos(err);
+        return;
+    }
+
+    if (odfs_posix_to_amiga_path(target, apath, sizeof(apath)) != ODFS_OK) {
+        pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
+        return;
+    }
+    alen = strlen(apath);
+
+    /* re-append what followed the link in the original path */
+    if (hit.rest && *hit.rest) {
+        const char *r = hit.rest;
+        size_t rlen;
+
+        if (*r == '/')
+            r++;
+        if (alen > 0 && apath[alen - 1] != '/' && apath[alen - 1] != ':') {
+            if (alen + 1 >= sizeof(apath)) {
+                pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
+                return;
+            }
+            apath[alen++] = '/';
+        }
+        rlen = strlen(r);
+        if (alen + rlen >= sizeof(apath)) {
+            pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
+            return;
+        }
+        memcpy(apath + alen, r, rlen + 1);
+        alen += rlen;
+    }
+
+    if ((LONG)(alen + 1) > user_size) {
+        pkt->dp_Res1 = -2; /* buffer too small */
+        pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
+        return;
+    }
+
+    memcpy(user_buf, apath, alen + 1);
+    pkt->dp_Res1 = (LONG)alen;
+    pkt->dp_Res2 = 0;
+}
+
 static void action_free_lock(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
@@ -2813,13 +3331,15 @@ static odfs_err_t dir_next_cb(const odfs_node_t *entry, void *ctx)
 LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  odfs_lock_t *ol,
                                  ULONG previous_key,
+                                 uint32_t *resume_io,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out)
 {
     const odfs_node_t *dir;
     ULONG dir_key;
     dir_next_ctx_t dc;
-    uint32_t resume = 0;
+    uint32_t resume = resume_io ? *resume_io : 0;
+    int use_resume = (resume_io != NULL);
 
     if (!g || !entry_out || !key_out)
         return ERROR_REQUIRED_ARG_MISSING;
@@ -2847,16 +3367,30 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
     memset(&dc, 0, sizeof(dc));
     dc.previous_key = previous_key;
     dc.first = (previous_key == 0 || previous_key == dir_key);
+    if (dc.first)
+        resume = 0;
 
 #if ODFS_FEATURE_CDDA
+    if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
+        resume = 0;
+        use_resume = 0;
+        if (resume_io)
+            *resume_io = 0;
+    }
+
     if (g->has_cdda && !dc.first &&
         previous_key == amiga_node_key(&g->cdda_root))
         return ERROR_NO_MORE_ENTRIES;
+#endif
 
+    if (use_resume && resume != 0)
+        dc.first = 1;
+
+#if ODFS_FEATURE_CDDA
     if (g->has_cdda && dir->backend == ODFS_BACKEND_CDDA) {
         (void)cdda_backend_ops.readdir(g->cdda_ctx, &g->mount.cache,
                                        &g->log, dir, dir_next_cb, &dc,
-                                       &resume);
+                                       NULL);
     } else
 #endif
     {
@@ -2874,6 +3408,8 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
 
     *entry_out = dc.entry;
     *key_out = amiga_node_key(&dc.entry);
+    if (use_resume)
+        *resume_io = resume;
     return 0;
 }
 
@@ -3080,16 +3616,63 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
 {
     struct ExAllData *ed = *cursor;
     odfs_handler_node_info_t info;
+    const char *name;
     size_t name_len;
     size_t comment_len;
     size_t need;
+    size_t fixed;
     UBYTE *p;
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "exall-fill data=%ld rem=%ld kind=%lu name=%s size_lo=%lu",
+               (long)data,
+               (long)*remaining,
+               entry ? (unsigned long)entry->kind : 0,
+               entry ? entry->name : "<null>",
+               entry ? (unsigned long)entry->size : 0);
+#endif
+
+    if (data <= ED_SIZE) {
+        fixed = exall_fixed_size(data);
+        name = (g && node_is_mount_root(g, entry)) ? g->volname :
+            entry->name;
+        name_len = strlen(name) + 1u;
+        need = exall_align_size(fixed + name_len);
+
+        if (need > (size_t)*remaining)
+            return 0;
+
+        memset(ed, 0, fixed);
+        p = ((UBYTE *)ed) + fixed;
+        ed->ed_Name = (STRPTR)p;
+        memcpy(p, name, name_len);
+
+        if (data >= ED_TYPE) {
+            if (g && node_is_mount_root(g, entry))
+                ed->ed_Type = ST_ROOT;
+            else if (entry->kind == ODFS_NODE_DIR)
+                ed->ed_Type = ST_USERDIR;
+            else if (entry->kind == ODFS_NODE_SYMLINK)
+                ed->ed_Type = ST_SOFTLINK;
+            else
+                ed->ed_Type = ST_FILE;
+        }
+        if (data >= ED_SIZE)
+            ed->ed_Size = (ULONG)entry->size;
+
+        ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
+        *cursor = ed->ed_Next;
+        *remaining -= (LONG)need;
+        return 1;
+    }
 
     odfs_handler_fill_node_info(g, entry, &info);
     name_len = strlen(info.name) + 1u;
     comment_len = strlen(info.comment) + 1u;
 
-    need = exall_fixed_size(data) + name_len;
+    fixed = exall_fixed_size(data);
+    need = fixed + name_len;
     if (data >= ED_COMMENT)
         need += comment_len;
     need = exall_align_size(need);
@@ -3097,9 +3680,9 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
     if (need > (size_t)*remaining)
         return 0;
 
-    memset(ed, 0, exall_fixed_size(data));
+    memset(ed, 0, fixed);
 
-    p = ((UBYTE *)ed) + exall_fixed_size(data);
+    p = ((UBYTE *)ed) + fixed;
     if (data >= ED_COMMENT) {
         ed->ed_Comment = (STRPTR)p;
         memcpy(p, info.comment, comment_len);
@@ -3207,6 +3790,21 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res2 = ERROR_BAD_NUMBER;
         return;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    ODFS_TRACE(&g->log, ODFS_SUB_DOS,
+               "exall-enter lock=%08lx buf=%08lx size=%ld data=%ld "
+               "ctrl=%08lx last=%lu match=%08lx hook=%08lx",
+               (unsigned long)ol,
+               (unsigned long)buf,
+               (long)size,
+               (long)data,
+               (unsigned long)control,
+               control ? (unsigned long)control->eac_LastKey : 0,
+               control ? (unsigned long)control->eac_MatchString : 0,
+               control ? (unsigned long)control->eac_MatchFunc : 0);
+    trace_node(g, "exall-dir", dir);
+#endif
 
     if (ol) {
         LONG err_dos = validate_object_volume(g, ol->entry->volume);
@@ -3492,6 +4090,7 @@ static void handle_packet(handler_global_t *g, struct DosPacket *pkt)
 
     /* ---- locks ---- */
     case ACTION_LOCATE_OBJECT:  action_locate_object(g, pkt); break;
+    case ACTION_READ_LINK:      action_read_link(g, pkt); break;
     case ACTION_FREE_LOCK:      action_free_lock(g, pkt); break;
     case ACTION_COPY_DIR:       action_copy_dir(g, pkt); break;
     case ACTION_PARENT:         action_parent(g, pkt); break;
@@ -3624,6 +4223,50 @@ static void device_node_name_from_bstr(BSTR bstr, char *buf, int bufsize)
     trim_trailing_colon(buf);
 }
 
+static int device_node_name_conflicts(handler_global_t *g, char *name,
+                                      size_t name_size)
+{
+    struct DeviceNode *iter;
+    char want[32];
+    char have[32];
+    ULONG flags = LDF_DEVICES | LDF_READ;
+    int conflict = 0;
+
+    if (!g || !g->devnode)
+        return 0;
+
+    device_node_name_from_bstr(g->devnode->dn_Name, want, sizeof(want));
+    if (want[0] == '\0')
+        return 0;
+
+    if (name && name_size != 0) {
+        size_t len = strlen(want);
+        if (len >= name_size)
+            len = name_size - 1;
+        memcpy(name, want, len);
+        name[len] = '\0';
+    }
+
+    iter = (struct DeviceNode *)AttemptLockDosList(flags);
+    if (!iter)
+        return 0;
+
+    while ((iter = (struct DeviceNode *)NextDosEntry((struct DosList *)iter,
+                                                     LDF_DEVICES)) != NULL) {
+        if (iter == g->devnode)
+            continue;
+
+        device_node_name_from_bstr(iter->dn_Name, have, sizeof(have));
+        if (ascii_strieq(have, want)) {
+            conflict = 1;
+            break;
+        }
+    }
+
+    UnLockDosList(flags);
+    return conflict;
+}
+
 static void sync_device_node(handler_global_t *g, struct DeviceNode *devnode)
 {
     if (!g || !g->devnode || !devnode)
@@ -3669,10 +4312,8 @@ static void destroy_device_node(struct DeviceNode *devnode)
 static void publish_device_node(handler_global_t *g)
 {
     struct DeviceNode *iter;
-    struct DeviceNode *name_match = NULL;
     struct DeviceNode *shadow;
     char want[32];
-    char have[32];
 
     if (!g->devnode || g->published_devnode)
         return;
@@ -3692,16 +4333,7 @@ static void publish_device_node(handler_global_t *g)
             g->published_devnode = iter;
             break;
         }
-
-        if (!name_match) {
-            device_node_name_from_bstr(iter->dn_Name, have, sizeof(have));
-            if (ascii_strieq(have, want))
-                name_match = iter;
-        }
     }
-
-    if (!g->published_devnode && name_match)
-        g->published_devnode = name_match;
 
     if (g->published_devnode) {
         sync_device_node(g, g->published_devnode);
@@ -3864,6 +4496,7 @@ static void detach_volume_node(struct DeviceList *volnode)
  *   HF=HFSFIRST/S       — prefer HFS over ISO on hybrid discs
  *   UDF/S               — prefer UDF on bridge discs
  *   FB=FILEBUFFERS/K/N  — block cache size
+ *   MC=METACACHE/K/N    — parsed-directory cache budget in KiB (0 = off)
  */
 
 #include <dos/rdargs.h>
@@ -3876,6 +4509,7 @@ enum {
     CTRL_UDF,
     CTRL_AIFF,
     CTRL_FILEBUFFERS,
+    CTRL_METACACHE,
     CTRL__COUNT
 };
 
@@ -3938,7 +4572,8 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
                   "HF=HFSFIRST/S,"
                   "UDF/S,"
                   "AIFF/S,"
-                  "FB=FILEBUFFERS/K/N",
+                  "FB=FILEBUFFERS/K/N,"
+                  "MC=METACACHE/K/N",
                   (LONG *)args, rdargs)) {
 
         if (args[CTRL_LOWERCASE])
@@ -3955,6 +4590,11 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
             opts->prefer_aiff = 1;
         if (args[CTRL_FILEBUFFERS])
             opts->cache_blocks = *(LONG *)args[CTRL_FILEBUFFERS];
+        if (args[CTRL_METACACHE]) {
+            LONG kib = *(LONG *)args[CTRL_METACACHE];
+
+            opts->meta_cache_kib = (kib > 0) ? (uint32_t)kib : 0;
+        }
 
         FreeArgs(rdargs);
     }
@@ -4270,16 +4910,27 @@ static void handle_media_change(handler_global_t *g)
 {
     ULONG change_count;
     ULONG status;
+    int count_moved = 1;    /* assume moved if the counter can't be read */
 
     /*
-     * Some drives/controllers deliver an initial or redundant change
-     * interrupt after TD_ADDCHANGEINT. Ignore those unless the device's
-     * change counter actually moved, otherwise we invalidate every
-     * existing lock/filehandle by remounting the same disc.
+     * The change counter is only advisory. Real scsi.device/trackdisk.device
+     * bump TD_CHANGENUM *before* firing the change interrupt, so an unchanged
+     * counter reliably means "same disc, spurious interrupt". Poseidon's
+     * usbscsi.device (massstorage.class) polls the medium from a separate
+     * task and delivers the interrupt *before* it updates TD_CHANGENUM, so on
+     * the first insertion after boot the counter still reads the baseline we
+     * captured in install_media_change() — which used to make us swallow the
+     * event and leave the disc unmounted until it was re-inserted.
+     *
+     * Therefore the counter must never veto a genuine present/absent
+     * transition. Decide from the actual media-present state versus our own
+     * mount state, and use the counter only to tell a disc *swap* apart from a
+     * redundant re-interrupt on an already-mounted disc (remounting the same
+     * disc would invalidate every outstanding lock and file handle).
      */
     if (query_media_change_count(g, &change_count)) {
         if (g->change_count_valid && change_count == g->change_count)
-            return;
+            count_moved = 0;
         g->change_count = change_count;
         g->change_count_valid = 1;
     }
@@ -4288,14 +4939,19 @@ static void handle_media_change(handler_global_t *g)
         return;
 
     if (status != 0) {
-        /* no disc present */
+        /* no disc present — drop the mounted volume, if any */
         unmount_volume(g);
-    } else {
-        /* disc present — unmount old, try mount new */
+    } else if (!g->mounted) {
+        /* a disc appeared where none was mounted — mount it regardless of
+         * whether the change counter has caught up yet */
+        mount_volume(g);
+    } else if (count_moved) {
+        /* a different disc replaced the mounted one — remount */
         unmount_volume(g);
         /* re-init media adapter since cache was destroyed */
         mount_volume(g);
     }
+    /* else: same disc still mounted, spurious interrupt — keep locks intact */
 }
 
 /* ------------------------------------------------------------------ */
@@ -4416,6 +5072,21 @@ void handler_main_startup(struct Message *startup_msg)
     ODFS_INFO(&g->log, ODFS_SUB_CORE, "libraries open, device=%s unit=%lu",
               g->devname, (unsigned long)g->devunit);
 
+    {
+        char devnode_name[32];
+
+        devnode_name[0] = '\0';
+        if (device_node_name_conflicts(g, devnode_name, sizeof(devnode_name))) {
+            ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                       "device node %s already exists; refusing duplicate",
+                       devnode_name[0] ? devnode_name : "<unnamed>");
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_EXISTS;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+    }
+
     /* open device */
     g->devport = odfs_amiga_create_msg_port();
     if (!g->devport) {
@@ -4462,10 +5133,11 @@ void handler_main_startup(struct Message *startup_msg)
     /*
      * Allocate DMA-safe bounce buffer using de_BufMemType.
      * 16-byte aligned for 68040 DMA performance (CDVDFS pattern).
-     * Size: 8 sectors (16KB) — enough for multi-sector reads.
+     * Size: 32 sectors (64KB) to cover common 32KB file reads in a
+     * single device request while leaving room for larger callers.
      */
     {
-        #define DMA_BUF_SECTORS  8
+        #define DMA_BUF_SECTORS  32
         ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
         ULONG raw_size = DMA_BUF_SECTORS * g->sector_size + 15;
         g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
@@ -4517,7 +5189,11 @@ void handler_main_startup(struct Message *startup_msg)
                   "geometry rc=%ld sector=%lu", (long)geo_rc,
                   (unsigned long)geom.dg_SectorSize);
 
-        if (geo_rc != 0) {
+        if (geo_rc == IOERR_NOCMD) {
+            ODFS_INFO(&g->log, ODFS_SUB_IO,
+                      "geometry unavailable; using mountlist sector=%lu",
+                      (unsigned long)g->sector_size);
+        } else if (geo_rc != 0) {
             ODFS_WARN(&g->log, ODFS_SUB_IO,
                       "no usable device on unit %lu (geometry rc=%ld) - "
                       "declining mount",
@@ -4670,12 +5346,16 @@ shutdown:
     if (g->devport)
         odfs_amiga_delete_msg_port(g->devport);
 
+    pool_drain(&g->entry_pool, sizeof(odfs_entry_t));
+    pool_drain(&g->lock_pool, sizeof(odfs_lock_t));
+    pool_drain(&g->fh_pool, sizeof(odfs_fh_t));
+
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
         odfs_amiga_free_mem(g->dma_buf_raw,
                             DMA_BUF_SECTORS * g->sector_size + 15);
 
-    if (g->devnode)
+    if (g->devnode && g->devnode->dn_Task == g->dosport)
         g->devnode->dn_Task = NULL;
 
 #if ODFS_AMIGA_OS4

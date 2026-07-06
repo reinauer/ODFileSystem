@@ -24,6 +24,7 @@ ODFileSystem can:
 ODFileSystem currently includes backends for:
 
 - ISO 9660
+- High Sierra
 - Rock Ridge
 - Joliet
 - UDF
@@ -38,6 +39,8 @@ ODFileSystem currently includes backends for:
 - Hybrid-disc precedence rules
 - Deterministic duplicate-name handling after normalization or charset conversion
 - Rock Ridge, Joliet, UDF, HFS, and HFS+ probing
+- Rock Ridge and UDF symlinks exposed as Amiga soft links
+  (`ST_SOFTLINK` / `ACTION_READ_LINK`)
 - Path lookup, directory enumeration, and file reads
 - Block-cache based media access
 - Host-side tools for inspecting image files
@@ -47,6 +50,7 @@ ODFileSystem currently includes backends for:
 | Filesystem | Status | Notes |
 | --- | --- | --- |
 | ISO 9660 | Supported | Plain ISO 9660 names and directory traversal |
+| High Sierra | Supported | Pre-ISO 9660 (1986) variant, detected automatically; not in the ROM profile |
 | Rock Ridge | Supported | Preferred over plain ISO when present |
 | Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
 | UDF | Supported | Bridge discs default to ISO-family content unless forced |
@@ -285,11 +289,16 @@ Change `FileSystem` in CD0 to L:ODFileSystem.
 Then edit the `Device` and `Unit` tooltypes on the `CD0` icon to match your
 hardware.
 
+Only one active DOSDriver may use a given device name. If another CD
+filesystem is already mounted as `CD0:`, either replace or disable that
+entry before mounting ODFileSystem as `CD0:`, or rename the ODFileSystem
+DOSDriver to another name such as `OD0:`.
+
 If you want a plain Mountlist entry instead, add one such as:
 
 ```text
 CD0:
-    Handler   = L:ODFileSystem
+    FileSystem = L:ODFileSystem
     Stacksize = 16384
     Priority  = 5
     GlobVec   = -1

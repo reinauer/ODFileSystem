@@ -24,6 +24,7 @@ static const char *error_strings[] = {
     [ODFS_ERR_NAME_TOO_LONG] = "name too long",
     [ODFS_ERR_NOT_DIR]       = "not a directory",
     [ODFS_ERR_IS_DIR]        = "is a directory",
+    [ODFS_ERR_IS_SYMLINK]    = "is a symbolic link",
     [ODFS_ERR_READ_ONLY]     = "read-only filesystem",
     [ODFS_ERR_TOO_MANY_OPEN] = "too many open files",
     [ODFS_ERR_EOF]           = "end of file",

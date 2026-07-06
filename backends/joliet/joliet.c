@@ -64,7 +64,15 @@ static int joliet_parse_dir_record(const uint8_t *data, size_t avail,
     if (33 + name_len > rec_len)
         return 0;
 
-    memset(node, 0, sizeof(*node));
+    /* Initialize the fields a record may leave untouched instead of
+     * clearing the whole node: the embedded name buffer dominates
+     * sizeof(*node) and this runs for every record of every scan. */
+    node->parent_id = 0;
+    node->mode = 0;
+    node->backend_data = NULL;
+    node->amiga_as.has_protection = 0;
+    node->amiga_as.has_comment = 0;
+
     node->id = (*next_id)++;
     node->backend = ODFS_BACKEND_JOLIET;
 
@@ -280,7 +288,6 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
     uint32_t offset = 0;
     odfs_namefix_state_t namefix;
 
-    (void)log;
     odfs_namefix_init(&namefix);
 
     while (offset < dir_size) {
@@ -314,9 +321,23 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
 
         node.parent_id = dir->id;
 
+        uint32_t next_offset = offset + (uint32_t)consumed;
+
+        /* ISO Level 3: fold multi-extent continuation records into the node */
+        if (node.kind == ODFS_NODE_FILE &&
+            (rec[ISO_DR_FLAGS] & ISO_DR_FLAG_MULTI_EXTENT) != 0) {
+            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
+                                              dir_lba, dir_size, &next_offset,
+                                              0, rec, &node);
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+        }
+
         if ((node.name[0] == '.' && node.name[1] == '\0') ||
             (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
-            offset += consumed;
+            offset = next_offset;
             continue;
         }
 
@@ -326,7 +347,7 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
             return err;
         }
 
-        offset += consumed;
+        offset = next_offset;
 
         if (entry_start < target_offset)
             continue;

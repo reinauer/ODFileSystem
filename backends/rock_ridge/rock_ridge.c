@@ -262,10 +262,16 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
 
                     if (cflags & 0x02) {
                         /* current directory "." */
+                        if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
+                            if (sl_pos < sizeof(info->symlink_target))
+                                info->symlink_target[sl_pos++] = '/';
                         if (sl_pos + 1 < sizeof(info->symlink_target))
                             info->symlink_target[sl_pos++] = '.';
                     } else if (cflags & 0x04) {
                         /* parent directory ".." */
+                        if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
+                            if (sl_pos < sizeof(info->symlink_target))
+                                info->symlink_target[sl_pos++] = '/';
                         if (sl_pos + 2 < sizeof(info->symlink_target)) {
                             info->symlink_target[sl_pos++] = '.';
                             info->symlink_target[sl_pos++] = '.';

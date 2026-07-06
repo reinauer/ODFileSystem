@@ -3,7 +3,7 @@ Author:       stefan.reinauer@coreboot.org (Stefan Reinauer)
 Uploader:     stefan.reinauer@coreboot.org (Stefan Reinauer)
 Type:         disk/cdrom
 Version:      [VERSION]
-Requires:     AmigaOS 3.x, CD/DVD drive or emulator CD device
+Requires:     Kickstart 2.04 (V37) or newer, CD/DVD drive or emulator CD device
 Architecture: m68k-amigaos
 
 ODFileSystem
@@ -23,7 +23,12 @@ Archive Contents
 
 - ODFileSystem
   Normal disk-loadable filesystem handler.  Copy this to
-  L:ODFileSystem for regular use.
+  L:ODFileSystem for regular use.  Runs on any 68000 or better.
+
+- ODFileSystem020
+  Handler built for 68020 and higher processors.  Faster and smaller
+  than the 68000 build; use it on 68020/030/040/060 machines by
+  copying it to L:ODFileSystem instead of the 68000 version.
 
 - ODFileSystem-test
   Test build with serial debug output enabled.
@@ -78,6 +83,11 @@ Typical examples:
 - SCSI CD-ROM:       Device = scsi.device, Unit = SCSI ID
 - A1200 IDE slave:   Device = scsi.device, Unit = 1
 - WinUAE/FS-UAE:     use the emulator's configured CD device/unit
+
+Only one active DOSDriver may use a given device name. If another CD
+filesystem is already mounted as CD0:, either replace or disable that
+entry before mounting ODFileSystem as CD0:, or rename the ODFileSystem
+DOSDriver to another name such as OD0:.
 
 Mount the device from Workbench by double-clicking the DOSDriver icon,
 or from Shell with:

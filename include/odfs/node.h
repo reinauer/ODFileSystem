@@ -7,6 +7,8 @@
 #ifndef ODFS_NODE_H
 #define ODFS_NODE_H
 
+#include "odfs/config.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -50,8 +52,25 @@ typedef struct odfs_extent {
     uint32_t length;    /* length in bytes */
 } odfs_extent_t;
 
-/* maximum name length for internal representation (UTF-8) */
+/*
+ * Maximum name length for internal representation (UTF-8).
+ *
+ * odfs_node_t embeds the name, and the Amiga handler copies nodes on
+ * every directory-scan record and path-resolution step, so the buffer
+ * size directly sets the cost of the hottest loops. AmigaDOS itself
+ * cannot express names longer than 106 bytes (BSTR FileInfoBlock name),
+ * so the handler profile keeps the node compact; host tools keep the
+ * larger buffer for inspecting long Rock Ridge/Joliet names verbatim.
+ * Names that exceed the limit are truncated at a codepoint boundary by
+ * the charset converters and disambiguated by namefix when needed.
+ */
+#ifndef ODFS_NAME_MAX
+#if ODFS_PLATFORM_AMIGA
+#define ODFS_NAME_MAX 128
+#else
 #define ODFS_NAME_MAX 512
+#endif
+#endif
 #define ODFS_AMIGA_COMMENT_MAX 80
 
 typedef struct odfs_amiga_as {

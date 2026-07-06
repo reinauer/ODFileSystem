@@ -1,10 +1,9 @@
 /*
  * test_resolve_parent.c — backend resolve_parent fast-path coverage
  *
- * Mounts real ISO9660 / Joliet fixtures and verifies that
- * odfs_resolve_parent_node (which dispatches to the backend's ".."-based
- * resolver) returns the correct parent and grandparent, and that its result
- * is identical to the generic tree search fallback.
+ * Mounts real filesystem fixtures and verifies that
+ * odfs_resolve_parent_node returns the correct parent and grandparent, and
+ * that its result is identical to the generic tree search fallback.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,11 +15,15 @@
 
 #include <string.h>
 
-/* the plain ISO fixture contains /DEEP/SUBDIR/NESTED.TXT */
-#define IMG_PLAIN  "tests/images/test_plain.iso"
-#define IMG_JOLIET "tests/images/test_joliet.iso"
+/* these fixtures contain a two-level DEEP/SUBDIR-style directory tree */
+#define IMG_PLAIN   "tests/images/test_plain.iso"
+#define IMG_JOLIET  "tests/images/test_joliet.iso"
+#define IMG_UDF     "tests/images/test_udf_bridge.iso"
+#define IMG_HFS     "tests/images/test_hfs.iso"
+#define IMG_HFSPLUS "tests/images/test_hfsplus.iso"
 
-static int mount_image(const char *path, int prefer_joliet,
+static int mount_image(const char *path, odfs_backend_type_t force_backend,
+                       int prefer_hfs,
                        odfs_media_t *media, odfs_log_state_t *log,
                        odfs_mount_t *mnt)
 {
@@ -31,8 +34,8 @@ static int mount_image(const char *path, int prefer_joliet,
 
     odfs_log_init(log);
     odfs_mount_opts_default(&opts);
-    if (prefer_joliet)
-        opts.disable_joliet = 0;
+    opts.force_backend = force_backend;
+    opts.prefer_hfs = prefer_hfs;
 
     if (odfs_mount(media, &opts, log, mnt) != ODFS_OK) {
         odfs_media_close(media);
@@ -66,7 +69,8 @@ TEST(resolve_parent_iso_two_levels_deep)
     odfs_mount_t mnt;
     odfs_node_t subdir, parent, grandparent;
 
-    if (!mount_image(IMG_PLAIN, 0, &media, &log, &mnt)) {
+    if (!mount_image(IMG_PLAIN, ODFS_BACKEND_ISO9660, 0,
+                     &media, &log, &mnt)) {
         printf("  (skipped: %s)\n", "fixture " IMG_PLAIN " unavailable");
         return;
     }
@@ -87,7 +91,8 @@ TEST(resolve_parent_iso_top_level)
     odfs_mount_t mnt;
     odfs_node_t deep, parent, grandparent;
 
-    if (!mount_image(IMG_PLAIN, 0, &media, &log, &mnt)) {
+    if (!mount_image(IMG_PLAIN, ODFS_BACKEND_ISO9660, 0,
+                     &media, &log, &mnt)) {
         printf("  (skipped: %s)\n", "fixture " IMG_PLAIN " unavailable");
         return;
     }
@@ -108,7 +113,8 @@ TEST(resolve_parent_root_has_no_parent)
     odfs_mount_t mnt;
     odfs_node_t parent;
 
-    if (!mount_image(IMG_PLAIN, 0, &media, &log, &mnt)) {
+    if (!mount_image(IMG_PLAIN, ODFS_BACKEND_ISO9660, 0,
+                     &media, &log, &mnt)) {
         printf("  (skipped: %s)\n", "fixture " IMG_PLAIN " unavailable");
         return;
     }
@@ -126,7 +132,8 @@ TEST(resolve_parent_without_grandparent_out)
     odfs_mount_t mnt;
     odfs_node_t subdir, parent;
 
-    if (!mount_image(IMG_PLAIN, 0, &media, &log, &mnt)) {
+    if (!mount_image(IMG_PLAIN, ODFS_BACKEND_ISO9660, 0,
+                     &media, &log, &mnt)) {
         printf("  (skipped: %s)\n", "fixture " IMG_PLAIN " unavailable");
         return;
     }
@@ -146,7 +153,8 @@ TEST(resolve_parent_joliet)
     odfs_mount_t mnt;
     odfs_node_t dir, parent, grandparent;
 
-    if (!mount_image(IMG_JOLIET, 1, &media, &log, &mnt)) {
+    if (!mount_image(IMG_JOLIET, ODFS_BACKEND_JOLIET, 0,
+                     &media, &log, &mnt)) {
         printf("  (skipped: %s)\n", "fixture " IMG_JOLIET " unavailable");
         return;
     }
@@ -164,6 +172,67 @@ TEST(resolve_parent_joliet)
     } else {
         printf("  (skipped: %s)\n", "Joliet fixture lacks /DEEP/SUBDIR");
     }
+
+    odfs_unmount(&mnt);
+}
+
+TEST(resolve_parent_udf)
+{
+    odfs_media_t media;
+    odfs_log_state_t log;
+    odfs_mount_t mnt;
+    odfs_node_t dir, parent, grandparent;
+
+    if (!mount_image(IMG_UDF, ODFS_BACKEND_UDF, 0, &media, &log, &mnt)) {
+        printf("  (skipped: %s)\n", "fixture " IMG_UDF " unavailable");
+        return;
+    }
+
+    ASSERT_OK(odfs_resolve_path(&mnt, "/deep/subdir", &dir));
+    ASSERT_PARENT_MATCHES_SEARCH(&mnt, &dir, &parent, &grandparent);
+    ASSERT_STR_EQ(parent.name, "deep");
+    ASSERT(odfs_node_matches_identity(&grandparent, &mnt.root));
+
+    odfs_unmount(&mnt);
+}
+
+TEST(resolve_parent_hfs)
+{
+    odfs_media_t media;
+    odfs_log_state_t log;
+    odfs_mount_t mnt;
+    odfs_node_t dir, parent, grandparent;
+
+    if (!mount_image(IMG_HFS, ODFS_BACKEND_NONE, 1, &media, &log, &mnt)) {
+        printf("  (skipped: %s)\n", "fixture " IMG_HFS " unavailable");
+        return;
+    }
+
+    ASSERT_OK(odfs_resolve_path(&mnt, "/DEEP/SUBDIR", &dir));
+    ASSERT_PARENT_MATCHES_SEARCH(&mnt, &dir, &parent, &grandparent);
+    ASSERT_STR_EQ(parent.name, "DEEP");
+    ASSERT(odfs_node_matches_identity(&grandparent, &mnt.root));
+
+    odfs_unmount(&mnt);
+}
+
+TEST(resolve_parent_hfsplus)
+{
+    odfs_media_t media;
+    odfs_log_state_t log;
+    odfs_mount_t mnt;
+    odfs_node_t dir, parent, grandparent;
+
+    if (!mount_image(IMG_HFSPLUS, ODFS_BACKEND_HFSPLUS, 0,
+                     &media, &log, &mnt)) {
+        printf("  (skipped: %s)\n", "fixture " IMG_HFSPLUS " unavailable");
+        return;
+    }
+
+    ASSERT_OK(odfs_resolve_path(&mnt, "/deep/subdir", &dir));
+    ASSERT_PARENT_MATCHES_SEARCH(&mnt, &dir, &parent, &grandparent);
+    ASSERT_STR_EQ(parent.name, "deep");
+    ASSERT(odfs_node_matches_identity(&grandparent, &mnt.root));
 
     odfs_unmount(&mnt);
 }

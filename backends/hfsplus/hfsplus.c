@@ -384,6 +384,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
 
     hfsp_parse_date(hfsp_be32(&vh[20]), &root_out->mtime);
     root_out->ctime = root_out->mtime;
+    ctx->root = *root_out;
 
     *backend_ctx = ctx;
     return ODFS_OK;
@@ -395,8 +396,250 @@ static void hfsp_unmount(void *backend_ctx)
 }
 
 /* ------------------------------------------------------------------ */
-/* readdir — walk catalog leaves for entries with matching parent CNID */
+/* catalog walker                                                      */
 /* ------------------------------------------------------------------ */
+
+typedef odfs_err_t (*hfsp_cat_cb)(const uint8_t *key, size_t key_len,
+                                    const uint8_t *data, size_t data_len,
+                                    void *cb_ctx);
+
+static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
+                                      odfs_cache_t *cache,
+                                      uint32_t parent_cnid,
+                                      hfsp_cat_cb callback,
+                                      void *cb_ctx)
+{
+    uint8_t *node;
+    odfs_err_t err;
+    uint32_t cur_node;
+    int found_parent = 0;
+
+    node = odfs_malloc(ctx->cat_node_size);
+    if (!node)
+        return ODFS_ERR_NOMEM;
+
+    cur_node = ctx->cat_root_node;
+    for (int depth = 0; depth < 20; depth++) {
+        err = hfsp_read_node(ctx, cache, cur_node, node);
+        if (err != ODFS_OK) {
+            odfs_free(node);
+            return err;
+        }
+
+        if (node[8] == 0xFF)
+            break;
+        if (node[8] != 0x00) {
+            odfs_free(node);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        uint16_t nrecs;
+        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
+            odfs_free(node);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        uint32_t child = 0;
+        for (uint16_t r = 0; r < nrecs; r++) {
+            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
+            uint32_t key_parent;
+            uint32_t keylen;
+            uint32_t ptr_off;
+            uint32_t ptr;
+
+            if (roff + 6 >= ctx->cat_node_size)
+                break;
+
+            key_parent = hfsp_be32(&node[roff + 2]);
+            keylen = hfsp_be16(&node[roff]);
+            ptr_off = roff + 2 + keylen;
+            if (ptr_off + 4 > ctx->cat_node_size)
+                break;
+
+            ptr = hfsp_be32(&node[ptr_off]);
+            if (key_parent <= parent_cnid)
+                child = ptr;
+            else
+                break;
+        }
+
+        if (child == 0) {
+            odfs_free(node);
+            return ODFS_ERR_NOT_FOUND;
+        }
+        cur_node = child;
+    }
+
+    while (cur_node != 0) {
+        err = hfsp_read_node(ctx, cache, cur_node, node);
+        if (err != ODFS_OK) {
+            odfs_free(node);
+            return err;
+        }
+        if (node[8] != 0xFF)
+            break;
+
+        uint16_t nrecs;
+        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
+            odfs_free(node);
+            return ODFS_ERR_CORRUPT;
+        }
+
+        for (uint16_t r = 0; r < nrecs; r++) {
+            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
+            uint32_t next_roff =
+                hfsp_rec_offset(node, ctx->cat_node_size, r + 1);
+            uint32_t keylen;
+            uint32_t key_parent;
+            uint32_t data_off;
+            uint32_t data_len;
+
+            if (roff + 8 >= ctx->cat_node_size)
+                continue;
+            keylen = hfsp_be16(&node[roff]);
+            if (2u + keylen > ctx->cat_node_size - roff)
+                continue;
+            key_parent = hfsp_be32(&node[roff + 2]);
+            if (key_parent < parent_cnid)
+                continue;
+            if (key_parent > parent_cnid) {
+                odfs_free(node);
+                return ODFS_OK;
+            }
+            found_parent = 1;
+
+            data_off = roff + 2 + keylen;
+            if (data_off & 1)
+                data_off++;
+            data_len = (next_roff > data_off) ? next_roff - data_off : 0;
+            if (data_off + 2 > ctx->cat_node_size || data_len < 2)
+                continue;
+
+            err = callback(&node[roff], 2u + keylen, &node[data_off],
+                           data_len, cb_ctx);
+            if (err != ODFS_OK) {
+                odfs_free(node);
+                return err;
+            }
+        }
+
+        cur_node = hfsp_be32(&node[0]);
+        if (found_parent && cur_node != 0) {
+            err = hfsp_read_node(ctx, cache, cur_node, node);
+            if (err != ODFS_OK) {
+                odfs_free(node);
+                return err;
+            }
+            if (node[8] != 0xFF)
+                break;
+            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, 0);
+            if (roff + 6 < ctx->cat_node_size &&
+                hfsp_be32(&node[roff + 2]) != parent_cnid)
+                break;
+            continue;
+        }
+    }
+
+    odfs_free(node);
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* readdir                                                            */
+/* ------------------------------------------------------------------ */
+
+typedef struct hfsp_readdir_ctx {
+    hfsplus_context_t *hctx;
+    const odfs_node_t *dir;
+    odfs_dir_iter_fn callback;
+    void *cb_ctx;
+    int entry_index;
+    int skip_to;
+    uint32_t *resume_offset;
+    odfs_err_t last_err;
+    odfs_namefix_state_t namefix;
+} hfsp_readdir_ctx_t;
+
+static odfs_err_t hfsp_readdir_record_cb(const uint8_t *key, size_t key_len,
+                                           const uint8_t *data,
+                                           size_t data_len,
+                                           void *cb_ctx)
+{
+    hfsp_readdir_ctx_t *rc = cb_ctx;
+    uint16_t key_namelen;
+    int16_t rec_type;
+    odfs_node_t fnode;
+    odfs_err_t err;
+
+    if (key_len < 8 || data_len < 2)
+        return ODFS_OK;
+
+    rec_type = (int16_t)hfsp_be16(data);
+    if (rec_type != HFSPLUS_FOLDER_REC && rec_type != HFSPLUS_FILE_REC)
+        return ODFS_OK;
+
+    key_namelen = hfsp_be16(&key[6]);
+    if (key_namelen == 0)
+        return ODFS_OK;
+    if (key_namelen >= 4 && key_len >= 10 &&
+        key[8] == 0x00 && key[9] == 0x2E)
+        return ODFS_OK;
+
+    memset(&fnode, 0, sizeof(fnode));
+    fnode.id = rc->hctx->next_node_id++;
+    fnode.parent_id = rc->dir->id;
+    fnode.backend = ODFS_BACKEND_HFSPLUS;
+
+    if (key_namelen <= (key_len - 8) / 2)
+        hfsp_decode_name(&key[8], key_namelen,
+                         fnode.name, sizeof(fnode.name));
+
+    if (fnode.name[0] == '\0')
+        return ODFS_OK;
+
+    err = odfs_namefix_apply(&rc->namefix, fnode.name, sizeof(fnode.name));
+    if (err != ODFS_OK) {
+        rc->last_err = err;
+        return err;
+    }
+
+    if (rc->entry_index < rc->skip_to) {
+        rc->entry_index++;
+        return ODFS_OK;
+    }
+
+    if (rec_type == HFSPLUS_FOLDER_REC) {
+        if (data_len < 24)
+            return ODFS_OK;
+        fnode.kind = ODFS_NODE_DIR;
+        fnode.extent.lba = hfsp_be32(&data[8]);
+        hfsp_parse_date(hfsp_be32(&data[16]), &fnode.mtime);
+    } else {
+        if (data_len < 88)
+            return ODFS_OK;
+        fnode.kind = ODFS_NODE_FILE;
+        if (data_len >= 168) {
+            hfsp_fork_t dfork;
+            hfsp_parse_fork(&data[88], &dfork);
+            fnode.size = dfork.logical_size;
+            fnode.extent.lba = dfork.extents[0].start_block;
+            fnode.extent.length = (uint32_t)dfork.logical_size;
+        }
+        hfsp_parse_date(hfsp_be32(&data[16]), &fnode.mtime);
+    }
+    fnode.ctime = fnode.mtime;
+
+    rc->entry_index++;
+    err = rc->callback(&fnode, rc->cb_ctx);
+    if (err != ODFS_OK) {
+        if (rc->resume_offset)
+            *rc->resume_offset = (uint32_t)rc->entry_index;
+        rc->last_err = err;
+        return err;
+    }
+
+    return ODFS_OK;
+}
 
 static odfs_err_t hfsp_readdir(void *backend_ctx,
                                  odfs_cache_t *cache,
@@ -407,183 +650,30 @@ static odfs_err_t hfsp_readdir(void *backend_ctx,
                                  uint32_t *resume_offset)
 {
     hfsplus_context_t *ctx = backend_ctx;
-    uint32_t parent_cnid = dir->extent.lba;
-    uint8_t *node;
+    hfsp_readdir_ctx_t rc;
     odfs_err_t err;
-    uint32_t cur_node;
-    int entry_index = 0;
-    int skip_to = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
-    int found_parent = 0;
-    odfs_namefix_state_t namefix;
+
     (void)log;
-    odfs_namefix_init(&namefix);
 
-    node = odfs_malloc(ctx->cat_node_size);
-    if (!node) {
-        odfs_namefix_destroy(&namefix);
-        return ODFS_ERR_NOMEM;
-    }
+    rc.hctx = ctx;
+    rc.dir = dir;
+    rc.callback = callback;
+    rc.cb_ctx = cb_ctx;
+    rc.entry_index = 0;
+    rc.skip_to = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
+    rc.resume_offset = resume_offset;
+    rc.last_err = ODFS_OK;
+    odfs_namefix_init(&rc.namefix);
 
-    /* descend B-Tree from root to find the right leaf */
-    cur_node = ctx->cat_root_node;
-    for (int depth = 0; depth < 20; depth++) {
-        err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { odfs_namefix_destroy(&namefix); odfs_free(node); return err; }
+    err = hfsp_walk_catalog(ctx, cache, dir->extent.lba,
+                            hfsp_readdir_record_cb, &rc);
+    odfs_namefix_destroy(&rc.namefix);
+    if (rc.last_err != ODFS_OK)
+        return rc.last_err;
 
-        uint8_t ntype = node[8];
-        if (ntype == 0xFF) break; /* leaf */
-        if (ntype != 0x00) { odfs_namefix_destroy(&namefix); odfs_free(node); return ODFS_ERR_CORRUPT; } /* not index */
-
-        uint16_t nrecs;
-        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
-            odfs_namefix_destroy(&namefix);
-            odfs_free(node);
-            return ODFS_ERR_CORRUPT;
-        }
-        uint32_t child = 0;
-        for (uint16_t r = 0; r < nrecs; r++) {
-            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
-            if (roff + 6 >= ctx->cat_node_size) break;
-            uint32_t key_parent = hfsp_be32(&node[roff + 2]);
-            uint32_t keylen = hfsp_be16(&node[roff]);
-            uint32_t ptr_off = roff + 2 + keylen;
-            if (ptr_off + 4 > ctx->cat_node_size) break;
-            uint32_t ptr = hfsp_be32(&node[ptr_off]);
-            if (key_parent <= parent_cnid)
-                child = ptr;
-            else
-                break;
-        }
-        if (child == 0) { odfs_namefix_destroy(&namefix); odfs_free(node); return ODFS_ERR_NOT_FOUND; }
-        cur_node = child;
-    }
-
-    /* scan leaf nodes */
-    while (cur_node != 0) {
-        err = hfsp_read_node(ctx, cache, cur_node, node);
-        if (err != ODFS_OK) { odfs_namefix_destroy(&namefix); odfs_free(node); return err; }
-        if (node[8] != 0xFF) break; /* not leaf */
-
-        uint16_t nrecs;
-        if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
-            odfs_namefix_destroy(&namefix);
-            odfs_free(node);
-            return ODFS_ERR_CORRUPT;
-        }
-        for (uint16_t r = 0; r < nrecs; r++) {
-            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
-            uint32_t next_roff = hfsp_rec_offset(node, ctx->cat_node_size, r + 1);
-            if (roff + 8 >= ctx->cat_node_size) continue;
-
-            uint32_t keylen = hfsp_be16(&node[roff]);
-            uint32_t key_parent = hfsp_be32(&node[roff + 2]);
-            uint16_t key_namelen = hfsp_be16(&node[roff + 6]);
-
-            if (key_parent < parent_cnid) continue;
-            if (key_parent > parent_cnid) {
-                odfs_namefix_destroy(&namefix);
-                odfs_free(node);
-                if (resume_offset) *resume_offset = (uint32_t)entry_index;
-                return ODFS_OK;
-            }
-            found_parent = 1;
-
-            uint32_t data_off = roff + 2 + keylen;
-            if (data_off & 1) data_off++;
-            uint32_t data_len = (next_roff > data_off) ? next_roff - data_off : 0;
-            if (data_off + 2 >= ctx->cat_node_size || data_len < 2) continue;
-
-            int16_t rec_type = (int16_t)hfsp_be16(&node[data_off]);
-
-            if (rec_type != HFSPLUS_FOLDER_REC && rec_type != HFSPLUS_FILE_REC)
-                continue;
-
-            /* skip entries with empty names and HFS+ private dirs */
-            if (key_namelen == 0)
-                continue;
-            if (key_namelen >= 4 && node[roff + 8] == 0x00 && node[roff + 9] == 0x2E)
-                continue; /* name starts with "." — skip private dirs */
-
-            odfs_node_t fnode;
-            memset(&fnode, 0, sizeof(fnode));
-            fnode.id = ctx->next_node_id++;
-            fnode.parent_id = dir->id;
-            fnode.backend = ODFS_BACKEND_HFSPLUS;
-
-            /* decode name from key */
-            if (roff + 8 <= ctx->cat_node_size) {
-                uint32_t max_name_chars = (ctx->cat_node_size - (roff + 8)) / 2;
-                if (key_namelen > 0 && key_namelen <= max_name_chars) {
-                    uint16_t safe_name_len = key_namelen;
-                    hfsp_decode_name(&node[roff + 8], safe_name_len,
-                                 fnode.name, sizeof(fnode.name));
-                }
-            }
-
-            /* skip entries with empty or null decoded names */
-            if (fnode.name[0] == '\0')
-                continue;
-
-            err = odfs_namefix_apply(&namefix, fnode.name, sizeof(fnode.name));
-            if (err != ODFS_OK) {
-                odfs_namefix_destroy(&namefix);
-                odfs_free(node);
-                return err;
-            }
-
-            if (entry_index < skip_to) {
-                entry_index++;
-                continue;
-            }
-
-            if (rec_type == HFSPLUS_FOLDER_REC && data_len >= 24) {
-                fnode.kind = ODFS_NODE_DIR;
-                uint32_t cnid = hfsp_be32(&node[data_off + 8]);
-                fnode.extent.lba = cnid;
-                hfsp_parse_date(hfsp_be32(&node[data_off + 16]), &fnode.mtime);
-            } else if (rec_type == HFSPLUS_FILE_REC && data_len >= 88) {
-                fnode.kind = ODFS_NODE_FILE;
-                /* data fork at record offset 88 (80 bytes) */
-                hfsp_fork_t dfork;
-                if (data_off + 88 + 80 <= ctx->cat_node_size) {
-                    hfsp_parse_fork(&node[data_off + 88], &dfork);
-                    fnode.size = dfork.logical_size;
-                    fnode.extent.lba = dfork.extents[0].start_block;
-                    fnode.extent.length = (uint32_t)dfork.logical_size;
-                }
-                hfsp_parse_date(hfsp_be32(&node[data_off + 16]), &fnode.mtime);
-            }
-            fnode.ctime = fnode.mtime;
-
-            entry_index++;
-            err = callback(&fnode, cb_ctx);
-            if (err != ODFS_OK) {
-                odfs_namefix_destroy(&namefix);
-                odfs_free(node);
-                if (resume_offset) *resume_offset = (uint32_t)entry_index;
-                return err;
-            }
-        }
-
-        /* next leaf */
-        cur_node = hfsp_be32(&node[0]);
-        if (found_parent && cur_node != 0) {
-            /* peek to see if next node still has our parent */
-            err = hfsp_read_node(ctx, cache, cur_node, node);
-            if (err != ODFS_OK) break;
-            if (node[8] != 0xFF) break;
-            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, 0);
-            if (roff + 6 < ctx->cat_node_size &&
-                hfsp_be32(&node[roff + 2]) != parent_cnid)
-                break;
-            continue; /* re-process from while loop */
-        }
-    }
-
-    odfs_namefix_destroy(&namefix);
-    odfs_free(node);
-    if (resume_offset) *resume_offset = (uint32_t)entry_index;
-    return ODFS_OK;
+    if (resume_offset)
+        *resume_offset = (uint32_t)rc.entry_index;
+    return err;
 }
 
 /* ------------------------------------------------------------------ */
@@ -651,6 +741,185 @@ static odfs_err_t hfsp_lookup(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* resolve_parent                                                      */
+/* ------------------------------------------------------------------ */
+
+typedef struct hfsp_thread_info {
+    uint32_t parent_cnid;
+    int found;
+} hfsp_thread_info_t;
+
+static odfs_err_t hfsp_thread_record_cb(const uint8_t *key, size_t key_len,
+                                          const uint8_t *data,
+                                          size_t data_len,
+                                          void *cb_ctx)
+{
+    hfsp_thread_info_t *info = cb_ctx;
+    int16_t rec_type;
+
+    (void)key;
+    (void)key_len;
+
+    if (data_len < 8)
+        return ODFS_OK;
+
+    rec_type = (int16_t)hfsp_be16(data);
+    if (rec_type != HFSPLUS_FOLDER_THREAD)
+        return ODFS_OK;
+
+    info->parent_cnid = hfsp_be32(&data[4]);
+    info->found = 1;
+    return ODFS_ERR_EOF;
+}
+
+static odfs_err_t hfsp_read_thread(hfsplus_context_t *ctx,
+                                     odfs_cache_t *cache,
+                                     uint32_t cnid,
+                                     hfsp_thread_info_t *info)
+{
+    odfs_err_t err;
+
+    info->parent_cnid = 0;
+    info->found = 0;
+
+    err = hfsp_walk_catalog(ctx, cache, cnid, hfsp_thread_record_cb, info);
+    if (info->found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+typedef struct hfsp_cnid_match {
+    uint32_t want_cnid;
+    odfs_node_t *out;
+    int found;
+} hfsp_cnid_match_t;
+
+static odfs_err_t hfsp_cnid_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    hfsp_cnid_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_cnid) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF;
+    }
+
+    return ODFS_OK;
+}
+
+static odfs_err_t hfsp_find_child_by_cnid(void *backend_ctx,
+                                            odfs_cache_t *cache,
+                                            odfs_log_state_t *log,
+                                            const odfs_node_t *parent_dir,
+                                            uint32_t child_cnid,
+                                            odfs_node_t *out)
+{
+    hfsp_cnid_match_t m;
+    odfs_err_t err;
+
+    m.want_cnid = child_cnid;
+    m.out = out;
+    m.found = 0;
+
+    err = hfsp_readdir(backend_ctx, cache, log, parent_dir,
+                       hfsp_cnid_match_cb, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+static odfs_node_t hfsp_dir_stub(uint32_t cnid)
+{
+    odfs_node_t n;
+
+    memset(&n, 0, sizeof(n));
+    n.backend = ODFS_BACKEND_HFSPLUS;
+    n.kind = ODFS_NODE_DIR;
+    n.extent.lba = cnid;
+    return n;
+}
+
+static odfs_err_t hfsp_resolve_parent(void *backend_ctx,
+                                        odfs_cache_t *cache,
+                                        odfs_log_state_t *log,
+                                        const odfs_node_t *dir,
+                                        odfs_node_t *parent_out,
+                                        odfs_node_t *grandparent_out)
+{
+    hfsplus_context_t *ctx = backend_ctx;
+    hfsp_thread_info_t thread;
+    hfsp_thread_info_t parent_thread;
+    odfs_node_t grandparent;
+    odfs_err_t err;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    if (dir->extent.lba == HFSPLUS_CNID_ROOT)
+        return ODFS_ERR_NOT_FOUND;
+
+    err = hfsp_read_thread(ctx, cache, dir->extent.lba, &thread);
+    if (err != ODFS_OK)
+        return err;
+
+    if (thread.parent_cnid == HFSPLUS_CNID_ROOT) {
+        *parent_out = ctx->root;
+        if (grandparent_out)
+            *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    err = hfsp_read_thread(ctx, cache, thread.parent_cnid, &parent_thread);
+    if (err != ODFS_OK)
+        return err;
+
+    if (parent_thread.parent_cnid == HFSPLUS_CNID_ROOT)
+        grandparent = ctx->root;
+    else
+        grandparent = hfsp_dir_stub(parent_thread.parent_cnid);
+
+    err = hfsp_find_child_by_cnid(backend_ctx, cache, log, &grandparent,
+                                  thread.parent_cnid, parent_out);
+    if (err != ODFS_OK)
+        return err;
+
+    if (!grandparent_out)
+        return ODFS_OK;
+
+    if (parent_thread.parent_cnid == HFSPLUS_CNID_ROOT) {
+        *grandparent_out = ctx->root;
+        return ODFS_OK;
+    }
+
+    {
+        hfsp_thread_info_t gp_thread;
+        odfs_node_t great;
+
+        err = hfsp_read_thread(ctx, cache, parent_thread.parent_cnid,
+                               &gp_thread);
+        if (err != ODFS_OK)
+            return err;
+
+        if (gp_thread.parent_cnid == HFSPLUS_CNID_ROOT)
+            great = ctx->root;
+        else
+            great = hfsp_dir_stub(gp_thread.parent_cnid);
+
+        err = hfsp_find_child_by_cnid(backend_ctx, cache, log, &great,
+                                      parent_thread.parent_cnid,
+                                      grandparent_out);
+        if (err != ODFS_OK)
+            return err;
+    }
+
+    return ODFS_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -691,6 +960,7 @@ const odfs_backend_ops_t hfsplus_backend_ops = {
     .readdir         = hfsp_readdir,
     .read            = hfsp_read,
     .lookup          = hfsp_lookup,
+    .resolve_parent  = hfsp_resolve_parent,
     .get_volume_name = hfsp_get_volume_name,
     .get_volume_size = hfsp_get_volume_size,
 };

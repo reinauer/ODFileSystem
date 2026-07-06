@@ -27,8 +27,10 @@
 
 /*
  * Parse a 7-byte directory record date/time (ECMA-119 9.1.5).
+ * High Sierra records carry the same 6 leading bytes but no timezone.
  */
-static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
+static void iso_parse_dir_date(const uint8_t *d, int high_sierra,
+                               odfs_timestamp_t *ts)
 {
     ts->year   = 1900 + d[0];
     ts->month  = d[1];
@@ -36,7 +38,10 @@ static void iso_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
     ts->hour   = d[3];
     ts->minute = d[4];
     ts->second = d[5];
-    ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
+    if (high_sierra)
+        ts->tz_offset = 0;
+    else
+        ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
 }
 
 #if ODFS_FEATURE_ROCK_RIDGE
@@ -99,6 +104,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
                                 uint32_t session_start,
                                 uint32_t *next_id,
                                 int lowercase,
+                                int high_sierra,
                                 odfs_node_t *node,
                                 const uint8_t **sua_out,
                                 size_t *sua_len_out)
@@ -125,7 +131,15 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     if (33 + name_len > rec_len)
         return 0; /* malformed */
 
-    memset(node, 0, sizeof(*node));
+    /* Initialize the fields a record may leave untouched instead of
+     * clearing the whole node: the embedded name buffer dominates
+     * sizeof(*node) and this runs for every record of every scan. */
+    node->parent_id = 0;
+    node->mode = 0;
+    node->backend_data = NULL;
+    node->amiga_as.has_protection = 0;
+    node->amiga_as.has_comment = 0;
+
     node->id = (*next_id)++;
     node->backend = ODFS_BACKEND_ISO9660;
 
@@ -135,11 +149,11 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->size          = node->extent.length;
 
     /* flags */
-    flags = data[ISO_DR_FLAGS];
+    flags = data[high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS];
     node->kind = (flags & ISO_DR_FLAG_DIRECTORY) ? ODFS_NODE_DIR : ODFS_NODE_FILE;
 
     /* timestamps */
-    iso_parse_dir_date(&data[ISO_DR_DATE], &node->mtime);
+    iso_parse_dir_date(&data[ISO_DR_DATE], high_sierra, &node->mtime);
     node->ctime = node->mtime;
 
     /* name */
@@ -157,11 +171,12 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     }
 
     /* System Use Area starts after filename, padded to even offset.
-     * ECMA-119: if name_len is even, a pad byte follows the name. */
+     * ECMA-119: if name_len is even, a pad byte follows the name.
+     * High Sierra predates SUSP, so no System Use Area is reported. */
     name_end = 33 + name_len;
     if ((name_len & 1) == 0)
         name_end++; /* pad byte after even-length filename */
-    if (name_end < rec_len && sua_out && sua_len_out) {
+    if (!high_sierra && name_end < rec_len && sua_out && sua_len_out) {
         *sua_out = &data[name_end];
         *sua_len_out = rec_len - name_end;
     }
@@ -186,6 +201,20 @@ static odfs_err_t iso_probe(odfs_cache_t *cache,
 
     /* check standard identifier "CD001" */
     if (memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0) {
+#if ODFS_FEATURE_HIGH_SIERRA
+        /* High Sierra: "CDROM" identifier after the 8-byte descriptor LBN */
+        if (memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0) {
+            if (sector[HS_VD_TYPE] != ISO_VD_TYPE_PRIMARY) {
+                ODFS_DEBUG(log, ODFS_SUB_ISO, "HSF VD type %u (expected 1)",
+                            sector[HS_VD_TYPE]);
+                return ODFS_ERR_BAD_FORMAT;
+            }
+            ODFS_INFO(log, ODFS_SUB_ISO,
+                       "High Sierra SFS descriptor found at LBA %" PRIu32,
+                       session_start + ISO_VD_START_LBA);
+            return ODFS_OK;
+        }
+#endif
         ODFS_DEBUG(log, ODFS_SUB_ISO, "no CD001 signature at LBA %" PRIu32,
                     session_start + ISO_VD_START_LBA);
         return ODFS_ERR_BAD_FORMAT;
@@ -231,20 +260,39 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
         return err;
     }
 
-    /* parse PVD fields */
-    iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
-                      ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
-    iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
-                      ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+#if ODFS_FEATURE_HIGH_SIERRA
+    if (memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0 &&
+        memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0)
+        ctx->high_sierra = 1;
+#endif
 
-    ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
-    ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
-    ctx->pvd.path_table_size = iso_read_le32(&sector[ISO_PVD_PATH_TABLE_SIZE]);
+    /* parse PVD fields — High Sierra fields sit 8+ bytes later */
+    if (ctx->high_sierra) {
+        iso_copy_strfield(&sector[HS_PVD_SYSTEM_ID], 32,
+                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+        iso_copy_strfield(&sector[HS_PVD_VOLUME_ID], 32,
+                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
 
-    /* root directory record (34 bytes embedded in PVD) */
-    memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
-    ctx->pvd.root_dir_lba  = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_EXTENT_LBA]);
-    ctx->pvd.root_dir_size = iso_read_le32(&sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_DATA_LENGTH]);
+        ctx->pvd.volume_space_size = iso_read_le32(&sector[HS_PVD_VOLUME_SPACE_SIZE]);
+        ctx->pvd.logical_block_size = iso_read_le16(&sector[HS_PVD_LOGICAL_BLK_SIZE]);
+        ctx->pvd.path_table_size = iso_read_le32(&sector[HS_PVD_PATH_TABLE_SIZE]);
+
+        memcpy(ctx->pvd.root_dir_record, &sector[HS_PVD_ROOT_DIR_RECORD], 34);
+    } else {
+        iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
+                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+        iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
+                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+
+        ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
+        ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
+        ctx->pvd.path_table_size = iso_read_le32(&sector[ISO_PVD_PATH_TABLE_SIZE]);
+
+        memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
+    }
+    /* extent and length offsets inside the record match in both variants */
+    ctx->pvd.root_dir_lba  = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_EXTENT_LBA]);
+    ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
 
     /*
      * Multisession: if the PVD's root LBA is already >= session_start,
@@ -263,7 +311,8 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     }
 
     ODFS_INFO(log, ODFS_SUB_ISO,
-               "volume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
+               "%svolume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
+               ctx->high_sierra ? "High Sierra " : "",
                ctx->pvd.volume_id, ctx->pvd.system_id,
                ctx->pvd.volume_space_size, ctx->pvd.logical_block_size);
     ODFS_INFO(log, ODFS_SUB_ISO,
@@ -289,12 +338,14 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     root_out->size          = ctx->pvd.root_dir_size;
 
     /* parse timestamps from root dir record */
-    iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE], &root_out->mtime);
+    iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE],
+                       ctx->high_sierra, &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
 #if ODFS_FEATURE_ROCK_RIDGE
-    /* detect Rock Ridge by reading the root directory's "." entry */
-    {
+    /* detect Rock Ridge by reading the root directory's "." entry;
+     * High Sierra predates SUSP, so skip the probe entirely */
+    if (!ctx->high_sierra) {
         const uint8_t *root_sector;
         err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
         if (err == ODFS_OK) {
@@ -393,6 +444,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         size_t sua_len = 0;
         int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
                                             &ctx->next_node_id, lowercase,
+                                            ctx->high_sierra,
                                             &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
@@ -400,6 +452,35 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         }
 
         node.parent_id = dir->id;
+
+        uint32_t next_offset = offset + (uint32_t)consumed;
+
+        /* ISO Level 3: fold multi-extent continuation records into the node */
+        if (node.kind == ODFS_NODE_FILE &&
+            (rec[ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS] &
+             ISO_DR_FLAG_MULTI_EXTENT) != 0) {
+            size_t sua_off = (sua && sua_len > 0) ? (size_t)(sua - rec) : 0;
+
+            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
+                                              dir_lba, dir_size, &next_offset,
+                                              ctx->high_sierra, rec, &node);
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+
+            /* the merge walk may have evicted our sector — re-pin the
+             * System Use Area pointer before Rock Ridge parsing */
+            if (sua_off > 0) {
+                err = odfs_cache_read(cache, sector_lba, &sector);
+                if (err != ODFS_OK) {
+                    odfs_namefix_destroy(&namefix);
+                    return err;
+                }
+                rec = sector + sector_off;
+                sua = rec + sua_off;
+            }
+        }
 
 #if ODFS_FEATURE_ROCK_RIDGE
         /* apply Rock Ridge overrides */
@@ -409,7 +490,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
             /* skip relocated entries (RE) */
             if (rr.is_relocated) {
-                offset += consumed;
+                offset = next_offset;
                 continue;
             }
             iso_apply_rr(&node, &rr, ctx->session_start, 1);
@@ -419,7 +500,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         /* skip . and .. entries */
         if ((node.name[0] == '.' && node.name[1] == '\0') ||
             (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
-            offset += consumed;
+            offset = next_offset;
             continue;
         }
 
@@ -431,7 +512,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
         /* advance offset BEFORE callback so resume_offset points
            to the entry AFTER the one we're about to deliver */
-        offset += consumed;
+        offset = next_offset;
 
         if (entry_start < target_offset)
             continue;
@@ -530,6 +611,102 @@ static odfs_err_t iso_lookup(void *backend_ctx,
 
     return ODFS_ERR_NOT_FOUND;
 }
+
+/* ------------------------------------------------------------------ */
+/* readlink                                                            */
+/* ------------------------------------------------------------------ */
+
+#if ODFS_FEATURE_ROCK_RIDGE
+/*
+ * Rock Ridge symlink targets live in SL entries of the directory record's
+ * System Use Area, which readdir does not carry into the node. Re-scan the
+ * directory for the record whose (RR-overridden) name matches and return
+ * its SL target. A symlink whose display name was rewritten by namefix
+ * (duplicate-name ~N suffix) will not match here; that combination has no
+ * sane on-disc meaning and is not worth carrying extra state for.
+ */
+static odfs_err_t iso_readlink(void *backend_ctx,
+                               odfs_cache_t *cache,
+                               odfs_log_state_t *log,
+                               const odfs_node_t *dir,
+                               const char *name,
+                               char *buf,
+                               size_t buf_size)
+{
+    iso_context_t *ctx = backend_ctx;
+    uint32_t dir_lba = dir->extent.lba;
+    uint32_t dir_size = dir->extent.length;
+    uint32_t offset = 0;
+
+    (void)log;
+
+    if (!ctx->has_rock_ridge)
+        return ODFS_ERR_UNSUPPORTED;
+
+    while (offset < dir_size) {
+        uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
+        uint32_t sector_off = offset % ISO_SECTOR_SIZE;
+        const uint8_t *sector;
+        odfs_err_t err;
+
+        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+
+        const uint8_t *rec = sector + sector_off;
+        size_t avail = ISO_SECTOR_SIZE - sector_off;
+
+        if (rec[0] == 0) {
+            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+
+        odfs_node_t node;
+        const uint8_t *sua = NULL;
+        size_t sua_len = 0;
+        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
+                                            &ctx->next_node_id,
+                                            ctx->lowercase,
+                                            ctx->high_sierra,
+                                            &node, &sua, &sua_len);
+        if (consumed == 0) {
+            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+        offset += (uint32_t)consumed;
+
+        rr_info_t rr;
+        memset(&rr, 0, sizeof(rr));
+        if (sua && sua_len > 0) {
+            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+            if (rr.is_relocated)
+                continue;
+            if (rr.has_name && rr.name[0] != '\0') {
+                size_t nlen = strlen(rr.name);
+                if (nlen >= sizeof(node.name))
+                    nlen = sizeof(node.name) - 1;
+                memcpy(node.name, rr.name, nlen);
+                node.name[nlen] = '\0';
+            }
+        }
+
+        if (odfs_strcasecmp(node.name, name) != 0)
+            continue;
+
+        /* found the object, but it carries no link target */
+        if (!rr.is_symlink || rr.symlink_target[0] == '\0')
+            return ODFS_ERR_UNSUPPORTED;
+
+        size_t tlen = strlen(rr.symlink_target);
+        if (tlen >= buf_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        memcpy(buf, rr.symlink_target, tlen + 1);
+        return ODFS_OK;
+    }
+
+    return ODFS_ERR_NOT_FOUND;
+}
+#endif /* ODFS_FEATURE_ROCK_RIDGE */
 
 /* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
@@ -649,6 +826,95 @@ static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
     return err;
 }
 
+odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+                                       odfs_log_state_t *log,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t dir_size,
+                                       uint32_t *offset,
+                                       int high_sierra,
+                                       const uint8_t *first_rec,
+                                       odfs_node_t *node)
+{
+    uint8_t ident[255];
+    uint8_t ident_len;
+    size_t flags_off = high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
+    int more = (first_rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
+    uint64_t merged = node->extent.length;
+    int contiguous = 1;
+
+    if (!more)
+        return ODFS_OK;
+
+    /* Copy the identifier up front: the walk below reads further sectors,
+     * which may evict the cache entry first_rec points into. */
+    ident_len = first_rec[ISO_DR_NAME_LEN];
+    memcpy(ident, &first_rec[ISO_DR_NAME], ident_len);
+
+    while (more && *offset < dir_size) {
+        uint32_t sector_lba = dir_lba + (*offset / ISO_SECTOR_SIZE);
+        uint32_t sector_off = *offset % ISO_SECTOR_SIZE;
+        const uint8_t *sector;
+        const uint8_t *rec;
+        uint8_t rec_len;
+        uint32_t part_lba, part_len;
+        odfs_err_t err;
+
+        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+
+        rec = sector + sector_off;
+
+        /* zero padding: records never span sectors, skip to the next */
+        if (rec[0] == 0) {
+            *offset = ((*offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+
+        rec_len = rec[ISO_DR_LENGTH];
+        if (rec_len < 33 || rec_len > ISO_SECTOR_SIZE - sector_off)
+            break; /* malformed — leave it for the normal scan */
+
+        /* ECMA-119 6.5.1 requires consecutive records with an identical
+         * File Identifier. Anything else means the continuation is
+         * missing and the file ends at what we merged so far. */
+        if (rec[ISO_DR_NAME_LEN] != ident_len ||
+            memcmp(&rec[ISO_DR_NAME], ident, ident_len) != 0) {
+            ODFS_WARN(log, ODFS_SUB_ISO,
+                       "multi-extent continuation missing for \"%s\"; "
+                       "truncated to %" PRIu64 " bytes",
+                       node->name, merged);
+            break;
+        }
+
+        part_lba = iso_read_le32(&rec[ISO_DR_EXTENT_LBA]) + session_start;
+        part_len = iso_read_le32(&rec[ISO_DR_DATA_LENGTH]);
+
+        /* A part continues the byte stream only if the merged length so
+         * far is sector-aligned and the part starts in the next sector. */
+        if (contiguous &&
+            (merged % ISO_SECTOR_SIZE) == 0 &&
+            part_lba == node->extent.lba + (uint32_t)(merged / ISO_SECTOR_SIZE)) {
+            merged += part_len;
+        } else if (contiguous) {
+            contiguous = 0;
+            ODFS_WARN(log, ODFS_SUB_ISO,
+                       "non-contiguous multi-extent file \"%s\"; "
+                       "truncated to %" PRIu64 " bytes",
+                       node->name, merged);
+        }
+
+        more = (rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
+        *offset += rec_len;
+    }
+
+    node->size = merged;
+    node->extent.length = (merged > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL
+                                                   : (uint32_t)merged;
+    return ODFS_OK;
+}
+
 /* synthesize the minimal node needed to enumerate a directory extent */
 odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
                               uint32_t lba, uint32_t size)
@@ -763,6 +1029,9 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .readdir         = iso_readdir,
     .read            = iso_read,
     .lookup          = iso_lookup,
+#if ODFS_FEATURE_ROCK_RIDGE
+    .readlink        = iso_readlink,
+#endif
     .resolve_parent  = iso_resolve_parent,
     .get_volume_name = iso_get_volume_name,
     .get_volume_size = iso_get_volume_size,

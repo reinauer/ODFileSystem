@@ -179,6 +179,33 @@ TEST(cache_eviction)
     odfs_cache_destroy(&cache);
 }
 
+TEST(cache_hit_updates_lru_order)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    const uint8_t *data;
+    int reads = 0;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 1, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_EQ(reads, 2);
+
+    ASSERT_OK(odfs_cache_read(&cache, 2, &data));
+    ASSERT_EQ(reads, 3);
+
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_EQ(reads, 3);
+
+    ASSERT_OK(odfs_cache_read(&cache, 1, &data));
+    ASSERT_EQ(reads, 4);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST(cache_flush)
 {
     odfs_cache_t cache;

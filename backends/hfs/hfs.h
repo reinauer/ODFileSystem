@@ -100,6 +100,7 @@ typedef struct hfs_context {
 
     /* node tracking */
     uint32_t next_node_id;
+    odfs_node_t root;
 } hfs_context_t;
 
 extern const odfs_backend_ops_t hfs_backend_ops;

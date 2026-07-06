@@ -87,6 +87,20 @@ typedef struct odfs_backend_ops {
                           odfs_node_t *out);
 
     /*
+     * Read a symbolic link's target as a POSIX-style path ("a/b",
+     * "../a", "/abs"). name is looked up within dir, matching lookup
+     * semantics. May be NULL, and may return ODFS_ERR_UNSUPPORTED when
+     * the object exists but carries no link target the backend can read.
+     */
+    odfs_err_t (*readlink)(void *backend_ctx,
+                            odfs_cache_t *cache,
+                            odfs_log_state_t *log,
+                            const odfs_node_t *dir,
+                            const char *name,
+                            char *buf,
+                            size_t buf_size);
+
+    /*
      * Resolve the parent (and optional grandparent) of a directory node
      * directly, without a tree walk. May be NULL, in which case the core
      * falls back to a generic search.

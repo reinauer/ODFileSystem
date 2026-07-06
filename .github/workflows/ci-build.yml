@@ -9,7 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    container: stefanreinauer/amiga-gcc:gcc-v13.3
+    container: stefanreinauer/amiga-gcc:gcc-v13.4
 
     steps:
       - uses: actions/checkout@v4
