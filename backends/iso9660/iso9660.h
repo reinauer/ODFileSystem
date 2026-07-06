@@ -182,6 +182,27 @@ odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
 odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
                               uint32_t lba, uint32_t size);
 
+/*
+ * Merge the continuation records of a multi-extent file (ISO 9660 Level 3,
+ * ECMA-119 6.5.1). Called after parsing a directory record whose
+ * multi-extent flag is set; first_rec must still point at that raw record.
+ * Consumes every continuation record by advancing *offset past it and
+ * accumulates their data lengths into node->size. Only contiguous extents
+ * can be represented by the single-extent node model; when a part is
+ * non-contiguous the file is truncated to the contiguous prefix and a
+ * warning is logged. Shared by the ISO 9660 (plain and High Sierra) and
+ * Joliet backends — the record fields involved sit at identical offsets.
+ */
+odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+                                       odfs_log_state_t *log,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t dir_size,
+                                       uint32_t *offset,
+                                       int high_sierra,
+                                       const uint8_t *first_rec,
+                                       odfs_node_t *node);
+
 /* --- backend ops (exposed for registration) --- */
 
 extern const odfs_backend_ops_t iso9660_backend_ops;

@@ -288,7 +288,6 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
     uint32_t offset = 0;
     odfs_namefix_state_t namefix;
 
-    (void)log;
     odfs_namefix_init(&namefix);
 
     while (offset < dir_size) {
@@ -322,9 +321,23 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
 
         node.parent_id = dir->id;
 
+        uint32_t next_offset = offset + (uint32_t)consumed;
+
+        /* ISO Level 3: fold multi-extent continuation records into the node */
+        if (node.kind == ODFS_NODE_FILE &&
+            (rec[ISO_DR_FLAGS] & ISO_DR_FLAG_MULTI_EXTENT) != 0) {
+            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
+                                              dir_lba, dir_size, &next_offset,
+                                              0, rec, &node);
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+        }
+
         if ((node.name[0] == '.' && node.name[1] == '\0') ||
             (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
-            offset += consumed;
+            offset = next_offset;
             continue;
         }
 
@@ -334,7 +347,7 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
             return err;
         }
 
-        offset += consumed;
+        offset = next_offset;
 
         if (entry_start < target_offset)
             continue;

@@ -453,6 +453,35 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
         node.parent_id = dir->id;
 
+        uint32_t next_offset = offset + (uint32_t)consumed;
+
+        /* ISO Level 3: fold multi-extent continuation records into the node */
+        if (node.kind == ODFS_NODE_FILE &&
+            (rec[ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS] &
+             ISO_DR_FLAG_MULTI_EXTENT) != 0) {
+            size_t sua_off = (sua && sua_len > 0) ? (size_t)(sua - rec) : 0;
+
+            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
+                                              dir_lba, dir_size, &next_offset,
+                                              ctx->high_sierra, rec, &node);
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+
+            /* the merge walk may have evicted our sector — re-pin the
+             * System Use Area pointer before Rock Ridge parsing */
+            if (sua_off > 0) {
+                err = odfs_cache_read(cache, sector_lba, &sector);
+                if (err != ODFS_OK) {
+                    odfs_namefix_destroy(&namefix);
+                    return err;
+                }
+                rec = sector + sector_off;
+                sua = rec + sua_off;
+            }
+        }
+
 #if ODFS_FEATURE_ROCK_RIDGE
         /* apply Rock Ridge overrides */
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
@@ -461,7 +490,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
             /* skip relocated entries (RE) */
             if (rr.is_relocated) {
-                offset += consumed;
+                offset = next_offset;
                 continue;
             }
             iso_apply_rr(&node, &rr, ctx->session_start, 1);
@@ -471,7 +500,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         /* skip . and .. entries */
         if ((node.name[0] == '.' && node.name[1] == '\0') ||
             (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
-            offset += consumed;
+            offset = next_offset;
             continue;
         }
 
@@ -483,7 +512,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
         /* advance offset BEFORE callback so resume_offset points
            to the entry AFTER the one we're about to deliver */
-        offset += consumed;
+        offset = next_offset;
 
         if (entry_start < target_offset)
             continue;
@@ -699,6 +728,95 @@ static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
     if (err == ODFS_OK || err == ODFS_ERR_EOF)
         return ODFS_ERR_NOT_FOUND;
     return err;
+}
+
+odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+                                       odfs_log_state_t *log,
+                                       uint32_t session_start,
+                                       uint32_t dir_lba,
+                                       uint32_t dir_size,
+                                       uint32_t *offset,
+                                       int high_sierra,
+                                       const uint8_t *first_rec,
+                                       odfs_node_t *node)
+{
+    uint8_t ident[255];
+    uint8_t ident_len;
+    size_t flags_off = high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
+    int more = (first_rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
+    uint64_t merged = node->extent.length;
+    int contiguous = 1;
+
+    if (!more)
+        return ODFS_OK;
+
+    /* Copy the identifier up front: the walk below reads further sectors,
+     * which may evict the cache entry first_rec points into. */
+    ident_len = first_rec[ISO_DR_NAME_LEN];
+    memcpy(ident, &first_rec[ISO_DR_NAME], ident_len);
+
+    while (more && *offset < dir_size) {
+        uint32_t sector_lba = dir_lba + (*offset / ISO_SECTOR_SIZE);
+        uint32_t sector_off = *offset % ISO_SECTOR_SIZE;
+        const uint8_t *sector;
+        const uint8_t *rec;
+        uint8_t rec_len;
+        uint32_t part_lba, part_len;
+        odfs_err_t err;
+
+        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+
+        rec = sector + sector_off;
+
+        /* zero padding: records never span sectors, skip to the next */
+        if (rec[0] == 0) {
+            *offset = ((*offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+
+        rec_len = rec[ISO_DR_LENGTH];
+        if (rec_len < 33 || rec_len > ISO_SECTOR_SIZE - sector_off)
+            break; /* malformed — leave it for the normal scan */
+
+        /* ECMA-119 6.5.1 requires consecutive records with an identical
+         * File Identifier. Anything else means the continuation is
+         * missing and the file ends at what we merged so far. */
+        if (rec[ISO_DR_NAME_LEN] != ident_len ||
+            memcmp(&rec[ISO_DR_NAME], ident, ident_len) != 0) {
+            ODFS_WARN(log, ODFS_SUB_ISO,
+                       "multi-extent continuation missing for \"%s\"; "
+                       "truncated to %" PRIu64 " bytes",
+                       node->name, merged);
+            break;
+        }
+
+        part_lba = iso_read_le32(&rec[ISO_DR_EXTENT_LBA]) + session_start;
+        part_len = iso_read_le32(&rec[ISO_DR_DATA_LENGTH]);
+
+        /* A part continues the byte stream only if the merged length so
+         * far is sector-aligned and the part starts in the next sector. */
+        if (contiguous &&
+            (merged % ISO_SECTOR_SIZE) == 0 &&
+            part_lba == node->extent.lba + (uint32_t)(merged / ISO_SECTOR_SIZE)) {
+            merged += part_len;
+        } else if (contiguous) {
+            contiguous = 0;
+            ODFS_WARN(log, ODFS_SUB_ISO,
+                       "non-contiguous multi-extent file \"%s\"; "
+                       "truncated to %" PRIu64 " bytes",
+                       node->name, merged);
+        }
+
+        more = (rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
+        *offset += rec_len;
+    }
+
+    node->size = merged;
+    node->extent.length = (merged > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL
+                                                   : (uint32_t)merged;
+    return ODFS_OK;
 }
 
 /* synthesize the minimal node needed to enumerate a directory extent */
