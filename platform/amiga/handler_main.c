@@ -4910,16 +4910,27 @@ static void handle_media_change(handler_global_t *g)
 {
     ULONG change_count;
     ULONG status;
+    int count_moved = 1;    /* assume moved if the counter can't be read */
 
     /*
-     * Some drives/controllers deliver an initial or redundant change
-     * interrupt after TD_ADDCHANGEINT. Ignore those unless the device's
-     * change counter actually moved, otherwise we invalidate every
-     * existing lock/filehandle by remounting the same disc.
+     * The change counter is only advisory. Real scsi.device/trackdisk.device
+     * bump TD_CHANGENUM *before* firing the change interrupt, so an unchanged
+     * counter reliably means "same disc, spurious interrupt". Poseidon's
+     * usbscsi.device (massstorage.class) polls the medium from a separate
+     * task and delivers the interrupt *before* it updates TD_CHANGENUM, so on
+     * the first insertion after boot the counter still reads the baseline we
+     * captured in install_media_change() — which used to make us swallow the
+     * event and leave the disc unmounted until it was re-inserted.
+     *
+     * Therefore the counter must never veto a genuine present/absent
+     * transition. Decide from the actual media-present state versus our own
+     * mount state, and use the counter only to tell a disc *swap* apart from a
+     * redundant re-interrupt on an already-mounted disc (remounting the same
+     * disc would invalidate every outstanding lock and file handle).
      */
     if (query_media_change_count(g, &change_count)) {
         if (g->change_count_valid && change_count == g->change_count)
-            return;
+            count_moved = 0;
         g->change_count = change_count;
         g->change_count_valid = 1;
     }
@@ -4928,14 +4939,19 @@ static void handle_media_change(handler_global_t *g)
         return;
 
     if (status != 0) {
-        /* no disc present */
+        /* no disc present — drop the mounted volume, if any */
         unmount_volume(g);
-    } else {
-        /* disc present — unmount old, try mount new */
+    } else if (!g->mounted) {
+        /* a disc appeared where none was mounted — mount it regardless of
+         * whether the change counter has caught up yet */
+        mount_volume(g);
+    } else if (count_moved) {
+        /* a different disc replaced the mounted one — remount */
         unmount_volume(g);
         /* re-init media adapter since cache was destroyed */
         mount_volume(g);
     }
+    /* else: same disc still mounted, spurious interrupt — keep locks intact */
 }
 
 /* ------------------------------------------------------------------ */
