@@ -115,10 +115,11 @@ jobs:
           mkdir -p dist
           cp build/amigaos4/ODFileSystem-amigaos4.lha \
             dist/ODFileSystem-amigaos4.lha
-          cp docs/ODFileSystem_OS4.readme dist/ODFileSystem_OS4.readme
+          cp docs/ODFileSystem_OS4.readme \
+            dist/ODFileSystem-amigaos4.readme
           sed -i \
             -e "s/^Version:.*/Version:      ${version}/" \
-            dist/ODFileSystem_OS4.readme
+            dist/ODFileSystem-amigaos4.readme
 
       - name: Upload AmigaOS 4 Aminet artifact
         uses: actions/upload-artifact@v4
@@ -126,7 +127,7 @@ jobs:
           name: aminet-os4-upload
           path: |
             dist/ODFileSystem-amigaos4.lha
-            dist/ODFileSystem_OS4.readme
+            dist/ODFileSystem-amigaos4.readme
           if-no-files-found: error
 
   publish:
@@ -151,6 +152,30 @@ jobs:
           name: aminet-os4-upload
           path: dist/os4
 
+      - name: Check Aminet upload filenames
+        run: |
+          set -eu
+          check_pair() {
+            archive="$1"
+            readme="$2"
+            archive_base="$(basename "${archive}" .lha)"
+            readme_base="$(basename "${readme}" .readme)"
+
+            if [ "${archive_base}" != "${readme_base}" ]; then
+              echo "Aminet readme basename mismatch:" >&2
+              echo "  archive: ${archive}" >&2
+              echo "  readme:  ${readme}" >&2
+              exit 1
+            fi
+          }
+
+          check_pair \
+            dist/os3/ODFileSystem.lha \
+            dist/os3/ODFileSystem.readme
+          check_pair \
+            dist/os4/ODFileSystem-amigaos4.lha \
+            dist/os4/ODFileSystem-amigaos4.readme
+
       - name: Upload AmigaOS 3 package to Aminet
         id: aminet-os3
         uses: sidick/aminet-release-action@v1
@@ -164,5 +189,5 @@ jobs:
         uses: sidick/aminet-release-action@v1
         with:
           filename: dist/os4/ODFileSystem-amigaos4.lha
-          readme: dist/os4/ODFileSystem_OS4.readme
+          readme: dist/os4/ODFileSystem-amigaos4.readme
           category: disk/cdrom
