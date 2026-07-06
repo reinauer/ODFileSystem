@@ -3,7 +3,7 @@ Author:       stefan.reinauer@coreboot.org (Stefan Reinauer)
 Uploader:     stefan.reinauer@coreboot.org (Stefan Reinauer)
 Type:         disk/cdrom
 Version:      [VERSION]
-Requires:     AmigaOS 3.x, CD/DVD drive or emulator CD device
+Requires:     Kickstart 2.04 (V37) or newer, CD/DVD drive or emulator CD device
 Architecture: m68k-amigaos
 
 ODFileSystem

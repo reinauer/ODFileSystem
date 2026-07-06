@@ -40,8 +40,14 @@ struct DosLibrary *odfs_amiga_dosbase(void)
 
 int odfs_amiga_open_libraries(void)
 {
+    /*
+     * V37 (Kickstart 2.04) is the real floor: the ExAll path calls
+     * MatchPatternNoCase() and startup.S may call StackSwap(), both
+     * V37. Requiring V37 here turns a latent crash on the short-lived
+     * 2.00 ROMs into a clean load failure.
+     */
     DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library",
-                                               36);
+                                               37);
     if (!DOSBase)
         return 0;
 
