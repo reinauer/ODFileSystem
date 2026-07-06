@@ -575,6 +575,29 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
     return ops->lookup(backend_ctx, &mnt->cache, &mnt->log, dir, name, out);
 }
 
+odfs_err_t odfs_readlink(odfs_mount_t *mnt,
+                           const odfs_node_t *dir,
+                           const char *name,
+                           char *buf,
+                           size_t buf_size)
+{
+    const odfs_backend_ops_t *ops;
+    void *backend_ctx;
+
+    if (!mnt || !dir || !name || !buf || buf_size == 0)
+        return ODFS_ERR_INVAL;
+
+    if (dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_NOT_DIR;
+
+    if (!mount_backend_for_type(mnt, dir->backend, &ops, &backend_ctx) ||
+        !ops || !ops->readlink)
+        return ODFS_ERR_UNSUPPORTED;
+
+    return ops->readlink(backend_ctx, &mnt->cache, &mnt->log, dir, name,
+                         buf, buf_size);
+}
+
 odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
                                     const odfs_node_t *node,
                                     odfs_node_t *parent_out,

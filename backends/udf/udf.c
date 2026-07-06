@@ -362,16 +362,20 @@ static void udf_unmount(void *backend_ctx)
  * the data location and size. Returns the physical LBA and
  * byte length of the file's data.
  */
-static odfs_err_t udf_read_icb(udf_context_t *ctx,
-                                odfs_cache_t *cache,
-                                uint32_t icb_phys_lba,
-                                uint64_t *data_size,
-                                uint32_t *data_phys_lba,
-                                uint8_t *file_type,
-                                odfs_timestamp_t *mtime)
+static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
+                                   odfs_cache_t *cache,
+                                   uint32_t icb_phys_lba,
+                                   uint64_t *data_size,
+                                   uint32_t *data_phys_lba,
+                                   uint8_t *file_type,
+                                   odfs_timestamp_t *mtime,
+                                   uint32_t *embed_off_out)
 {
     const uint8_t *sector;
     udf_tag_t tag;
+
+    if (embed_off_out)
+        *embed_off_out = 0;
 
     odfs_err_t err = odfs_cache_read(cache, icb_phys_lba, &sector);
     if (err != ODFS_OK)
@@ -428,8 +432,10 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
     *data_phys_lba = 0;
 
     if (alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
-        /* data is embedded in the FE itself */
+        /* data is embedded in the FE itself, after the EAs */
         *data_phys_lba = icb_phys_lba;
+        if (embed_off_out)
+            *embed_off_out = ad_offset;
     } else if (alloc_type == UDF_ICB_ALLOC_SHORT) {
         /* short AD: 4 bytes length + 4 bytes position */
         if (ad_length < 8 || ad_offset > block_size - 8)
@@ -445,6 +451,18 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
     }
 
     return ODFS_OK;
+}
+
+static odfs_err_t udf_read_icb(udf_context_t *ctx,
+                                odfs_cache_t *cache,
+                                uint32_t icb_phys_lba,
+                                uint64_t *data_size,
+                                uint32_t *data_phys_lba,
+                                uint8_t *file_type,
+                                odfs_timestamp_t *mtime)
+{
+    return udf_read_icb_ex(ctx, cache, icb_phys_lba, data_size,
+                           data_phys_lba, file_type, mtime, NULL);
 }
 
 static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
@@ -691,13 +709,14 @@ static odfs_err_t udf_read(void *backend_ctx,
     udf_context_t *ctx = backend_ctx;
     uint64_t fsize;
     uint32_t data_lba;
+    uint32_t embed_off;
     uint8_t ftype;
     odfs_err_t err;
     (void)log;
 
     /* read ICB to get data extent */
-    err = udf_read_icb(ctx, cache, file->extent.lba,
-                       &fsize, &data_lba, &ftype, NULL);
+    err = udf_read_icb_ex(ctx, cache, file->extent.lba,
+                          &fsize, &data_lba, &ftype, NULL, &embed_off);
     if (err != ODFS_OK)
         return err;
 
@@ -705,6 +724,20 @@ static odfs_err_t udf_read(void *backend_ctx,
     if (offset >= fsize) { *len = 0; return ODFS_OK; }
     if (want > fsize - offset)
         want = (size_t)(fsize - offset);
+
+    if (embed_off != 0) {
+        /* data embedded in the File Entry, after the extended attributes */
+        const uint8_t *sector;
+
+        err = odfs_cache_read(cache, data_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+        if ((uint64_t)embed_off + fsize > 2048)
+            return ODFS_ERR_CORRUPT;
+        memcpy(buf, sector + embed_off + (uint32_t)offset, want);
+        *len = want;
+        return ODFS_OK;
+    }
 
     *len = want;
     return odfs_cache_read_bytes(cache, data_lba, offset, buf, len);
@@ -848,6 +881,115 @@ static odfs_err_t udf_lookup(void *backend_ctx,
 
     odfs_namefix_destroy(&namefix);
     return ODFS_ERR_NOT_FOUND;
+}
+
+/* ------------------------------------------------------------------ */
+/* readlink                                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A UDF symlink's file data is a sequence of Path Component records
+ * (ECMA-167 4/14.16.1): componentType (1), identifier length (1),
+ * file version (2), identifier in OSTA CS0. Decode them into a
+ * POSIX-style path.
+ */
+static odfs_err_t udf_readlink(void *backend_ctx,
+                               odfs_cache_t *cache,
+                               odfs_log_state_t *log,
+                               const odfs_node_t *dir,
+                               const char *name,
+                               char *buf,
+                               size_t buf_size)
+{
+    udf_context_t *ctx = backend_ctx;
+    odfs_node_t node;
+    uint8_t data[512];
+    size_t len;
+    size_t pos = 0;
+    size_t out = 0;
+    odfs_err_t err;
+
+    (void)ctx;
+
+    err = udf_lookup(backend_ctx, cache, log, dir, name, &node);
+    if (err != ODFS_OK)
+        return err;
+    if (node.kind != ODFS_NODE_SYMLINK)
+        return ODFS_ERR_UNSUPPORTED;
+    if (node.size == 0 || node.size > sizeof(data))
+        return ODFS_ERR_UNSUPPORTED;
+
+    len = (size_t)node.size;
+    err = udf_read(backend_ctx, cache, log, &node, 0, data, &len);
+    if (err != ODFS_OK)
+        return err;
+
+    /*
+     * Some implementations (notably macOS hdiutil) store the target as a
+     * raw path string instead of ECMA-167 path components. Component
+     * types are 1..5, which no printable path byte can be, so the first
+     * byte tells the two encodings apart.
+     */
+    if (len > 0 && data[0] > 5) {
+        if (len >= buf_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        memcpy(buf, data, len);
+        buf[len] = '\0';
+        return ODFS_OK;
+    }
+
+    while (pos + 4 <= len) {
+        uint8_t ctype = data[pos];
+        uint8_t clen = data[pos + 1];
+        char comp[256];
+        size_t comp_len;
+
+        if (pos + 4 + clen > len)
+            break;
+
+        switch (ctype) {
+        case 1: /* path outside this volume's scope — treat as root */
+        case 2: /* restart from the root: absolute path */
+            out = 0;
+            if (out + 1 >= buf_size)
+                return ODFS_ERR_NAME_TOO_LONG;
+            buf[out++] = '/';
+            break;
+        case 3: /* parent directory */
+            comp[0] = '.';
+            comp[1] = '.';
+            comp[2] = '\0';
+            goto append;
+        case 4: /* current directory — no-op */
+            break;
+        case 5: /* named component */
+            udf_decode_cs0(&data[pos + 4], clen, comp, sizeof(comp));
+            if (comp[0] == '\0')
+                break;
+        append:
+            comp_len = strlen(comp);
+            if (out > 0 && buf[out - 1] != '/') {
+                if (out + 1 >= buf_size)
+                    return ODFS_ERR_NAME_TOO_LONG;
+                buf[out++] = '/';
+            }
+            if (out + comp_len >= buf_size)
+                return ODFS_ERR_NAME_TOO_LONG;
+            memcpy(buf + out, comp, comp_len);
+            out += comp_len;
+            break;
+        default:
+            break;
+        }
+
+        pos += 4u + clen;
+    }
+
+    if (out == 0)
+        return ODFS_ERR_UNSUPPORTED;
+
+    buf[out] = '\0';
+    return ODFS_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1188,6 +1330,7 @@ const odfs_backend_ops_t udf_backend_ops = {
     .readdir         = udf_readdir,
     .read            = udf_read,
     .lookup          = udf_lookup,
+    .readlink        = udf_readlink,
     .resolve_parent  = udf_resolve_parent,
     .get_volume_name = udf_get_volume_name,
     .get_volume_size = udf_get_volume_size,

@@ -39,6 +39,8 @@ ODFileSystem currently includes backends for:
 - Hybrid-disc precedence rules
 - Deterministic duplicate-name handling after normalization or charset conversion
 - Rock Ridge, Joliet, UDF, HFS, and HFS+ probing
+- Rock Ridge and UDF symlinks exposed as Amiga soft links
+  (`ST_SOFTLINK` / `ACTION_READ_LINK`)
 - Path lookup, directory enumeration, and file reads
 - Block-cache based media access
 - Host-side tools for inspecting image files

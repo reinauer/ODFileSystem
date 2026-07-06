@@ -613,6 +613,102 @@ static odfs_err_t iso_lookup(void *backend_ctx,
 }
 
 /* ------------------------------------------------------------------ */
+/* readlink                                                            */
+/* ------------------------------------------------------------------ */
+
+#if ODFS_FEATURE_ROCK_RIDGE
+/*
+ * Rock Ridge symlink targets live in SL entries of the directory record's
+ * System Use Area, which readdir does not carry into the node. Re-scan the
+ * directory for the record whose (RR-overridden) name matches and return
+ * its SL target. A symlink whose display name was rewritten by namefix
+ * (duplicate-name ~N suffix) will not match here; that combination has no
+ * sane on-disc meaning and is not worth carrying extra state for.
+ */
+static odfs_err_t iso_readlink(void *backend_ctx,
+                               odfs_cache_t *cache,
+                               odfs_log_state_t *log,
+                               const odfs_node_t *dir,
+                               const char *name,
+                               char *buf,
+                               size_t buf_size)
+{
+    iso_context_t *ctx = backend_ctx;
+    uint32_t dir_lba = dir->extent.lba;
+    uint32_t dir_size = dir->extent.length;
+    uint32_t offset = 0;
+
+    (void)log;
+
+    if (!ctx->has_rock_ridge)
+        return ODFS_ERR_UNSUPPORTED;
+
+    while (offset < dir_size) {
+        uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
+        uint32_t sector_off = offset % ISO_SECTOR_SIZE;
+        const uint8_t *sector;
+        odfs_err_t err;
+
+        err = odfs_cache_read(cache, sector_lba, &sector);
+        if (err != ODFS_OK)
+            return err;
+
+        const uint8_t *rec = sector + sector_off;
+        size_t avail = ISO_SECTOR_SIZE - sector_off;
+
+        if (rec[0] == 0) {
+            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+
+        odfs_node_t node;
+        const uint8_t *sua = NULL;
+        size_t sua_len = 0;
+        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
+                                            &ctx->next_node_id,
+                                            ctx->lowercase,
+                                            ctx->high_sierra,
+                                            &node, &sua, &sua_len);
+        if (consumed == 0) {
+            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            continue;
+        }
+        offset += (uint32_t)consumed;
+
+        rr_info_t rr;
+        memset(&rr, 0, sizeof(rr));
+        if (sua && sua_len > 0) {
+            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+            if (rr.is_relocated)
+                continue;
+            if (rr.has_name && rr.name[0] != '\0') {
+                size_t nlen = strlen(rr.name);
+                if (nlen >= sizeof(node.name))
+                    nlen = sizeof(node.name) - 1;
+                memcpy(node.name, rr.name, nlen);
+                node.name[nlen] = '\0';
+            }
+        }
+
+        if (odfs_strcasecmp(node.name, name) != 0)
+            continue;
+
+        /* found the object, but it carries no link target */
+        if (!rr.is_symlink || rr.symlink_target[0] == '\0')
+            return ODFS_ERR_UNSUPPORTED;
+
+        size_t tlen = strlen(rr.symlink_target);
+        if (tlen >= buf_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        memcpy(buf, rr.symlink_target, tlen + 1);
+        return ODFS_OK;
+    }
+
+    return ODFS_ERR_NOT_FOUND;
+}
+#endif /* ODFS_FEATURE_ROCK_RIDGE */
+
+/* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -933,6 +1029,9 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .readdir         = iso_readdir,
     .read            = iso_read,
     .lookup          = iso_lookup,
+#if ODFS_FEATURE_ROCK_RIDGE
+    .readlink        = iso_readlink,
+#endif
     .resolve_parent  = iso_resolve_parent,
     .get_volume_name = iso_get_volume_name,
     .get_volume_size = iso_get_volume_size,

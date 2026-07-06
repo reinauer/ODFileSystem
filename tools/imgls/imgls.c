@@ -11,12 +11,25 @@
 
 typedef struct imgls_opts {
     int show_amiga;
+    odfs_mount_t *mnt;
+    const odfs_node_t *dir;
 } imgls_opts_t;
 
 static odfs_err_t print_entry(const odfs_node_t *entry, void *ctx)
 {
     const imgls_opts_t *opts = ctx;
     const char *kind = odfs_node_kind_name(entry->kind);
+
+    if (entry->kind == ODFS_NODE_SYMLINK && opts && opts->mnt) {
+        char target[512];
+
+        if (odfs_readlink(opts->mnt, opts->dir, entry->name,
+                          target, sizeof(target)) == ODFS_OK) {
+            printf("%-7s %10llu  %s -> %s\n", kind,
+                   (unsigned long long)entry->size, entry->name, target);
+            return ODFS_OK;
+        }
+    }
 
     printf("%-7s %10llu  %s\n", kind, (unsigned long long)entry->size, entry->name);
     if (opts && opts->show_amiga) {
@@ -92,6 +105,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    ls_opts.mnt = &mnt;
+    ls_opts.dir = &dir;
     err = odfs_readdir(&mnt, &dir, print_entry, &ls_opts, NULL);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: readdir: %s\n", odfs_err_str(err));

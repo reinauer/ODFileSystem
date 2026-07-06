@@ -94,6 +94,13 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
                          const char *name,
                          odfs_node_t *out);
 
+/* read a symlink's POSIX-style target; name is looked up within dir */
+odfs_err_t odfs_readlink(odfs_mount_t *mnt,
+                           const odfs_node_t *dir,
+                           const char *name,
+                           char *buf,
+                           size_t buf_size);
+
 /* resolve full path from root */
 odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
                                const char *path,

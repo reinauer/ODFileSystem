@@ -33,6 +33,7 @@ typedef enum odfs_err {
     /* handler errors */
     ODFS_ERR_NOT_DIR,        /* expected directory */
     ODFS_ERR_IS_DIR,         /* expected file, got directory */
+    ODFS_ERR_IS_SYMLINK,     /* path resolution hit a symbolic link */
     ODFS_ERR_READ_ONLY,      /* write attempted on read-only fs */
     ODFS_ERR_TOO_MANY_OPEN,  /* open handle limit reached */
     ODFS_ERR_EOF,            /* end of file / data */

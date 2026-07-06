@@ -160,3 +160,79 @@ void odfs_sanitize_name(char *name, size_t len, char replacement)
             name[i] = replacement;
     }
 }
+
+#define ODFS_PATH_MAX_COMPONENTS 32
+
+odfs_err_t odfs_posix_to_amiga_path(const char *posix,
+                                    char *out, size_t out_size)
+{
+    const char *comps[ODFS_PATH_MAX_COMPONENTS];
+    size_t lens[ODFS_PATH_MAX_COMPONENTS];
+    size_t ncomp = 0;
+    size_t ups = 0;
+    size_t pos = 0;
+    size_t i;
+    int absolute = 0;
+    const char *p = posix;
+
+    if (!posix || !out || out_size == 0)
+        return ODFS_ERR_INVAL;
+
+    if (*p == '/') {
+        absolute = 1;
+        while (*p == '/')
+            p++;
+    }
+
+    while (*p) {
+        const char *start = p;
+        size_t len;
+
+        while (*p && *p != '/')
+            p++;
+        len = (size_t)(p - start);
+        while (*p == '/')
+            p++;
+
+        if (len == 1 && start[0] == '.')
+            continue;
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            if (ncomp > 0)
+                ncomp--;            /* "a/.." cancels out */
+            else if (!absolute)
+                ups++;              /* ".." above the start dir */
+            /* ".." above an absolute root is dropped, as POSIX does */
+            continue;
+        }
+        if (ncomp >= ODFS_PATH_MAX_COMPONENTS)
+            return ODFS_ERR_NAME_TOO_LONG;
+        comps[ncomp] = start;
+        lens[ncomp] = len;
+        ncomp++;
+    }
+
+    if (absolute) {
+        if (pos + 1 >= out_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        out[pos++] = ':';
+    }
+    for (i = 0; i < ups; i++) {
+        if (pos + 1 >= out_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        out[pos++] = '/';
+    }
+    for (i = 0; i < ncomp; i++) {
+        if (i > 0) {
+            if (pos + 1 >= out_size)
+                return ODFS_ERR_NAME_TOO_LONG;
+            out[pos++] = '/';
+        }
+        if (pos + lens[i] >= out_size)
+            return ODFS_ERR_NAME_TOO_LONG;
+        memcpy(out + pos, comps[i], lens[i]);
+        pos += lens[i];
+    }
+
+    out[pos] = '\0';
+    return ODFS_OK;
+}

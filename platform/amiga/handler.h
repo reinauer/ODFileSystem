@@ -295,6 +295,7 @@ static inline LONG odfs_err_to_dos(odfs_err_t err)
     case ODFS_ERR_NAME_TOO_LONG: return ERROR_LINE_TOO_LONG;
     case ODFS_ERR_NOT_DIR:     return ERROR_OBJECT_WRONG_TYPE;
     case ODFS_ERR_IS_DIR:      return ERROR_OBJECT_WRONG_TYPE;
+    case ODFS_ERR_IS_SYMLINK:  return ERROR_IS_SOFT_LINK;
     case ODFS_ERR_READ_ONLY:   return ERROR_DISK_WRITE_PROTECTED;
     case ODFS_ERR_TOO_MANY_OPEN: return ERROR_TOO_MANY_LEVELS;
     case ODFS_ERR_EOF:         return 0;
