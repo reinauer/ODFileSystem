@@ -5033,21 +5033,6 @@ void handler_main_startup(struct Message *startup_msg)
     fssm = (struct FileSysStartupMsg *)BADDR(pkt->dp_Arg2);
     g->fssm = fssm;
 
-    /* parse FSSM early so startup failures can log device context */
-    {
-        int len = AROS_BSTR_strlen(fssm->fssm_Device);
-        if (len >= (int)sizeof(g->devname))
-            len = sizeof(g->devname) - 1;
-        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
-        g->devname[len] = '\0';
-    }
-    g->devunit = fssm->fssm_Unit;
-    g->devflags = fssm->fssm_Flags;
-
-    de = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
-    g->envec = de;
-    g->sector_size = de->de_SizeBlock << 2;
-
     /* set up logging before any startup error path can fire */
     odfs_log_init(&g->log);
     odfs_log_set_sink(&g->log, log_sink, NULL);
@@ -5069,6 +5054,54 @@ void handler_main_startup(struct Message *startup_msg)
         return;
     }
     g->dosbase = odfs_amiga_dosbase();
+
+    /*
+     * Validate the FileSysStartupMsg before trusting any of its fields.
+     * A mount entry that uses Handler= instead of FileSystem= (or lacks
+     * Device=) starts the handler without an FSSM: dp_Arg2 is then zero
+     * or a BCPL string, and blindly reading through it yields a garbage
+     * device name and flags (issue #7's "OpenDevice failed device=
+     * unit=0 flags=16255938"). Fail with a message that names the fix.
+     */
+    de = fssm ? (struct DosEnvec *)BADDR(fssm->fssm_Environ) : NULL;
+    if (!fssm || !de) {
+        ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                   "startup packet has no FileSysStartupMsg/environment; "
+                   "mount entry must use FileSystem= (not Handler=) "
+                   "with Device= and Unit=");
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_REQUIRED_ARG_MISSING;
+        return_packet(g, pkt);
+        goto shutdown;
+    }
+
+    {
+        int len = AROS_BSTR_strlen(fssm->fssm_Device);
+        if (len >= (int)sizeof(g->devname))
+            len = sizeof(g->devname) - 1;
+        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
+        g->devname[len] = '\0';
+    }
+    if (g->devname[0] == '\0') {
+        ODFS_ERROR(&g->log, ODFS_SUB_CORE,
+                   "startup message names no exec device; set Device= "
+                   "in the mount entry (or the DOSDriver icon tooltype)");
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_REQUIRED_ARG_MISSING;
+        return_packet(g, pkt);
+        goto shutdown;
+    }
+    g->devunit = fssm->fssm_Unit;
+    g->devflags = fssm->fssm_Flags;
+
+    g->envec = de;
+    g->sector_size = de->de_SizeBlock << 2;
+    if (g->sector_size == 0) {
+        ODFS_WARN(&g->log, ODFS_SUB_CORE,
+                  "mount entry sets no block size; assuming 2048");
+        g->sector_size = 2048;
+    }
+
     ODFS_INFO(&g->log, ODFS_SUB_CORE, "libraries open, device=%s unit=%lu",
               g->devname, (unsigned long)g->devunit);
 
