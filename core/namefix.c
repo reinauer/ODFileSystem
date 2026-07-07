@@ -8,7 +8,6 @@
 
 #include "odfs/alloc.h"
 #include "odfs/node.h"
-#include "odfs/printf.h"
 #include "odfs/string.h"
 
 #include <string.h>
@@ -140,14 +139,26 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
     base[name_size - 1] = '\0';
 
     for (unsigned int ordinal = 2; ordinal < 1000000; ordinal++) {
-        char suffix[32];
-        int suffix_len = odfs_snprintf(suffix, sizeof(suffix), "~%u", ordinal);
+        /* build "~<ordinal>" by hand: this is the only formatter use in
+         * the ROM link, and going through odfs_snprintf() would keep
+         * the whole printf_local formatter resident for one suffix */
+        char suffix[16];
+        char digits[10];
+        unsigned int v = ordinal;
+        size_t nd = 0;
+        size_t suffix_len = 0;
         size_t base_len = strlen(base);
 
-        if (suffix_len < 0)
-            return ODFS_ERR_INVAL;
+        do {
+            digits[nd++] = (char)('0' + v % 10u);
+            v /= 10u;
+        } while (v != 0 && nd < sizeof(digits));
+        suffix[suffix_len++] = '~';
+        while (nd > 0)
+            suffix[suffix_len++] = digits[--nd];
+        suffix[suffix_len] = '\0';
 
-        if ((size_t)suffix_len >= name_size)
+        if (suffix_len >= name_size)
             return ODFS_ERR_NAME_TOO_LONG;
 
         if (base_len + (size_t)suffix_len >= name_size)
