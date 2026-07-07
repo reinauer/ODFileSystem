@@ -1115,7 +1115,8 @@ static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
     raw_putchar('\n');
 #endif
 }
-#else
+#elif ODFS_FEATURE_LOG
+/* with logging compiled out entirely, nothing references a sink */
 static void log_sink(odfs_log_level_t level, odfs_log_subsys_t subsys,
                      const char *msg, void *ctx)
 {
@@ -5122,12 +5123,16 @@ void handler_main_startup(struct Message *startup_msg)
     fssm = (struct FileSysStartupMsg *)BADDR(pkt->dp_Arg2);
     g->fssm = fssm;
 
-    /* set up logging before any startup error path can fire */
+    /* set up logging before any startup error path can fire; with
+     * logging compiled out, g is MEMF_CLEAR-allocated so g->log is
+     * already zeroed and keeping log.o out of the link saves ROM space */
+#if ODFS_FEATURE_LOG
     odfs_log_init(&g->log);
     odfs_log_set_sink(&g->log, log_sink, NULL);
     odfs_log_set_level(&g->log, ODFS_LOG_INFO);
 #if ODFS_PACKET_TRACE
     odfs_log_set_level(&g->log, ODFS_LOG_TRACE);
+#endif
 #endif
     ODFS_INFO(&g->log, ODFS_SUB_NONE,
               "ODFileSystem " ODFS_GIT_VERSION

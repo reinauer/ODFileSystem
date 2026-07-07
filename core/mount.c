@@ -347,8 +347,11 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 
     if (log)
         mnt->log = *log;
+#if ODFS_FEATURE_LOG
     else
         odfs_log_init(&mnt->log);
+#endif
+    /* else: mnt was zeroed above, which is a valid disabled log state */
 
     /* init block cache */
     cache_size = mnt->opts.cache_blocks;
