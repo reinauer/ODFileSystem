@@ -96,7 +96,7 @@ AMIGA_SIZE_LIMIT ?= 147456
 else
 AMIGA_SIZE_LIMIT ?= 98304
 endif
-ROM_SIZE_LIMIT   ?= 40960
+ROM_SIZE_LIMIT   ?= 32768
 SIZE_LIMIT_NAME  ?= AMIGA_SIZE_LIMIT
 SIZE_LIMIT_DESC  ?= release Amiga handler
 
@@ -407,10 +407,25 @@ amigaos4-lha:
 
 # ROM profile: minimal build for burning into ROM
 # ISO9660 + Rock Ridge + Joliet + Multisession, no debug, no UDF/HFS/CDDA
+#
+# ROM builds use LTO — the single biggest size lever (about 6 KiB, 15%).
+# It needs the gcc archiver wrapper: plain ar writes no LTO plugin symbol
+# index, so startup.o's reference to handler_main goes unresolved at link
+# time (this is what sank the earlier lto.diff attempt). Do NOT add
+# -ffunction-sections/--gc-sections on top: measured 2 KiB WORSE than
+# plain LTO and it garbage-collects the $VER: version string.
+# -fno-strict-aliasing costs 84 bytes and insures against cross-TU
+# aliasing assumptions becoming visible to the LTO optimizer.
+# NOTE: stale non-LTO objects in an existing build/amiga-rom* directory
+# fail the link with "undefined reference to handler_main" — remove the
+# build directory when switching.
+ROM_LTO ?= -flto -fno-strict-aliasing
 rom:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_BUILD) \
 		AMIGA_OPT=-Os \
+		LTO="$(ROM_LTO)" \
+		AMIGA_AR=$(AMIGA_TOOL_PREFIX)-gcc-ar \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		AMIGA_SIZE_LIMIT=$(ROM_SIZE_LIMIT) \
 		SIZE_LIMIT_NAME=ROM_SIZE_LIMIT \
@@ -427,6 +442,8 @@ rom-test:
 	@$(MAKE) --no-print-directory \
 		AMIGA_BUILD=$(ROM_TEST_BUILD) \
 		AMIGA_OPT=-Os \
+		LTO="$(ROM_LTO)" \
+		AMIGA_AR=$(AMIGA_TOOL_PREFIX)-gcc-ar \
 		CPPFLAGS="$(CPPFLAGS) -DODFS_PROFILE_ROM" \
 		ENFORCE_SIZE_LIMITS=0 \
 		SERIAL_DEBUG=1 \
