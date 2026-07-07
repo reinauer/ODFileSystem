@@ -133,6 +133,7 @@ typedef struct handler_global {
     int                  chg_installed; /* TD_CHANGEINT installed? */
     ULONG                change_count;  /* last observed TD_CHANGENUM */
     int                  change_count_valid; /* change_count initialized? */
+    int                  geo_pending;   /* re-probe geometry once media shows up */
 
     /* volume info */
     char                 volname[128];  /* volume name */

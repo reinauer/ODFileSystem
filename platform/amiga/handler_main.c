@@ -1604,6 +1604,8 @@ static void free_volume(odfs_volume_t *volume)
 
 static void mount_volume(handler_global_t *g);
 static void unmount_volume(handler_global_t *g);
+static int query_media_present(handler_global_t *g, ULONG *status);
+static LONG probe_drive_geometry(handler_global_t *g);
 
 static void drain_all_objects(handler_global_t *g)
 {
@@ -4673,9 +4675,31 @@ static void mount_volume(handler_global_t *g)
 {
     odfs_mount_opts_t opts;
     odfs_err_t err;
+    ULONG status;
 
     if (g->mounted || g->inhibited)
         return;
+
+    /*
+     * Don't probe an empty drive: TD_CHANGESTATE cheaply reports media
+     * presence, and probing an empty unit fails a sector read for
+     * every filesystem format tried before concluding "bad format"
+     * (issue #8). Devices without TD_CHANGESTATE fall through to the
+     * probe as before.
+     */
+    if (query_media_present(g, &status) && status != 0) {
+        ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                  "no medium present; waiting for a disc");
+        return;
+    }
+
+    /*
+     * The startup probe saw an empty drive; redo geometry so drives
+     * reporting non-2048 blocks get the MODE SELECT fixup before the
+     * first read.
+     */
+    if (g->geo_pending && probe_drive_geometry(g) == 0)
+        g->geo_pending = 0;
 
     odfs_mount_opts_default(&opts);
 
@@ -4928,6 +4952,9 @@ static int query_media_present(handler_global_t *g, ULONG *status)
     if (!g || !g->devreq)
         return 0;
 
+    /* a driver that succeeds without writing io_Actual then reads as
+     * "disk present", which falls through to the mount probe */
+    g->devreq->io_Actual = 0;
     g->devreq->io_Command = TD_CHANGESTATE;
     if (DoIO((struct IORequest *)g->devreq) != 0)
         return 0;
@@ -4937,6 +4964,35 @@ static int query_media_present(handler_global_t *g, ULONG *status)
         *status = actual;
 
     return 1;
+}
+
+/*
+ * Probe the drive geometry; when it reports a non-2048 block size,
+ * switch the drive to 2048-byte CD blocks with MODE SELECT (an
+ * HD_SCSICMD, issued only for a confirmed present drive so it cannot
+ * hang on a phantom unit). Returns the TD_GETGEOMETRY result.
+ */
+static LONG probe_drive_geometry(handler_global_t *g)
+{
+    struct DriveGeometry geom;
+    LONG geo_rc;
+
+    memset(&geom, 0, sizeof(geom));
+    g->devreq->io_Command = TD_GETGEOMETRY;
+    g->devreq->io_Data    = &geom;
+    g->devreq->io_Length  = sizeof(geom);
+    geo_rc = DoIO((struct IORequest *)g->devreq);
+    ODFS_INFO(&g->log, ODFS_SUB_IO,
+              "geometry rc=%ld sector=%lu", (long)geo_rc,
+              (unsigned long)geom.dg_SectorSize);
+
+    if (geo_rc == 0 && geom.dg_SectorSize != 0 &&
+        geom.dg_SectorSize != 2048) {
+        ODFS_INFO(&g->log, ODFS_SUB_IO, "mode select...");
+        (void)scsi_mode_select(g, 2048);
+    }
+
+    return geo_rc;
 }
 
 static void handle_media_change(handler_global_t *g)
@@ -5231,34 +5287,34 @@ void handler_main_startup(struct Message *startup_msg)
     /*
      * Probe the drive geometry before committing to the mount.
      * TD_GETGEOMETRY uses the native ATA path and returns promptly even
-     * on a not-ready unit (unlike HD_SCSICMD, which can hang). A failure
-     * here means the unit has no usable device behind it — e.g. the
-     * empty/phantom second ATAPI channel that QEMU's peg2ide reports
-     * from a floating bus. Decline the mount in that case rather than
-     * publishing a dead drive that DOS would route to and poll.
+     * on a not-ready unit (unlike HD_SCSICMD, which can hang).
      *
-     * When geometry succeeds but reports a non-2048 block size, switch
-     * the drive to 2048-byte CD blocks with MODE SELECT (an HD_SCSICMD,
-     * issued only for a confirmed present drive so it cannot hang on a
-     * phantom unit).
+     * TDERR_DiskChanged from a unit that also answers TD_CHANGESTATE
+     * is a real drive with no medium in it. Keep the mount and wait
+     * for a disc: declining would leave no handler running to see the
+     * insertion (issue #8) — the drive only came back after a manual
+     * access restarted the handler. Geometry (and the MODE SELECT
+     * block size fixup) is re-probed when media arrives.
+     *
+     * Any other failure means the unit has no usable device behind
+     * it — e.g. the empty/phantom second ATAPI channel that QEMU's
+     * peg2ide reports from a floating bus. Decline the mount in that
+     * case rather than publishing a dead drive that DOS would route
+     * to and poll.
      */
     {
-        struct DriveGeometry geom;
-        LONG geo_rc;
-
-        memset(&geom, 0, sizeof(geom));
-        g->devreq->io_Command = TD_GETGEOMETRY;
-        g->devreq->io_Data    = &geom;
-        g->devreq->io_Length  = sizeof(geom);
-        geo_rc = DoIO((struct IORequest *)g->devreq);
-        ODFS_INFO(&g->log, ODFS_SUB_IO,
-                  "geometry rc=%ld sector=%lu", (long)geo_rc,
-                  (unsigned long)geom.dg_SectorSize);
+        LONG geo_rc = probe_drive_geometry(g);
 
         if (geo_rc == IOERR_NOCMD) {
             ODFS_INFO(&g->log, ODFS_SUB_IO,
                       "geometry unavailable; using mountlist sector=%lu",
                       (unsigned long)g->sector_size);
+        } else if (geo_rc == TDERR_DiskChanged &&
+                   query_media_present(g, NULL)) {
+            ODFS_INFO(&g->log, ODFS_SUB_IO,
+                      "no medium in unit %lu; waiting for a disc",
+                      (unsigned long)g->devunit);
+            g->geo_pending = 1;
         } else if (geo_rc != 0) {
             ODFS_WARN(&g->log, ODFS_SUB_IO,
                       "no usable device on unit %lu (geometry rc=%ld) - "
@@ -5268,11 +5324,6 @@ void handler_main_startup(struct Message *startup_msg)
             pkt->dp_Res2 = ERROR_DEVICE_NOT_MOUNTED;
             return_packet(g, pkt);
             goto shutdown;
-        }
-
-        if (geom.dg_SectorSize != 0 && geom.dg_SectorSize != 2048) {
-            ODFS_INFO(&g->log, ODFS_SUB_IO, "mode select...");
-            (void)scsi_mode_select(g, 2048);
         }
     }
     ODFS_INFO(&g->log, ODFS_SUB_IO, "scsi setup done");
@@ -5304,10 +5355,17 @@ void handler_main_startup(struct Message *startup_msg)
 
     /* publish nodes after replying so DOS has released the device list lock */
     publish_device_node(g);
-    mount_volume(g);
 
-    /* install media change interrupt */
+    /*
+     * Install the media change interrupt before the first mount
+     * attempt: a disc inserted after mount_volume() has decided the
+     * drive is empty then raises a signal the main loop picks up,
+     * instead of going unseen until the next change event. A change
+     * that slips in between install and mount at worst remounts a
+     * freshly mounted disc, which holds no locks yet.
+     */
     install_media_change(g);
+    mount_volume(g);
 
     /* ---- main packet loop ---- */
     dossig = 1UL << g->dosport->mp_SigBit;
