@@ -584,6 +584,7 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
     return ODFS_OK;
 }
 
+#if ODFS_FEATURE_CDDA
 /*
  * Read raw audio CD frames via SCSI Read CD (0xBE).
  *
@@ -669,6 +670,8 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
 
     return ODFS_OK;
 }
+
+#endif /* ODFS_FEATURE_CDDA */
 
 static void amiga_close(void *ctx)
 {
@@ -819,6 +822,7 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     return ODFS_OK;
 }
 
+#if ODFS_FEATURE_CDDA
 static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
                                     size_t *len_out)
 {
@@ -954,6 +958,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     *len_out = (size_t)scsi.scsi_Actual;
     return ODFS_OK;
 }
+#endif /* ODFS_FEATURE_CDDA */
 
 /* ------------------------------------------------------------------ */
 /* SCSI helper commands                                                */
@@ -1026,8 +1031,12 @@ static const odfs_media_ops_t amiga_media_ops = {
     .sector_count          = amiga_sector_count,
     .read_toc              = amiga_read_toc,
     .read_last_session_lba = amiga_read_last_session_lba,
+#if ODFS_FEATURE_CDDA
+    /* without CDDA nothing consumes audio frames or CD-Text, and the
+     * table reference would keep the SCSI pass-through code resident */
     .read_audio            = amiga_read_audio,
     .read_cdtext           = amiga_read_cdtext,
+#endif
     .close                 = amiga_close,
 };
 
