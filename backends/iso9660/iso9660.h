@@ -153,12 +153,20 @@ typedef struct iso_pvd_info {
 
 /* --- ISO9660 mount context --- */
 
+/*
+ * Shared by the ISO 9660 and Joliet backends: a Joliet mount is an ISO
+ * context with the joliet flag set (UCS-2 names, no Rock Ridge, no High
+ * Sierra) whose pvd fields were parsed from the SVD. Every function that
+ * receives a backend_ctx from either ops table casts to this type, so
+ * both backends must allocate exactly this struct.
+ */
 typedef struct iso_context {
     iso_pvd_info_t pvd;
     uint32_t       session_start;
     uint32_t       next_node_id;
     int            lowercase;     /* lowercase ISO names for display */
     int            high_sierra;   /* High Sierra variant, not ISO 9660 */
+    int            joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
     int            has_rock_ridge; /* Rock Ridge extensions detected */
     int            rr_skip;       /* SP skip bytes for RR entries */
     odfs_node_t    root;          /* verbatim root node, for parent resolution */
@@ -202,6 +210,59 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
                                        int high_sierra,
                                        const uint8_t *first_rec,
                                        odfs_node_t *node);
+
+/* --- shared backend ops (used by the iso9660 and joliet ops tables) --- */
+
+/*
+ * Mount the volume descriptor at vd_lba (a media LBA) into a fresh
+ * iso_context_t. With joliet set, the descriptor is treated as a Joliet
+ * SVD: the volume id is decoded from UCS-2 and High Sierra and Rock
+ * Ridge handling are disabled.
+ */
+odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
+                             odfs_log_state_t *log,
+                             uint32_t session_start,
+                             uint32_t vd_lba,
+                             int joliet,
+                             odfs_node_t *root_out,
+                             void **backend_ctx);
+
+void odfs_iso_unmount(void *backend_ctx);
+
+odfs_err_t odfs_iso_readdir(void *backend_ctx,
+                            odfs_cache_t *cache,
+                            odfs_log_state_t *log,
+                            const odfs_node_t *dir,
+                            odfs_dir_iter_fn callback,
+                            void *cb_ctx,
+                            uint32_t *resume_offset);
+
+odfs_err_t odfs_iso_read(void *backend_ctx,
+                         odfs_cache_t *cache,
+                         odfs_log_state_t *log,
+                         const odfs_node_t *file,
+                         uint64_t offset,
+                         void *buf,
+                         size_t *len);
+
+odfs_err_t odfs_iso_lookup(void *backend_ctx,
+                           odfs_cache_t *cache,
+                           odfs_log_state_t *log,
+                           const odfs_node_t *dir,
+                           const char *name,
+                           odfs_node_t *out);
+
+odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
+                                   odfs_cache_t *cache,
+                                   odfs_log_state_t *log,
+                                   const odfs_node_t *dir,
+                                   odfs_node_t *parent_out,
+                                   odfs_node_t *grandparent_out);
+
+odfs_err_t odfs_iso_get_volume_name(void *backend_ctx,
+                                    char *buf, size_t buf_size);
+
+uint32_t odfs_iso_get_volume_size(void *backend_ctx);
 
 /* --- backend ops (exposed for registration) --- */
 

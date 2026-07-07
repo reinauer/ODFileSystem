@@ -4,119 +4,27 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Joliet uses a Supplementary Volume Descriptor (type 2) with UCS-2
- * encoded filenames. It has its own directory tree, separate from the
- * ISO 9660 primary directory tree.
+ * encoded filenames and its own directory tree, but the record layout
+ * and all enumeration, read and parent-resolution logic are plain
+ * ISO 9660. The shared machinery lives in the ISO backend; this file
+ * only locates the SVD and mounts an ISO context in Joliet mode.
  */
 
 #include "joliet.h"
-#include "odfs/alloc.h"
 #include "odfs/cache.h"
-#include "odfs/charset.h"
-#include "odfs/namefix.h"
-#include "odfs/log.h"
-#include "odfs/node.h"
 #include "odfs/error.h"
-#include "odfs/string.h"
+#include "odfs/log.h"
 
 #include <string.h>
 #include <inttypes.h>
 
-/* ------------------------------------------------------------------ */
-/* helpers                                                             */
-/* ------------------------------------------------------------------ */
-
 /*
- * Parse a 7-byte directory record date/time.
+ * Scan the volume descriptor set for a Supplementary VD with Joliet
+ * escape sequences in the escape field (bytes 88-90).
  */
-static void joliet_parse_dir_date(const uint8_t *d, odfs_timestamp_t *ts)
-{
-    ts->year      = 1900 + d[0];
-    ts->month     = d[1];
-    ts->day       = d[2];
-    ts->hour      = d[3];
-    ts->minute    = d[4];
-    ts->second    = d[5];
-    ts->tz_offset = (int16_t)((int8_t)d[6]) * 15;
-}
-
-/*
- * Parse a Joliet directory record. Names are UCS-2 BE, converted to UTF-8.
- * Returns record length consumed, or 0 on error.
- */
-static int joliet_parse_dir_record(const uint8_t *data, size_t avail,
-                                    uint32_t session_start,
-                                    uint32_t *next_id,
-                                    odfs_node_t *node)
-{
-    uint8_t rec_len, name_len, flags;
-
-    if (avail < 1)
-        return 0;
-
-    rec_len = data[ISO_DR_LENGTH];
-    if (rec_len == 0)
-        return 0;
-
-    if (rec_len < 33 || rec_len > avail)
-        return 0;
-
-    name_len = data[ISO_DR_NAME_LEN];
-    if (33 + name_len > rec_len)
-        return 0;
-
-    /* Initialize the fields a record may leave untouched instead of
-     * clearing the whole node: the embedded name buffer dominates
-     * sizeof(*node) and this runs for every record of every scan. */
-    node->parent_id = 0;
-    node->mode = 0;
-    node->backend_data = NULL;
-    node->amiga_as.has_protection = 0;
-    node->amiga_as.has_comment = 0;
-
-    node->id = (*next_id)++;
-    node->backend = ODFS_BACKEND_JOLIET;
-
-    node->extent.lba    = iso_read_le32(&data[ISO_DR_EXTENT_LBA]) + session_start;
-    node->extent.length = iso_read_le32(&data[ISO_DR_DATA_LENGTH]);
-    node->size          = node->extent.length;
-
-    flags = data[ISO_DR_FLAGS];
-    node->kind = (flags & ISO_DR_FLAG_DIRECTORY) ? ODFS_NODE_DIR : ODFS_NODE_FILE;
-
-    joliet_parse_dir_date(&data[ISO_DR_DATE], &node->mtime);
-    node->ctime = node->mtime;
-
-    /* name: UCS-2 BE → UTF-8 */
-    if (name_len == 1 && data[ISO_DR_NAME] == 0x00) {
-        node->name[0] = '.';
-        node->name[1] = '\0';
-    } else if (name_len == 1 && data[ISO_DR_NAME] == 0x01) {
-        node->name[0] = '.';
-        node->name[1] = '.';
-        node->name[2] = '\0';
-    } else {
-        size_t out_len;
-        odfs_ucs2be_to_utf8(&data[ISO_DR_NAME], name_len,
-                              node->name, sizeof(node->name), &out_len);
-        /* strip ";1" version suffix if present */
-        if (out_len >= 2 && node->name[out_len - 2] == ';')
-            node->name[out_len - 2] = '\0';
-    }
-
-    return (int)rec_len;
-}
-
-/* ------------------------------------------------------------------ */
-/* probe — look for Joliet SVD                                         */
-/* ------------------------------------------------------------------ */
-
-/*
- * Scan volume descriptors for a Supplementary VD with Joliet escape
- * sequences in the escape field (bytes 88-90).
- */
-static odfs_err_t joliet_probe(odfs_cache_t *cache,
-                                odfs_log_state_t *log,
-                                uint32_t session_start)
+static odfs_err_t joliet_find_svd(odfs_cache_t *cache,
+                                  uint32_t session_start,
+                                  uint32_t *lba_out)
 {
     uint32_t lba;
 
@@ -126,23 +34,18 @@ static odfs_err_t joliet_probe(odfs_cache_t *cache,
         if (err != ODFS_OK)
             return err;
 
-        uint8_t vd_type = sector[0];
-
         /* check CD001 signature */
         if (memcmp(&sector[1], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0)
             return ODFS_ERR_BAD_FORMAT;
 
-        if (vd_type == ISO_VD_TYPE_TERM)
+        if (sector[0] == ISO_VD_TYPE_TERM)
             break; /* no Joliet SVD found */
 
-        if (vd_type == ISO_VD_TYPE_SUPPL) {
-            /* check for Joliet escape sequences at offset 88 */
+        if (sector[0] == ISO_VD_TYPE_SUPPL) {
             const uint8_t *esc = &sector[88];
-            if ((esc[0] == '%' && esc[1] == '/' &&
-                 (esc[2] == '@' || esc[2] == 'C' || esc[2] == 'E'))) {
-                ODFS_INFO(log, ODFS_SUB_JOLIET,
-                           "Joliet SVD found at LBA %" PRIu32
-                           " (level %c)", lba, esc[2]);
+            if (esc[0] == '%' && esc[1] == '/' &&
+                (esc[2] == '@' || esc[2] == 'C' || esc[2] == 'E')) {
+                *lba_out = lba;
                 return ODFS_OK;
             }
         }
@@ -155,9 +58,20 @@ static odfs_err_t joliet_probe(odfs_cache_t *cache,
     return ODFS_ERR_BAD_FORMAT;
 }
 
-/* ------------------------------------------------------------------ */
-/* mount                                                               */
-/* ------------------------------------------------------------------ */
+static odfs_err_t joliet_probe(odfs_cache_t *cache,
+                                odfs_log_state_t *log,
+                                uint32_t session_start)
+{
+    uint32_t svd_lba;
+    odfs_err_t err = joliet_find_svd(cache, session_start, &svd_lba);
+
+    if (err == ODFS_OK)
+        ODFS_INFO(log, ODFS_SUB_JOLIET,
+                   "Joliet SVD found at LBA %" PRIu32, svd_lba);
+    else
+        ODFS_LOG(log, ODFS_LOG_DEBUG, ODFS_SUB_JOLIET, "no Joliet SVD");
+    return err;
+}
 
 static odfs_err_t joliet_mount(odfs_cache_t *cache,
                                 odfs_log_state_t *log,
@@ -165,424 +79,14 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
                                 odfs_node_t *root_out,
                                 void **backend_ctx)
 {
-    joliet_context_t *ctx;
-    uint32_t lba;
-    const uint8_t *svd_sector = NULL;
+    uint32_t svd_lba;
+    odfs_err_t err = joliet_find_svd(cache, session_start, &svd_lba);
 
-    ctx = odfs_calloc(1, sizeof(*ctx));
-    if (!ctx)
-        return ODFS_ERR_NOMEM;
-
-    ctx->session_start = session_start;
-    ctx->next_node_id = 1;
-
-    /* find the Joliet SVD */
-    for (lba = session_start + ISO_VD_START_LBA; ; lba++) {
-        const uint8_t *sector;
-        odfs_err_t err = odfs_cache_read(cache, lba, &sector);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
-
-        if (sector[0] == ISO_VD_TYPE_TERM)
-            break;
-
-        if (sector[0] == ISO_VD_TYPE_SUPPL) {
-            const uint8_t *esc = &sector[88];
-            if (esc[0] == '%' && esc[1] == '/' &&
-                (esc[2] == '@' || esc[2] == 'C' || esc[2] == 'E')) {
-                svd_sector = sector;
-                break;
-            }
-        }
-        if (lba > session_start + ISO_VD_START_LBA + 32)
-            break;
-    }
-
-    if (!svd_sector) {
-        odfs_free(ctx);
-        return ODFS_ERR_BAD_FORMAT;
-    }
-
-    /* parse SVD — same layout as PVD but volume ID is UCS-2 */
-    {
-        size_t vname_len;
-        odfs_ucs2be_to_utf8(&svd_sector[ISO_PVD_VOLUME_ID], 32,
-                              ctx->svd.volume_id, sizeof(ctx->svd.volume_id),
-                              &vname_len);
-        /* trim trailing spaces */
-        while (vname_len > 0 && ctx->svd.volume_id[vname_len - 1] == ' ')
-            ctx->svd.volume_id[--vname_len] = '\0';
-    }
-
-    iso_copy_strfield(&svd_sector[ISO_PVD_SYSTEM_ID], 32,
-                      ctx->svd.system_id, sizeof(ctx->svd.system_id));
-
-    ctx->svd.volume_space_size = iso_read_le32(&svd_sector[ISO_PVD_VOLUME_SPACE_SIZE]);
-    ctx->svd.logical_block_size = iso_read_le16(&svd_sector[ISO_PVD_LOGICAL_BLK_SIZE]);
-
-    memcpy(ctx->svd.root_dir_record, &svd_sector[ISO_PVD_ROOT_DIR_RECORD], 34);
-    ctx->svd.root_dir_lba  = iso_read_le32(&svd_sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_EXTENT_LBA]);
-    ctx->svd.root_dir_size = iso_read_le32(&svd_sector[ISO_PVD_ROOT_DIR_RECORD + ISO_DR_DATA_LENGTH]);
-
-    /*
-     * Multisession discs may store directory extents as either
-     * session-relative or absolute disc LBAs. Match the ISO backend's
-     * policy: only add the session start when the SVD extent is relative.
-     */
-    if (ctx->svd.root_dir_lba < session_start)
-        ctx->svd.root_dir_lba += session_start;
-
-    if (session_start > 0 && ctx->svd.root_dir_lba >= session_start)
-        ctx->session_start = 0;
-
-    ODFS_INFO(log, ODFS_SUB_JOLIET,
-               "volume: \"%s\"  root LBA: %" PRIu32,
-               ctx->svd.volume_id, ctx->svd.root_dir_lba);
-
-    /* build root node */
-    memset(root_out, 0, sizeof(*root_out));
-    root_out->id            = 0;
-    root_out->parent_id     = 0;
-    root_out->backend       = ODFS_BACKEND_JOLIET;
-    root_out->kind          = ODFS_NODE_DIR;
-    root_out->name[0]       = '/';
-    root_out->name[1]       = '\0';
-    root_out->extent.lba    = ctx->svd.root_dir_lba;
-    root_out->extent.length = ctx->svd.root_dir_size;
-    root_out->size          = ctx->svd.root_dir_size;
-
-    joliet_parse_dir_date(&ctx->svd.root_dir_record[ISO_DR_DATE], &root_out->mtime);
-    root_out->ctime = root_out->mtime;
-
-    /* keep a verbatim copy of the root for parent resolution */
-    ctx->root = *root_out;
-
-    *backend_ctx = ctx;
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* unmount                                                             */
-/* ------------------------------------------------------------------ */
-
-static void joliet_unmount(void *backend_ctx)
-{
-    odfs_free(backend_ctx);
-}
-
-/* ------------------------------------------------------------------ */
-/* readdir                                                             */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t joliet_readdir(void *backend_ctx,
-                                  odfs_cache_t *cache,
-                                  odfs_log_state_t *log,
-                                  const odfs_node_t *dir,
-                                  odfs_dir_iter_fn callback,
-                                  void *cb_ctx,
-                                  uint32_t *resume_offset)
-{
-    joliet_context_t *ctx = backend_ctx;
-    uint32_t dir_lba = dir->extent.lba;
-    uint32_t dir_size = dir->extent.length;
-    uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
-    uint32_t offset = 0;
-    odfs_namefix_state_t namefix;
-
-    odfs_namefix_init(&namefix);
-
-    while (offset < dir_size) {
-        uint32_t entry_start = offset;
-        uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
-        uint32_t sector_off = offset % ISO_SECTOR_SIZE;
-        const uint8_t *sector;
-        odfs_err_t err;
-
-        err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK) {
-            odfs_namefix_destroy(&namefix);
-            return err;
-        }
-
-        const uint8_t *rec = sector + sector_off;
-        size_t avail = ISO_SECTOR_SIZE - sector_off;
-
-        if (rec[0] == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
-            continue;
-        }
-
-        odfs_node_t node;
-        int consumed = joliet_parse_dir_record(rec, avail, ctx->session_start,
-                                               &ctx->next_node_id, &node);
-        if (consumed == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
-            continue;
-        }
-
-        node.parent_id = dir->id;
-
-        uint32_t next_offset = offset + (uint32_t)consumed;
-
-        /* ISO Level 3: fold multi-extent continuation records into the node */
-        if (node.kind == ODFS_NODE_FILE &&
-            (rec[ISO_DR_FLAGS] & ISO_DR_FLAG_MULTI_EXTENT) != 0) {
-            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
-                                              dir_lba, dir_size, &next_offset,
-                                              0, rec, &node);
-            if (err != ODFS_OK) {
-                odfs_namefix_destroy(&namefix);
-                return err;
-            }
-        }
-
-        if ((node.name[0] == '.' && node.name[1] == '\0') ||
-            (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
-            offset = next_offset;
-            continue;
-        }
-
-        err = odfs_namefix_apply(&namefix, node.name, sizeof(node.name));
-        if (err != ODFS_OK) {
-            odfs_namefix_destroy(&namefix);
-            return err;
-        }
-
-        offset = next_offset;
-
-        if (entry_start < target_offset)
-            continue;
-
-        err = callback(&node, cb_ctx);
-        if (err != ODFS_OK) {
-            if (resume_offset)
-                *resume_offset = offset;
-            odfs_namefix_destroy(&namefix);
-            return err;
-        }
-    }
-
-    if (resume_offset)
-        *resume_offset = dir_size;
-    odfs_namefix_destroy(&namefix);
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* read                                                                */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t joliet_read(void *backend_ctx,
-                               odfs_cache_t *cache,
-                               odfs_log_state_t *log,
-                               const odfs_node_t *file,
-                               uint64_t offset,
-                               void *buf,
-                               size_t *len)
-{
-    (void)backend_ctx;
-    (void)log;
-    size_t want = *len;
-
-    if (offset >= file->size) { *len = 0; return ODFS_OK; }
-    if (want > file->size - offset)
-        want = (size_t)(file->size - offset);
-
-    *len = want;
-    return odfs_cache_read_bytes(cache, file->extent.lba, offset, buf, len);
-}
-
-/* ------------------------------------------------------------------ */
-/* lookup                                                              */
-/* ------------------------------------------------------------------ */
-
-typedef struct joliet_lookup_ctx {
-    const char   *name;
-    odfs_node_t *result;
-    int           found;
-} joliet_lookup_ctx_t;
-
-static odfs_err_t joliet_lookup_cb(const odfs_node_t *entry, void *cb_ctx)
-{
-    joliet_lookup_ctx_t *lctx = cb_ctx;
-    if (odfs_strcasecmp(entry->name, lctx->name) == 0) {
-        *lctx->result = *entry;
-        lctx->found = 1;
-        return ODFS_ERR_EOF;
-    }
-    return ODFS_OK;
-}
-
-static odfs_err_t joliet_lookup(void *backend_ctx,
-                                 odfs_cache_t *cache,
-                                 odfs_log_state_t *log,
-                                 const odfs_node_t *dir,
-                                 const char *name,
-                                 odfs_node_t *out)
-{
-    joliet_lookup_ctx_t lctx;
-    odfs_err_t err;
-
-    lctx.name = name;
-    lctx.result = out;
-    lctx.found = 0;
-
-    err = joliet_readdir(backend_ctx, cache, log, dir, joliet_lookup_cb, &lctx, NULL);
-    if (err == ODFS_ERR_EOF && lctx.found)
-        return ODFS_OK;
-    if (err != ODFS_OK)
-        return err;
-    if (lctx.found)
-        return ODFS_OK;
-    return ODFS_ERR_NOT_FOUND;
-}
-
-/* ------------------------------------------------------------------ */
-/* get_volume_name                                                     */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t joliet_get_volume_name(void *backend_ctx,
-                                          char *buf, size_t buf_size)
-{
-    joliet_context_t *ctx = backend_ctx;
-    size_t len = strlen(ctx->svd.volume_id);
-    if (len >= buf_size) len = buf_size - 1;
-    memcpy(buf, ctx->svd.volume_id, len);
-    buf[len] = '\0';
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* get_volume_size                                                     */
-/* ------------------------------------------------------------------ */
-
-static uint32_t joliet_get_volume_size(void *backend_ctx)
-{
-    joliet_context_t *ctx = backend_ctx;
-    return ctx->svd.volume_space_size;
-}
-
-/* ------------------------------------------------------------------ */
-/* resolve_parent                                                      */
-/* ------------------------------------------------------------------ */
-
-typedef struct joliet_lba_match {
-    uint32_t     want_lba;
-    odfs_node_t *out;
-    int          found;
-} joliet_lba_match_t;
-
-static odfs_err_t joliet_lba_match_cb(const odfs_node_t *entry, void *cb_ctx)
-{
-    joliet_lba_match_t *m = cb_ctx;
-
-    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_lba) {
-        *m->out = *entry;
-        m->found = 1;
-        return ODFS_ERR_EOF;
-    }
-    return ODFS_OK;
-}
-
-/* enumerate parent_dir; return the dir child whose extent begins at child_lba */
-static odfs_err_t joliet_find_child_by_lba(void *backend_ctx,
-                                           odfs_cache_t *cache,
-                                           odfs_log_state_t *log,
-                                           const odfs_node_t *parent_dir,
-                                           uint32_t child_lba,
-                                           odfs_node_t *out)
-{
-    joliet_lba_match_t m;
-    odfs_err_t err;
-
-    m.want_lba = child_lba;
-    m.out = out;
-    m.found = 0;
-
-    err = joliet_readdir(backend_ctx, cache, log, parent_dir,
-                         joliet_lba_match_cb, &m, NULL);
-    if (m.found)
-        return ODFS_OK;
-    if (err == ODFS_OK || err == ODFS_ERR_EOF)
-        return ODFS_ERR_NOT_FOUND;
-    return err;
-}
-
-static odfs_err_t joliet_resolve_parent(void *backend_ctx,
-                                        odfs_cache_t *cache,
-                                        odfs_log_state_t *log,
-                                        const odfs_node_t *dir,
-                                        odfs_node_t *parent_out,
-                                        odfs_node_t *grandparent_out)
-{
-    joliet_context_t *ctx = backend_ctx;
-    uint32_t ss = ctx->session_start;
-    uint32_t root_lba = ctx->svd.root_dir_lba;
-    uint32_t parent_lba, parent_size;
-    uint32_t gp_lba, gp_size;
-    odfs_node_t grandparent;
-    odfs_err_t err;
-
-    if (dir->kind != ODFS_NODE_DIR)
-        return ODFS_ERR_NOT_DIR;
-
-    err = odfs_iso_read_parent_extent(cache, ss, dir->extent.lba,
-                                      &parent_lba, &parent_size);
     if (err != ODFS_OK)
         return err;
 
-    if (parent_lba == dir->extent.lba || dir->extent.lba == root_lba)
-        return ODFS_ERR_NOT_FOUND;
-
-    if (parent_lba == root_lba) {
-        *parent_out = ctx->root;
-        if (grandparent_out)
-            *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    err = odfs_iso_read_parent_extent(cache, ss, parent_lba, &gp_lba, &gp_size);
-    if (err != ODFS_OK)
-        return err;
-
-    if (gp_lba == root_lba)
-        grandparent = ctx->root;
-    else
-        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
-
-    err = joliet_find_child_by_lba(backend_ctx, cache, log, &grandparent,
-                                   parent_lba, parent_out);
-    if (err != ODFS_OK)
-        return err;
-
-    if (!grandparent_out)
-        return ODFS_OK;
-
-    if (gp_lba == root_lba) {
-        *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    {
-        uint32_t ggp_lba, ggp_size;
-        odfs_node_t great;
-
-        err = odfs_iso_read_parent_extent(cache, ss, gp_lba,
-                                          &ggp_lba, &ggp_size);
-        if (err != ODFS_OK)
-            return err;
-
-        if (ggp_lba == root_lba)
-            great = ctx->root;
-        else
-            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
-
-        err = joliet_find_child_by_lba(backend_ctx, cache, log, &great,
-                                       gp_lba, grandparent_out);
-        if (err != ODFS_OK)
-            return err;
-    }
-
-    return ODFS_OK;
+    return odfs_iso_mount_vd(cache, log, session_start, svd_lba, 1,
+                             root_out, backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -594,11 +98,11 @@ const odfs_backend_ops_t joliet_backend_ops = {
     .backend_type    = ODFS_BACKEND_JOLIET,
     .probe           = joliet_probe,
     .mount           = joliet_mount,
-    .unmount         = joliet_unmount,
-    .readdir         = joliet_readdir,
-    .read            = joliet_read,
-    .lookup          = joliet_lookup,
-    .resolve_parent  = joliet_resolve_parent,
-    .get_volume_name = joliet_get_volume_name,
-    .get_volume_size = joliet_get_volume_size,
+    .unmount         = odfs_iso_unmount,
+    .readdir         = odfs_iso_readdir,
+    .read            = odfs_iso_read,
+    .lookup          = odfs_iso_lookup,
+    .resolve_parent  = odfs_iso_resolve_parent,
+    .get_volume_name = odfs_iso_get_volume_name,
+    .get_volume_size = odfs_iso_get_volume_size,
 };

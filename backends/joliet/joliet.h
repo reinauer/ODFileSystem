@@ -15,13 +15,11 @@
 #define JOLIET_ESC_UCS2_LEVEL2  "%/C"
 #define JOLIET_ESC_UCS2_LEVEL3  "%/E"
 
-/* Joliet mount context */
-typedef struct joliet_context {
-    iso_pvd_info_t svd;            /* parsed from SVD (same structure as PVD) */
-    uint32_t       session_start;
-    uint32_t       next_node_id;
-    odfs_node_t    root;           /* verbatim root node, for parent resolution */
-} joliet_context_t;
+/*
+ * A Joliet mount has no context struct of its own: it shares the ISO
+ * backend's iso_context_t (with ctx->joliet set) and every op except
+ * probe and mount.
+ */
 
 extern const odfs_backend_ops_t joliet_backend_ops;
 

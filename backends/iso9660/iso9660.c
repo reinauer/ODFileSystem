@@ -101,14 +101,12 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
  * the System Use Area (for Rock Ridge parsing).
  */
 static int iso_parse_dir_record(const uint8_t *data, size_t avail,
-                                uint32_t session_start,
-                                uint32_t *next_id,
-                                int lowercase,
-                                int high_sierra,
+                                iso_context_t *ctx,
                                 odfs_node_t *node,
                                 const uint8_t **sua_out,
                                 size_t *sua_len_out)
 {
+    int high_sierra = ctx->high_sierra;
     uint8_t rec_len;
     uint8_t name_len;
     uint8_t flags;
@@ -140,11 +138,11 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->amiga_as.has_protection = 0;
     node->amiga_as.has_comment = 0;
 
-    node->id = (*next_id)++;
-    node->backend = ODFS_BACKEND_ISO9660;
+    node->id = ctx->next_node_id++;
+    node->backend = ctx->joliet ? ODFS_BACKEND_JOLIET : ODFS_BACKEND_ISO9660;
 
     /* extent and size */
-    node->extent.lba    = iso_read_le32(&data[ISO_DR_EXTENT_LBA]) + session_start;
+    node->extent.lba    = iso_read_le32(&data[ISO_DR_EXTENT_LBA]) + ctx->session_start;
     node->extent.length = iso_read_le32(&data[ISO_DR_DATA_LENGTH]);
     node->size          = node->extent.length;
 
@@ -164,10 +162,17 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
         node->name[0] = '.';
         node->name[1] = '.';
         node->name[2] = '\0';
+    } else if (ctx->joliet) {
+        /* Joliet: UCS-2 BE → UTF-8, then strip a ";1" version suffix */
+        size_t out_len;
+        odfs_ucs2be_to_utf8(&data[ISO_DR_NAME], name_len,
+                              node->name, sizeof(node->name), &out_len);
+        if (out_len >= 2 && node->name[out_len - 2] == ';')
+            node->name[out_len - 2] = '\0';
     } else {
         odfs_iso_name_to_display((const char *)&data[ISO_DR_NAME], name_len,
                                   node->name, sizeof(node->name),
-                                  lowercase);
+                                  ctx->lowercase);
     }
 
     /* System Use Area starts after filename, padded to even offset.
@@ -235,9 +240,11 @@ static odfs_err_t iso_probe(odfs_cache_t *cache,
 /* mount                                                               */
 /* ------------------------------------------------------------------ */
 
-static odfs_err_t iso_mount(odfs_cache_t *cache,
+odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                              odfs_log_state_t *log,
                              uint32_t session_start,
+                             uint32_t vd_lba,
+                             int joliet,
                              odfs_node_t *root_out,
                              void **backend_ctx)
 {
@@ -252,16 +259,18 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     ctx->session_start = session_start;
     ctx->next_node_id = 1;
     ctx->lowercase = 0; /* preserve original case by default */
+    ctx->joliet = joliet;
 
-    /* read PVD */
-    err = odfs_cache_read(cache, session_start + ISO_VD_START_LBA, &sector);
+    /* read the volume descriptor (PVD, or Joliet SVD) */
+    err = odfs_cache_read(cache, vd_lba, &sector);
     if (err != ODFS_OK) {
         odfs_free(ctx);
         return err;
     }
 
 #if ODFS_FEATURE_HIGH_SIERRA
-    if (memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0 &&
+    if (!joliet &&
+        memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0 &&
         memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0)
         ctx->high_sierra = 1;
 #endif
@@ -281,8 +290,19 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     } else {
         iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
                           ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
-        iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
-                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+        if (joliet) {
+            /* Joliet SVD: volume id is UCS-2; trim trailing spaces */
+            size_t vname_len;
+            odfs_ucs2be_to_utf8(&sector[ISO_PVD_VOLUME_ID], 32,
+                                  ctx->pvd.volume_id,
+                                  sizeof(ctx->pvd.volume_id), &vname_len);
+            while (vname_len > 0 &&
+                   ctx->pvd.volume_id[vname_len - 1] == ' ')
+                ctx->pvd.volume_id[--vname_len] = '\0';
+        } else {
+            iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
+                              ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+        }
 
         ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
         ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
@@ -295,7 +315,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
 
     /*
-     * Multisession: if the PVD's root LBA is already >= session_start,
+     * Multisession: if the descriptor's root LBA is already >= session_start,
      * the mastering tool wrote absolute LBAs (e.g. mkisofs -C).
      * Don't add session_start again. Only add it for session-relative LBAs.
      */
@@ -312,7 +332,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
 
     ODFS_INFO(log, ODFS_SUB_ISO,
                "%svolume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
-               ctx->high_sierra ? "High Sierra " : "",
+               ctx->high_sierra ? "High Sierra " : (joliet ? "Joliet " : ""),
                ctx->pvd.volume_id, ctx->pvd.system_id,
                ctx->pvd.volume_space_size, ctx->pvd.logical_block_size);
     ODFS_INFO(log, ODFS_SUB_ISO,
@@ -329,7 +349,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     memset(root_out, 0, sizeof(*root_out));
     root_out->id         = 0;
     root_out->parent_id  = 0;
-    root_out->backend    = ODFS_BACKEND_ISO9660;
+    root_out->backend    = joliet ? ODFS_BACKEND_JOLIET : ODFS_BACKEND_ISO9660;
     root_out->kind       = ODFS_NODE_DIR;
     root_out->name[0]    = '/';
     root_out->name[1]    = '\0';
@@ -344,8 +364,9 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
 
 #if ODFS_FEATURE_ROCK_RIDGE
     /* detect Rock Ridge by reading the root directory's "." entry;
-     * High Sierra predates SUSP, so skip the probe entirely */
-    if (!ctx->high_sierra) {
+     * High Sierra predates SUSP and Joliet's UCS-2 tree never carries
+     * Rock Ridge, so skip the probe for both */
+    if (!ctx->high_sierra && !joliet) {
         const uint8_t *root_sector;
         err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
         if (err == ODFS_OK) {
@@ -384,11 +405,22 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
     return ODFS_OK;
 }
 
+static odfs_err_t iso_mount(odfs_cache_t *cache,
+                             odfs_log_state_t *log,
+                             uint32_t session_start,
+                             odfs_node_t *root_out,
+                             void **backend_ctx)
+{
+    return odfs_iso_mount_vd(cache, log, session_start,
+                             session_start + ISO_VD_START_LBA, 0,
+                             root_out, backend_ctx);
+}
+
 /* ------------------------------------------------------------------ */
 /* unmount                                                             */
 /* ------------------------------------------------------------------ */
 
-static void iso_unmount(void *backend_ctx)
+void odfs_iso_unmount(void *backend_ctx)
 {
     odfs_free(backend_ctx);
 }
@@ -397,20 +429,19 @@ static void iso_unmount(void *backend_ctx)
 /* readdir                                                             */
 /* ------------------------------------------------------------------ */
 
-static odfs_err_t iso_readdir(void *backend_ctx,
-                               odfs_cache_t *cache,
-                               odfs_log_state_t *log,
-                               const odfs_node_t *dir,
-                               odfs_dir_iter_fn callback,
-                               void *cb_ctx,
-                               uint32_t *resume_offset)
+odfs_err_t odfs_iso_readdir(void *backend_ctx,
+                            odfs_cache_t *cache,
+                            odfs_log_state_t *log,
+                            const odfs_node_t *dir,
+                            odfs_dir_iter_fn callback,
+                            void *cb_ctx,
+                            uint32_t *resume_offset)
 {
     iso_context_t *ctx = backend_ctx;
     uint32_t dir_lba = dir->extent.lba;
     uint32_t dir_size = dir->extent.length;
     uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
     uint32_t offset = 0;
-    int lowercase = ctx->lowercase;
     odfs_namefix_state_t namefix;
 
     ODFS_TRACE(log, ODFS_SUB_ISO,
@@ -442,9 +473,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         odfs_node_t node;
         const uint8_t *sua = NULL;
         size_t sua_len = 0;
-        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
-                                            &ctx->next_node_id, lowercase,
-                                            ctx->high_sierra,
+        int consumed = iso_parse_dir_record(rec, avail, ctx,
                                             &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
@@ -537,13 +566,13 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 /* read                                                                */
 /* ------------------------------------------------------------------ */
 
-static odfs_err_t iso_read(void *backend_ctx,
-                            odfs_cache_t *cache,
-                            odfs_log_state_t *log,
-                            const odfs_node_t *file,
-                            uint64_t offset,
-                            void *buf,
-                            size_t *len)
+odfs_err_t odfs_iso_read(void *backend_ctx,
+                         odfs_cache_t *cache,
+                         odfs_log_state_t *log,
+                         const odfs_node_t *file,
+                         uint64_t offset,
+                         void *buf,
+                         size_t *len)
 {
     (void)backend_ctx;
     (void)log;
@@ -585,12 +614,12 @@ static odfs_err_t lookup_cb(const odfs_node_t *entry, void *cb_ctx)
     return ODFS_OK;
 }
 
-static odfs_err_t iso_lookup(void *backend_ctx,
-                              odfs_cache_t *cache,
-                              odfs_log_state_t *log,
-                              const odfs_node_t *dir,
-                              const char *name,
-                              odfs_node_t *out)
+odfs_err_t odfs_iso_lookup(void *backend_ctx,
+                           odfs_cache_t *cache,
+                           odfs_log_state_t *log,
+                           const odfs_node_t *dir,
+                           const char *name,
+                           odfs_node_t *out)
 {
     lookup_ctx_t lctx;
     odfs_err_t err;
@@ -599,7 +628,7 @@ static odfs_err_t iso_lookup(void *backend_ctx,
     lctx.result = out;
     lctx.found = 0;
 
-    err = iso_readdir(backend_ctx, cache, log, dir, lookup_cb, &lctx, NULL);
+    err = odfs_iso_readdir(backend_ctx, cache, log, dir, lookup_cb, &lctx, NULL);
     /* ODFS_ERR_EOF from callback means "found, stop early" */
     if (err == ODFS_ERR_EOF && lctx.found)
         return ODFS_OK;
@@ -664,10 +693,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         odfs_node_t node;
         const uint8_t *sua = NULL;
         size_t sua_len = 0;
-        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
-                                            &ctx->next_node_id,
-                                            ctx->lowercase,
-                                            ctx->high_sierra,
+        int consumed = iso_parse_dir_record(rec, avail, ctx,
                                             &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
@@ -712,8 +738,8 @@ static odfs_err_t iso_readlink(void *backend_ctx,
 /* get_volume_name                                                     */
 /* ------------------------------------------------------------------ */
 
-static odfs_err_t iso_get_volume_name(void *backend_ctx,
-                                       char *buf, size_t buf_size)
+odfs_err_t odfs_iso_get_volume_name(void *backend_ctx,
+                                    char *buf, size_t buf_size)
 {
     iso_context_t *ctx = backend_ctx;
     size_t len = strlen(ctx->pvd.volume_id);
@@ -728,7 +754,7 @@ static odfs_err_t iso_get_volume_name(void *backend_ctx,
 /* get_volume_size                                                     */
 /* ------------------------------------------------------------------ */
 
-static uint32_t iso_get_volume_size(void *backend_ctx)
+uint32_t odfs_iso_get_volume_size(void *backend_ctx)
 {
     iso_context_t *ctx = backend_ctx;
     return ctx->pvd.volume_space_size;
@@ -817,8 +843,8 @@ static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
     m.out = out;
     m.found = 0;
 
-    err = iso_readdir(backend_ctx, cache, log, parent_dir,
-                      iso_lba_match_cb, &m, NULL);
+    err = odfs_iso_readdir(backend_ctx, cache, log, parent_dir,
+                           iso_lba_match_cb, &m, NULL);
     if (m.found)
         return ODFS_OK;
     if (err == ODFS_OK || err == ODFS_ERR_EOF)
@@ -929,12 +955,12 @@ odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
     return n;
 }
 
-static odfs_err_t iso_resolve_parent(void *backend_ctx,
-                                     odfs_cache_t *cache,
-                                     odfs_log_state_t *log,
-                                     const odfs_node_t *dir,
-                                     odfs_node_t *parent_out,
-                                     odfs_node_t *grandparent_out)
+odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
+                                   odfs_cache_t *cache,
+                                   odfs_log_state_t *log,
+                                   const odfs_node_t *dir,
+                                   odfs_node_t *parent_out,
+                                   odfs_node_t *grandparent_out)
 {
     iso_context_t *ctx = backend_ctx;
     uint32_t ss = ctx->session_start;
@@ -1025,14 +1051,14 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .backend_type    = ODFS_BACKEND_ISO9660,
     .probe           = iso_probe,
     .mount           = iso_mount,
-    .unmount         = iso_unmount,
-    .readdir         = iso_readdir,
-    .read            = iso_read,
-    .lookup          = iso_lookup,
+    .unmount         = odfs_iso_unmount,
+    .readdir         = odfs_iso_readdir,
+    .read            = odfs_iso_read,
+    .lookup          = odfs_iso_lookup,
 #if ODFS_FEATURE_ROCK_RIDGE
     .readlink        = iso_readlink,
 #endif
-    .resolve_parent  = iso_resolve_parent,
-    .get_volume_name = iso_get_volume_name,
-    .get_volume_size = iso_get_volume_size,
+    .resolve_parent  = odfs_iso_resolve_parent,
+    .get_volume_name = odfs_iso_get_volume_name,
+    .get_volume_size = odfs_iso_get_volume_size,
 };
