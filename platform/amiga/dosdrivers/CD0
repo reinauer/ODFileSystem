@@ -37,6 +37,13 @@ StackSize   = 16384
 Priority = 10
 GlobVec     = -1
 DosType     = 0x43443031
+/* ROM CD filesystems (e.g. the A4091's) register DosType 'CD01' in
+ * FileSystem.resource. Without ForceLoad, Mount silently substitutes
+ * that ROM filesystem for the FileSystem binary named above and
+ * overrides StackSize. ForceLoad makes Mount always load the binary
+ * from disk. (Requires Mount from OS 2.04 or newer.)
+ */
+ForceLoad   = 1
 Control     = "AIFF UDF"
 
 /* The Device and Unit fields are controlled by tooltypes in the CD0 
