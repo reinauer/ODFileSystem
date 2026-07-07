@@ -237,6 +237,14 @@ AMIGA_ASM_SRCS = platform/amiga/startup.S
 endif
 AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
+# The resident/romtag object is linked directly into the handler right after
+# startup.o, not archived into libodfs.a
+ifeq ($(AMIGA_TARGET),os4)
+AMIGA_RESIDENT_OBJ =
+else
+AMIGA_RESIDENT_OBJ = $(AMIGA_BUILD)/platform/amiga/resident.o
+endif
+
 HOST_LIB_SRCS  = $(CORE_SRCS) $(HOST_SRCS)
 HOST_LIB_OBJS  = $(patsubst %.c,$(HOST_BUILD)/%.o,$(HOST_LIB_SRCS))
 HOST_LIB_DEPS  = $(HOST_LIB_OBJS:.o=.d)
@@ -593,10 +601,10 @@ $(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
 
 # ---- Amiga handler ----
 
-$(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_BUILD)/libodfs.a
+$(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) $(AMIGA_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@$(CC) $(LDFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
+	@$(CC) $(LDFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
 	@echo "  STRIP $@"
 	@$(STRIP) $@
 
