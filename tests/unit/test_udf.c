@@ -407,4 +407,240 @@ TEST(udf_resolve_parent_skips_nonmatching_child_icb_reads)
     odfs_cache_destroy(&cache);
 }
 
+/* ---- multi-extent read path ---- */
+
+/*
+ * Write an FE whose data is described by several short allocation
+ * descriptors. Each AD is a (length-with-type, position) pair; the
+ * caller encodes the extent type in the top bits of the length.
+ */
+static void udf_make_fe_ads(uint8_t *sector, uint8_t file_type, uint64_t size,
+                            const uint32_t *ad_pairs, int n_ads)
+{
+    memset(sector, 0, MOCK_SECTOR_SIZE);
+    udf_write_tag(sector, UDF_TAG_FE);
+    sector[16 + 11] = file_type;
+    udf_write_le16(&sector[16 + 18], UDF_ICB_ALLOC_SHORT);
+    udf_write_le64(&sector[56], size);
+    udf_write_le32(&sector[168], 0);                    /* ea_len */
+    udf_write_le32(&sector[172], (uint32_t)(n_ads * 8)); /* ad_length */
+    for (int i = 0; i < n_ads; i++) {
+        udf_write_le32(&sector[176 + i * 8], ad_pairs[i * 2]);
+        udf_write_le32(&sector[180 + i * 8], ad_pairs[i * 2 + 1]);
+    }
+}
+
+static void udf_setup_read_env(udf_mock_media_t *mock, odfs_media_t *media,
+                               odfs_cache_t *cache, odfs_log_state_t *log,
+                               udf_context_t *ctx, odfs_node_t *file,
+                               uint64_t size)
+{
+    memset(mock, 0, sizeof(*mock));
+    memset(ctx, 0, sizeof(*ctx));
+    memset(file, 0, sizeof(*file));
+
+    ctx->next_node_id = 1;
+    udf_make_media(media, mock);
+    odfs_cache_init(cache, media, 4);
+    odfs_log_init(log);
+
+    file->backend = ODFS_BACKEND_UDF;
+    file->kind = ODFS_NODE_FILE;
+    file->extent.lba = 0; /* FE sector */
+    file->size = size;
+}
+
+TEST(udf_read_multi_extent_file)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t file;
+    uint8_t buf[64];
+    size_t len;
+    int i;
+
+    /* two discontiguous extents: 2048 bytes at LBA 2, then 5 at LBA 1 */
+    static const uint32_t ads[] = { 2048, 2, 5, 1 };
+
+    udf_setup_read_env(&mock, &media, &cache, &log, &ctx, &file, 2053);
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_FILE, 2053, ads, 2);
+    memset(mock.sectors[2], 'A', MOCK_SECTOR_SIZE);
+    memset(mock.sectors[1], 'B', 5);
+
+    /* read across the extent boundary */
+    memset(buf, 0, sizeof(buf));
+    len = 13;
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   2040, buf, &len));
+    ASSERT_EQ(len, 13);
+    for (i = 0; i < 8; i++)
+        ASSERT_EQ(buf[i], 'A');
+    for (i = 8; i < 13; i++)
+        ASSERT_EQ(buf[i], 'B');
+
+    /* a read past EOF is clamped */
+    len = sizeof(buf);
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   2050, buf, &len));
+    ASSERT_EQ(len, 3);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_read_sparse_extent_reads_zeros)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t file;
+    uint8_t buf[32];
+    size_t len;
+    int i;
+
+    /* recorded, then allocated-but-unrecorded (reads as zeros), then
+     * recorded again */
+    static const uint32_t ads[] = {
+        2048, 1,
+        (1u << 30) | 2048, 0,
+        5, 2,
+    };
+
+    udf_setup_read_env(&mock, &media, &cache, &log, &ctx, &file, 4101);
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_FILE, 4101, ads, 3);
+    memset(mock.sectors[1], 'A', MOCK_SECTOR_SIZE);
+    memset(mock.sectors[2], 'C', 5);
+
+    /* straddle the recorded → sparse boundary */
+    memset(buf, 0xEE, sizeof(buf));
+    len = 8;
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   2044, buf, &len));
+    ASSERT_EQ(len, 8);
+    for (i = 0; i < 4; i++)
+        ASSERT_EQ(buf[i], 'A');
+    for (i = 4; i < 8; i++)
+        ASSERT_EQ(buf[i], 0);
+
+    /* straddle the sparse → recorded boundary */
+    memset(buf, 0xEE, sizeof(buf));
+    len = 9;
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   4092, buf, &len));
+    ASSERT_EQ(len, 9);
+    for (i = 0; i < 4; i++)
+        ASSERT_EQ(buf[i], 0);
+    for (i = 4; i < 9; i++)
+        ASSERT_EQ(buf[i], 'C');
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_read_follows_aed_continuation)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t file;
+    uint8_t buf[16];
+    size_t len;
+    int i;
+
+    /* FE holds one data extent and a type-3 continuation pointing at
+     * an AED in sector 3, which holds the final extent */
+    static const uint32_t fe_ads[] = {
+        2048, 1,
+        (3u << 30) | 2048, 3,
+    };
+
+    udf_setup_read_env(&mock, &media, &cache, &log, &ctx, &file, 2053);
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_FILE, 2053, fe_ads, 2);
+    memset(mock.sectors[1], 'A', MOCK_SECTOR_SIZE);
+    memset(mock.sectors[2], 'B', 5);
+
+    /* AED: tag + previous-extent(4) + ad-length(4), ADs at offset 24 */
+    udf_write_tag(mock.sectors[3], UDF_TAG_AED);
+    udf_write_le32(&mock.sectors[3][20], 8);
+    udf_write_le32(&mock.sectors[3][24], 5);
+    udf_write_le32(&mock.sectors[3][28], 2);
+
+    memset(buf, 0, sizeof(buf));
+    len = 13;
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   2040, buf, &len));
+    ASSERT_EQ(len, 13);
+    for (i = 0; i < 8; i++)
+        ASSERT_EQ(buf[i], 'A');
+    for (i = 8; i < 13; i++)
+        ASSERT_EQ(buf[i], 'B');
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_readdir_multi_extent_directory)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint8_t fid[40];
+    uint8_t filler[2008];
+
+    /* FID stream spans two discontiguous extents: sector 1 then sector 4 */
+    static const uint32_t dir_ads[] = { 2048, 1, 40, 4 };
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    ctx.next_node_id = 1;
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 2088, dir_ads, 2);
+
+    /* extent 1: FID for "A", then a deleted filler FID padding the sector */
+    udf_make_fid(fid, "A", 5);
+    memcpy(&mock.sectors[1][0], fid, 40);
+
+    memset(filler, 0, sizeof(filler));
+    udf_write_tag(filler, UDF_TAG_FID);
+    udf_write_le16(&filler[16], 1);
+    filler[18] = UDF_FID_FLAG_DELETED;
+    udf_write_le16(&filler[36], 1970); /* impl_len pads FID to 2008 bytes */
+    memcpy(&mock.sectors[1][40], filler, sizeof(filler));
+
+    /* extent 2: FID for "B" */
+    udf_make_fid(fid, "B", 5);
+    memcpy(&mock.sectors[4][0], fid, 40);
+
+    /* child FE both entries point at */
+    udf_make_fe(mock.sectors[5], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+    dir.extent.length = 2088;
+    dir.size = 2088;
+
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 2);
+    ASSERT_STR_EQ(collect.node.name, "B"); /* last collected */
+    ASSERT_EQ(collect.node.size, 7);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()

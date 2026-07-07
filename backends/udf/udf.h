@@ -56,6 +56,14 @@
 #define UDF_ICB_ALLOC_EXTENDED  2
 #define UDF_ICB_ALLOC_EMBEDDED  3
 
+/* ---- allocation-descriptor extent types (top 2 bits of length, 14.14.1.1) ---- */
+
+#define UDF_EXT_RECORDED      0  /* recorded and allocated */
+#define UDF_EXT_ALLOCATED     1  /* allocated but not recorded (reads as zeros) */
+#define UDF_EXT_UNALLOCATED   2  /* not allocated (reads as zeros) */
+#define UDF_EXT_CONTINUATION  3  /* extent holds the next allocation descriptors */
+#define UDF_EXT_LENGTH_MASK   0x3FFFFFFFu
+
 /* ---- helpers for reading UDF LE fields ---- */
 
 static inline uint16_t udf_le16(const uint8_t *p)

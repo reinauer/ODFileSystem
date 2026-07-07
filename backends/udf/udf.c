@@ -465,6 +465,201 @@ static odfs_err_t udf_read_icb(udf_context_t *ctx,
                            data_phys_lba, file_type, mtime, NULL);
 }
 
+/*
+ * Read up to *len bytes at file_offset from the object (file or directory)
+ * whose File Entry ICB is at icb_phys. Unlike udf_read_icb, this follows
+ * the full allocation-descriptor chain, so files and directories that span
+ * several extents — the normal case for anything larger than ~1 GiB, and
+ * for fragmented media — are read correctly. Embedded data, sparse and
+ * unrecorded extents (read as zeros), and allocation-extent continuation
+ * (AED) blocks are all handled. On return *len holds the byte count
+ * produced, which is short at end-of-file.
+ *
+ * The current allocation-descriptor run is copied into a local buffer
+ * before any data read, because reading file data can evict the cached
+ * ICB/AED block the descriptors live in.
+ */
+static odfs_err_t udf_read_object(udf_context_t *ctx,
+                                  odfs_cache_t *cache,
+                                  uint32_t icb_phys,
+                                  uint64_t file_offset,
+                                  void *buf,
+                                  size_t *len)
+{
+    const uint8_t *sector;
+    udf_tag_t tag;
+    uint8_t ad_buf[2048];
+    uint8_t *out = buf;
+    size_t want = *len;
+    size_t done = 0;
+    uint64_t data_size;
+    uint64_t cur_pos = 0;
+    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
+    uint16_t alloc_type;
+    uint32_t ea_len, ad_length, ad_base, ad_offset, ad_run_len;
+    size_t ad_size, p;
+    int guard = 0;
+    odfs_err_t err;
+
+    *len = 0;
+
+    err = odfs_cache_read(cache, icb_phys, &sector);
+    if (err != ODFS_OK)
+        return err;
+    if (!udf_read_tag(sector, &tag))
+        return ODFS_ERR_CORRUPT;
+
+    if (tag.id == UDF_TAG_FE) {
+        if (block_size < 176)
+            return ODFS_ERR_CORRUPT;
+        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
+        data_size  = udf_le64(&sector[56]);
+        ea_len     = udf_le32(&sector[168]);
+        ad_length  = udf_le32(&sector[172]);
+        ad_base    = 176;
+    } else if (tag.id == UDF_TAG_EFE) {
+        if (block_size < 216)
+            return ODFS_ERR_CORRUPT;
+        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
+        data_size  = udf_le64(&sector[56]);
+        ea_len     = udf_le32(&sector[208]);
+        ad_length  = udf_le32(&sector[212]);
+        ad_base    = 216;
+    } else {
+        return ODFS_ERR_BAD_FORMAT;
+    }
+
+    if (block_size > sizeof(ad_buf))
+        return ODFS_ERR_UNSUPPORTED;
+    if (ea_len > block_size - ad_base)
+        return ODFS_ERR_CORRUPT;
+    ad_offset = ad_base + ea_len;
+    if (ad_length > block_size - ad_offset)
+        return ODFS_ERR_CORRUPT;
+
+    if (file_offset >= data_size)
+        return ODFS_OK;
+    if (want > data_size - file_offset)
+        want = (size_t)(data_size - file_offset);
+    if (want == 0)
+        return ODFS_OK;
+
+    if (alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
+        if ((uint64_t)ad_offset + data_size > block_size)
+            return ODFS_ERR_CORRUPT;
+        memcpy(out, sector + ad_offset + (size_t)file_offset, want);
+        *len = want;
+        return ODFS_OK;
+    }
+
+    if (alloc_type == UDF_ICB_ALLOC_SHORT)
+        ad_size = 8;
+    else if (alloc_type == UDF_ICB_ALLOC_LONG)
+        ad_size = 16;
+    else
+        return ODFS_ERR_UNSUPPORTED; /* extended ADs are not used on optical media */
+
+    /* copy the ICB's allocation-descriptor run before any data read */
+    memcpy(ad_buf, sector + ad_offset, ad_length);
+    ad_run_len = ad_length;
+    p = 0;
+
+    while (done < want) {
+        uint32_t len_field, etype, elen, elba;
+
+        if (p + ad_size > ad_run_len)
+            break; /* end of this run and no continuation */
+
+        len_field = udf_le32(&ad_buf[p]);
+        etype = len_field >> 30;
+        elen  = len_field & UDF_EXT_LENGTH_MASK;
+        elba  = udf_le32(&ad_buf[p + 4]); /* LBA field, same offset for short/long */
+
+        if (etype == UDF_EXT_CONTINUATION) {
+            const uint8_t *aed;
+            udf_tag_t atag;
+            uint32_t alen;
+
+            if (++guard > 4096)
+                return ODFS_ERR_CORRUPT; /* runaway AED chain */
+
+            err = odfs_cache_read(cache, udf_phys_lba(ctx, elba), &aed);
+            if (err != ODFS_OK)
+                return err;
+            if (!udf_read_tag(aed, &atag) || atag.id != UDF_TAG_AED)
+                return ODFS_ERR_CORRUPT;
+
+            alen = udf_le32(&aed[20]); /* Length of Allocation Descriptors */
+            if (alen > sizeof(ad_buf) || 24u + alen > block_size)
+                return ODFS_ERR_CORRUPT;
+            memcpy(ad_buf, aed + 24, alen);
+            ad_run_len = alen;
+            p = 0;
+            continue;
+        }
+
+        if (elen == 0)
+            break; /* terminating descriptor */
+
+        {
+            uint64_t ext_end = cur_pos + elen;
+            uint64_t start_in_file = file_offset + done;
+
+            if (start_in_file < ext_end) {
+                uint32_t skip = (uint32_t)(start_in_file - cur_pos);
+                size_t chunk = (size_t)(ext_end - start_in_file);
+
+                if (chunk > want - done)
+                    chunk = want - done;
+
+                if (etype == UDF_EXT_RECORDED) {
+                    size_t n = chunk;
+                    err = odfs_cache_read_bytes(cache, udf_phys_lba(ctx, elba),
+                                                skip, out + done, &n);
+                    if (err != ODFS_OK) {
+                        *len = done;
+                        return err;
+                    }
+                    done += n;
+                    if (n < chunk) {
+                        *len = done; /* short device read */
+                        return ODFS_OK;
+                    }
+                } else {
+                    /* allocated-but-unrecorded or unallocated: reads as zeros */
+                    memset(out + done, 0, chunk);
+                    done += chunk;
+                }
+            }
+
+            cur_pos = ext_end;
+        }
+
+        p += ad_size;
+    }
+
+    *len = done;
+    return ODFS_OK;
+}
+
+/* Read exactly len bytes at offset; ODFS_ERR_EOF if fewer are available. */
+static odfs_err_t udf_read_exact(udf_context_t *ctx,
+                                 odfs_cache_t *cache,
+                                 uint32_t icb_phys,
+                                 uint32_t offset,
+                                 void *buf,
+                                 size_t len)
+{
+    size_t got = len;
+    odfs_err_t err = udf_read_object(ctx, cache, icb_phys, offset, buf, &got);
+
+    if (err != ODFS_OK)
+        return err;
+    if (got != len)
+        return ODFS_ERR_EOF;
+    return ODFS_OK;
+}
+
 static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
                                          odfs_cache_t *cache,
                                          uint8_t fid_flags,
@@ -503,37 +698,6 @@ static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
 /* ------------------------------------------------------------------ */
 /* readdir                                                             */
 /* ------------------------------------------------------------------ */
-
-static odfs_err_t udf_read_bytes(odfs_cache_t *cache,
-                                   uint32_t start_lba,
-                                   uint32_t offset,
-                                   void *buf,
-                                   size_t len)
-{
-    uint8_t *out = buf;
-    size_t done = 0;
-
-    while (done < len) {
-        uint32_t sector_lba = start_lba + ((offset + (uint32_t)done) / 2048);
-        uint32_t sector_off = (offset + (uint32_t)done) % 2048;
-        const uint8_t *sector;
-        odfs_err_t err;
-        size_t chunk;
-
-        err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK)
-            return err;
-
-        chunk = 2048 - sector_off;
-        if (chunk > len - done)
-            chunk = len - done;
-
-        memcpy(out + done, sector + sector_off, chunk);
-        done += chunk;
-    }
-
-    return ODFS_OK;
-}
 
 static odfs_err_t udf_readdir(void *backend_ctx,
                                 odfs_cache_t *cache,
@@ -580,7 +744,7 @@ static odfs_err_t udf_readdir(void *backend_ctx,
         if (remaining < sizeof(fid_hdr))
             break;
 
-        err = udf_read_bytes(cache, dir_data_lba, offset,
+        err = udf_read_exact(ctx, cache, dir->extent.lba, offset,
                              fid_hdr, sizeof(fid_hdr));
         if (err != ODFS_OK) {
             odfs_namefix_destroy(&namefix);
@@ -615,7 +779,7 @@ static odfs_err_t udf_readdir(void *backend_ctx,
                 return ODFS_ERR_NOMEM;
             }
 
-            err = udf_read_bytes(cache, dir_data_lba, offset,
+            err = udf_read_exact(ctx, cache, dir->extent.lba, offset,
                                  fid_alloc, fid_len);
             if (err != ODFS_OK) {
                 odfs_free(fid_alloc);
@@ -707,40 +871,11 @@ static odfs_err_t udf_read(void *backend_ctx,
                              size_t *len)
 {
     udf_context_t *ctx = backend_ctx;
-    uint64_t fsize;
-    uint32_t data_lba;
-    uint32_t embed_off;
-    uint8_t ftype;
-    odfs_err_t err;
     (void)log;
 
-    /* read ICB to get data extent */
-    err = udf_read_icb_ex(ctx, cache, file->extent.lba,
-                          &fsize, &data_lba, &ftype, NULL, &embed_off);
-    if (err != ODFS_OK)
-        return err;
-
-    size_t want = *len;
-    if (offset >= fsize) { *len = 0; return ODFS_OK; }
-    if (want > fsize - offset)
-        want = (size_t)(fsize - offset);
-
-    if (embed_off != 0) {
-        /* data embedded in the File Entry, after the extended attributes */
-        const uint8_t *sector;
-
-        err = odfs_cache_read(cache, data_lba, &sector);
-        if (err != ODFS_OK)
-            return err;
-        if ((uint64_t)embed_off + fsize > 2048)
-            return ODFS_ERR_CORRUPT;
-        memcpy(buf, sector + embed_off + (uint32_t)offset, want);
-        *len = want;
-        return ODFS_OK;
-    }
-
-    *len = want;
-    return odfs_cache_read_bytes(cache, data_lba, offset, buf, len);
+    /* the object walker handles embedded data, sparse extents, and
+     * allocation-descriptor chains spanning AED continuation blocks */
+    return udf_read_object(ctx, cache, file->extent.lba, offset, buf, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -796,7 +931,7 @@ static odfs_err_t udf_lookup(void *backend_ctx,
         if (remaining < sizeof(fid_hdr))
             break;
 
-        err = udf_read_bytes(cache, dir_data_lba, offset,
+        err = udf_read_exact(ctx, cache, dir->extent.lba, offset,
                              fid_hdr, sizeof(fid_hdr));
         if (err != ODFS_OK) {
             odfs_namefix_destroy(&namefix);
@@ -824,7 +959,7 @@ static odfs_err_t udf_lookup(void *backend_ctx,
                 return ODFS_ERR_NOMEM;
             }
 
-            err = udf_read_bytes(cache, dir_data_lba, offset,
+            err = udf_read_exact(ctx, cache, dir->extent.lba, offset,
                                  fid_alloc, fid_len);
             if (err != ODFS_OK) {
                 odfs_free(fid_alloc);
@@ -1029,7 +1164,7 @@ static odfs_err_t udf_read_parent_icb(udf_context_t *ctx,
         if (remaining < sizeof(fid))
             break;
 
-        err = udf_read_bytes(cache, dir_data_lba, offset, fid, sizeof(fid));
+        err = udf_read_exact(ctx, cache, dir->extent.lba, offset, fid, sizeof(fid));
         if (err != ODFS_OK)
             return err;
 
@@ -1106,7 +1241,7 @@ static odfs_err_t udf_find_child_by_icb(void *backend_ctx,
         if (remaining < sizeof(fid_hdr))
             break;
 
-        err = udf_read_bytes(cache, dir_data_lba, offset,
+        err = udf_read_exact(ctx, cache, parent_dir->extent.lba, offset,
                              fid_hdr, sizeof(fid_hdr));
         if (err != ODFS_OK) {
             odfs_namefix_destroy(&namefix);
@@ -1134,7 +1269,7 @@ static odfs_err_t udf_find_child_by_icb(void *backend_ctx,
                 return ODFS_ERR_NOMEM;
             }
 
-            err = udf_read_bytes(cache, dir_data_lba, offset,
+            err = udf_read_exact(ctx, cache, parent_dir->extent.lba, offset,
                                  fid_alloc, fid_len);
             if (err != ODFS_OK) {
                 odfs_free(fid_alloc);
