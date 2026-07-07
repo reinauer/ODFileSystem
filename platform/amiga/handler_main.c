@@ -1629,7 +1629,21 @@ static void drain_all_objects(handler_global_t *g)
     }
 }
 
-static int packet_needs_live_mount(const struct DosPacket *pkt)
+/*
+ * How a packet relates to mounted media:
+ *   -1  not an action this handler implements
+ *    0  serviceable without a mounted volume
+ *    1  requires a live mount
+ *
+ * Unknown actions must never be failed with ERROR_NO_DISK while no
+ * medium is mounted: they have to reach the dispatcher's default
+ * answer, ERROR_ACTION_NOT_KNOWN. diskimage.device's MountDiskImage
+ * and GUI identify drives by sending the private ACTION_GET_DISK_FSSM
+ * packet and fall back to reading dn_Startup only when the handler
+ * answers ERROR_ACTION_NOT_KNOWN; answering ERROR_NO_DISK made an
+ * empty ODFS unit invisible to both (issue #8).
+ */
+static int packet_mount_need(const struct DosPacket *pkt)
 {
     switch (pkt->dp_Type) {
     case ACTION_IS_FILESYSTEM:
@@ -1653,9 +1667,28 @@ static int packet_needs_live_mount(const struct DosPacket *pkt)
     case ACTION_SEEK:
     case ACTION_FH_FROM_LOCK:
     case ACTION_READ_LINK:
+    case ACTION_FLUSH:
+    case ACTION_MORE_CACHE:
+    case ACTION_DIE:
+    case ACTION_SHUTDOWN:
         return 0;
-    default:
+    case ACTION_EXAMINE_ALL:
+    case ACTION_EXAMINE_ALL_END:
+    case ACTION_FINDOUTPUT:
+    case ACTION_FINDUPDATE:
+    case ACTION_WRITE:
+    case ACTION_DELETE_OBJECT:
+    case ACTION_RENAME_OBJECT:
+    case ACTION_CREATE_DIR:
+    case ACTION_SET_PROTECT:
+    case ACTION_SET_COMMENT:
+    case ACTION_RENAME_DISK:
+    case ACTION_SET_DATE:
+    case ACTION_SET_FILE_SIZE:
+    case ACTION_SET_OWNER:
         return 1;
+    default:
+        return -1;
     }
 }
 
@@ -5318,7 +5351,7 @@ void handler_main_startup(struct Message *startup_msg)
                     break;
                 }
 
-                if (!g->mounted && packet_needs_live_mount(pkt)) {
+                if (!g->mounted && packet_mount_need(pkt) > 0) {
                     pkt->dp_Res1 = DOSFALSE;
                     pkt->dp_Res2 = ERROR_NO_DISK;
                     return_packet(g, pkt);
