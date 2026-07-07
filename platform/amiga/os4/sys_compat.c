@@ -24,6 +24,17 @@ struct UtilityBase *UtilityBase;
 static struct DOSIFace *dos_iface;
 static struct UtilityIFace *utility_iface;
 
+/*
+ * Handler instances started from one seglist (the kickstart module's
+ * FileSysEntry or a reused disk-based one) share this data segment, so
+ * the bases and interfaces above — including IDOS — are shared as
+ * well. Reference-count the openers under Forbid() and close only when
+ * the last instance exits; otherwise the first shutdown — including a
+ * declined second mount of the same device — NULLs them out from under
+ * every surviving instance.
+ */
+static LONG lib_users;
+
 static odfs_amiga_interrupt_fn interrupt_code;
 
 /*
@@ -64,7 +75,7 @@ struct DosLibrary *odfs_amiga_dosbase(void)
     return DOSBase;
 }
 
-int odfs_amiga_open_libraries(void)
+static int open_libraries_first(void)
 {
     DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library",
                                                36);
@@ -95,26 +106,46 @@ int odfs_amiga_open_libraries(void)
     return 1;
 }
 
+int odfs_amiga_open_libraries(void)
+{
+    int ok = 1;
+
+    /* dos and utility are kickstart-resident, so the opens cannot
+     * Wait() and the Forbid() holds across them. */
+    Forbid();
+    if (lib_users == 0)
+        ok = open_libraries_first();
+    if (ok)
+        lib_users++;
+    Permit();
+
+    return ok;
+}
+
 void odfs_amiga_close_libraries(void)
 {
-    if (utility_iface) {
-        DropInterface((struct Interface *)utility_iface);
-        utility_iface = NULL;
+    Forbid();
+    if (lib_users > 0 && --lib_users == 0) {
+        if (utility_iface) {
+            DropInterface((struct Interface *)utility_iface);
+            utility_iface = NULL;
+        }
+        if (UtilityBase) {
+            CloseLibrary((struct Library *)UtilityBase);
+            UtilityBase = NULL;
+        }
+        if (dos_iface) {
+            if (IDOS == dos_iface)
+                IDOS = NULL;
+            DropInterface((struct Interface *)dos_iface);
+            dos_iface = NULL;
+        }
+        if (DOSBase) {
+            CloseLibrary((struct Library *)DOSBase);
+            DOSBase = NULL;
+        }
     }
-    if (UtilityBase) {
-        CloseLibrary((struct Library *)UtilityBase);
-        UtilityBase = NULL;
-    }
-    if (dos_iface) {
-        if (IDOS == dos_iface)
-            IDOS = NULL;
-        DropInterface((struct Interface *)dos_iface);
-        dos_iface = NULL;
-    }
-    if (DOSBase) {
-        CloseLibrary((struct Library *)DOSBase);
-        DOSBase = NULL;
-    }
+    Permit();
 }
 
 void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)

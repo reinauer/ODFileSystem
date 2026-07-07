@@ -18,6 +18,16 @@ struct Library *UtilityBase;
 
 static odfs_amiga_interrupt_fn interrupt_code;
 
+/*
+ * Handler instances started from one seglist (FileSysResource or a
+ * resident L:ODFileSystem) share this data segment, so the library
+ * bases above are shared as well. Reference-count the openers under
+ * Forbid() and close only when the last instance exits; otherwise the
+ * first shutdown — including a declined second mount of the same
+ * device — NULLs the bases out from under every surviving instance.
+ */
+static LONG lib_users;
+
 static LONG odfs_amiga_interrupt_entry(APTR data asm("a1"))
 {
     return interrupt_code ? interrupt_code(data) : 0;
@@ -40,31 +50,46 @@ struct DosLibrary *odfs_amiga_dosbase(void)
 
 int odfs_amiga_open_libraries(void)
 {
-    /*
-     * V37 (Kickstart 2.04) is the real floor: the ExAll path calls
-     * MatchPatternNoCase() and startup.S may call StackSwap(), both
-     * V37. Requiring V37 here turns a latent crash on the short-lived
-     * 2.00 ROMs into a clean load failure.
-     */
-    DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library",
-                                               37);
-    if (!DOSBase)
-        return 0;
+    int ok = 1;
 
-    UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
-    return 1;
+    /* dos and utility are ROM-resident on V37+, so OpenLibrary cannot
+     * Wait() here and the Forbid() holds across the opens. */
+    Forbid();
+    if (lib_users == 0) {
+        /*
+         * V37 (Kickstart 2.04) is the real floor: the ExAll path calls
+         * MatchPatternNoCase() and startup.S may call StackSwap(), both
+         * V37. Requiring V37 here turns a latent crash on the
+         * short-lived 2.00 ROMs into a clean load failure.
+         */
+        DOSBase = (struct DosLibrary *)
+            OpenLibrary((CONST_STRPTR)"dos.library", 37);
+        if (DOSBase)
+            UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
+        else
+            ok = 0;
+    }
+    if (ok)
+        lib_users++;
+    Permit();
+
+    return ok;
 }
 
 void odfs_amiga_close_libraries(void)
 {
-    if (UtilityBase) {
-        CloseLibrary(UtilityBase);
-        UtilityBase = NULL;
+    Forbid();
+    if (lib_users > 0 && --lib_users == 0) {
+        if (UtilityBase) {
+            CloseLibrary(UtilityBase);
+            UtilityBase = NULL;
+        }
+        if (DOSBase) {
+            CloseLibrary((struct Library *)DOSBase);
+            DOSBase = NULL;
+        }
     }
-    if (DOSBase) {
-        CloseLibrary((struct Library *)DOSBase);
-        DOSBase = NULL;
-    }
+    Permit();
 }
 
 void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)
