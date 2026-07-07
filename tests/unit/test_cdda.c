@@ -381,6 +381,102 @@ TEST(cdda_cdtext_file_exposes_parsed_metadata)
     ASSERT(strstr(buf, "DISC.PERFORMER=Artist\n") != NULL);
     ASSERT(strstr(buf, "TRACK01.TITLE=Song 1\n") != NULL);
 
+    /* the track title also becomes the AmigaDOS file comment */
+    ASSERT_EQ(collect.entries[2].amiga_as.has_comment, 1);
+    ASSERT_STR_EQ(collect.entries[2].amiga_as.comment, "Song 1");
+    /* the album title (track 0) must not leak onto track files */
+    ASSERT(strcmp(collect.entries[2].amiga_as.comment, "Album") != 0);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
+/*
+ * Titles flowing across pack boundaries, the TAB "same as previous
+ * track" shorthand, and resynchronization via the character-position
+ * nibble after zero padding.
+ */
+static odfs_err_t fake_read_cdtext_flow(void *ctx, uint8_t **buf_out,
+                                        size_t *len_out)
+{
+    static const uint8_t response[] = {
+        0x00, 0x62, 0x00, 0x00,
+        /* track 1 title spans two packs: "Blue Monday Extended" */
+        0x80, 0x01, 0x00, 0x00,
+        'B', 'l', 'u', 'e', ' ', 'M', 'o', 'n', 'd', 'a', 'y', ' ',
+        0x00, 0x00,
+        /* continuation pack: char position 12 */
+        0x80, 0x01, 0x01, 0x0c,
+        'E', 'x', 't', 'e', 'n', 'd', 'e', 'd', 0x00, '\t', 0x00, 0x00,
+        0x00, 0x00,
+        /* track 3 restarts cleanly after the padding above */
+        0x80, 0x03, 0x02, 0x00,
+        'C', 'l', 'o', 's', 'e', 'r', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00
+    };
+    uint8_t *buf;
+
+    (void)ctx;
+
+    buf = odfs_malloc(sizeof(response));
+    if (!buf)
+        return ODFS_ERR_NOMEM;
+    memcpy(buf, response, sizeof(response));
+    *buf_out = buf;
+    *len_out = sizeof(response);
+    return ODFS_OK;
+}
+
+TEST(cdda_cdtext_titles_flow_and_tab_shorthand)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t track;
+    odfs_mount_opts_t opts;
+    void *backend_ctx = NULL;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 3;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].control = 0x00;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 1;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x00;
+    toc.sessions[1].start_lba = 1;
+    toc.sessions[1].length = 1;
+    toc.sessions[2].number = 3;
+    toc.sessions[2].control = 0x00;
+    toc.sessions[2].start_lba = 2;
+    toc.sessions[2].length = 1;
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    media_ops.read_cdtext = fake_read_cdtext_flow;
+    media.ops = &media_ops;
+    media.ctx = NULL;
+
+    odfs_mount_opts_default(&opts);
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, &opts, &media,
+                                  &root, &backend_ctx));
+
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track01.wav", &track));
+    ASSERT_EQ(track.amiga_as.has_comment, 1);
+    ASSERT_STR_EQ(track.amiga_as.comment, "Blue Monday Extended");
+
+    /* TAB title: same as the previous track */
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track02.wav", &track));
+    ASSERT_EQ(track.amiga_as.has_comment, 1);
+    ASSERT_STR_EQ(track.amiga_as.comment, "Blue Monday Extended");
+
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track03.wav", &track));
+    ASSERT_EQ(track.amiga_as.has_comment, 1);
+    ASSERT_STR_EQ(track.amiga_as.comment, "Closer");
+
     cdda_backend_ops.unmount(backend_ctx);
 }
 

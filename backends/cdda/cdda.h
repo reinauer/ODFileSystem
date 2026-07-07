@@ -38,6 +38,7 @@ typedef struct cdda_track {
     uint32_t length_frames; /* number of frames */
     uint64_t data_size;    /* PCM data size in bytes */
     uint64_t file_size;    /* total file size (header + data) */
+    char     title[ODFS_AMIGA_COMMENT_MAX]; /* CD-Text title, "" if none */
 } cdda_track_t;
 
 /* CDDA mount context */

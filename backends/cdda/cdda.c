@@ -372,6 +372,99 @@ static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
     return cdda_appendf(buf, buf_size, used, "%s\n", value);
 }
 
+static void cdda_store_track_title(cdda_context_t *ctx, int track,
+                                   const char *title, size_t len)
+{
+    cdda_track_t *trk = NULL;
+
+    /* track 0 is the album title; only per-track titles become comments */
+    if (track <= 0 || len == 0)
+        return;
+
+    for (int i = 0; i < ctx->track_count; i++) {
+        if (ctx->tracks[i].number == track) {
+            trk = &ctx->tracks[i];
+            break;
+        }
+    }
+    if (!trk)
+        return; /* data track or beyond the TOC */
+
+    /* a title of a single TAB means "same as the previous track" */
+    if (len == 1 && title[0] == '\t') {
+        for (int i = 0; i < ctx->track_count; i++) {
+            if (ctx->tracks[i].number == track - 1) {
+                memcpy(trk->title, ctx->tracks[i].title,
+                       sizeof(trk->title));
+                return;
+            }
+        }
+        return;
+    }
+
+    cdda_sanitize_ascii(trk->title, sizeof(trk->title),
+                        (const uint8_t *)title, len);
+}
+
+/*
+ * Decode per-track TITLE strings (pack type 0x80, block 0) into the
+ * track table. Characters flow across packs as NUL-separated strings:
+ * each NUL ends the current track's title and starts the next track's.
+ * pack[1] names the track the pack's first character belongs to and
+ * the low nibble of byte 3 is that character's position within the
+ * string, so a zero position resynchronizes the walk.
+ */
+static void cdda_extract_track_titles(cdda_context_t *ctx,
+                                      const uint8_t *raw, size_t pack_count)
+{
+    char cur[ODFS_AMIGA_COMMENT_MAX * 2];
+    size_t cur_len = 0;
+    int cur_track = -1;
+    int skip_current = 0;
+
+    for (size_t i = 0; i < pack_count; i++) {
+        const uint8_t *pack = raw + 4u + i * 18u;
+        uint8_t type = pack[0];
+        uint8_t track = pack[1];
+        uint8_t bncp = pack[3];
+
+        if (type != 0x80)
+            continue;
+        if (((bncp >> 4) & 0x07) != 0)
+            continue; /* first character-set block only */
+        if (bncp & 0x80)
+            continue; /* DBCS is not decoded */
+
+        if ((bncp & 0x0f) == 0) {
+            /* pack starts a fresh string: resynchronize */
+            cur_track = track;
+            cur_len = 0;
+            skip_current = 0;
+        } else if (cur_track < 0) {
+            /* joined mid-string: the head of this title is missing */
+            cur_track = track;
+            cur_len = 0;
+            skip_current = 1;
+        }
+
+        for (int b = 0; b < 12; b++) {
+            uint8_t ch = pack[4 + b];
+
+            if (ch == 0) {
+                if (!skip_current)
+                    cdda_store_track_title(ctx, cur_track, cur, cur_len);
+                cur_track++;
+                cur_len = 0;
+                skip_current = 0;
+            } else if (cur_len + 1 < sizeof(cur)) {
+                cur[cur_len++] = (char)ch;
+            }
+        }
+    }
+    /* a string not yet NUL-terminated at the end of the packs is
+     * incomplete; drop it rather than store a truncated title */
+}
+
 static void cdda_generate_cdtext(cdda_context_t *ctx)
 {
     uint8_t *raw = NULL;
@@ -401,6 +494,8 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
         odfs_free(raw);
         return;
     }
+
+    cdda_extract_track_titles(ctx, raw, pack_count);
 
     field_cap = pack_count * 12u;
     field_buf = odfs_malloc(field_cap);
@@ -809,6 +904,29 @@ static void cdda_unmount(void *backend_ctx)
 /* readdir                                                             */
 /* ------------------------------------------------------------------ */
 
+static void cdda_fill_track_node(const cdda_context_t *ctx, int i,
+                                 odfs_node_t *node)
+{
+    memset(node, 0, sizeof(*node));
+    node->id = ctx->tracks[i].number;
+    node->parent_id = 0;
+    node->backend = ODFS_BACKEND_CDDA;
+    node->kind = ODFS_NODE_VIRTUAL;
+    node->size = ctx->tracks[i].file_size;
+    node->extent.lba = (uint32_t)(i + 2);
+    node->extent.length = (uint32_t)ctx->tracks[i].file_size;
+
+    cdda_track_name(ctx->tracks[i].number, ctx->file_format,
+                    node->name, sizeof(node->name));
+
+    /* CD-Text track title becomes the AmigaDOS file comment */
+    if (ctx->tracks[i].title[0] != '\0') {
+        memcpy(node->amiga_as.comment, ctx->tracks[i].title,
+               sizeof(node->amiga_as.comment));
+        node->amiga_as.has_comment = 1;
+    }
+}
+
 static odfs_err_t cdda_readdir(void *backend_ctx,
                                  odfs_cache_t *cache,
                                  odfs_log_state_t *log,
@@ -843,18 +961,8 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         odfs_node_t node;
         if (i < 0)
             continue;
-        memset(&node, 0, sizeof(node));
 
-        node.id = ctx->tracks[i].number;
-        node.parent_id = 0;
-        node.backend = ODFS_BACKEND_CDDA;
-        node.kind = ODFS_NODE_VIRTUAL;
-        node.size = ctx->tracks[i].file_size;
-        node.extent.lba = (uint32_t)(i + 2);
-        node.extent.length = (uint32_t)ctx->tracks[i].file_size;
-
-        cdda_track_name(ctx->tracks[i].number, ctx->file_format,
-                        node.name, sizeof(node.name));
+        cdda_fill_track_node(ctx, i, &node);
 
         odfs_err_t err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
@@ -1063,15 +1171,7 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
         cdda_track_name(ctx->tracks[i].number, ctx->file_format,
                         tname, sizeof(tname));
         if (odfs_strcasecmp(name, tname) == 0) {
-            memset(out, 0, sizeof(*out));
-            out->id = ctx->tracks[i].number;
-            out->parent_id = 0;
-            out->backend = ODFS_BACKEND_CDDA;
-            out->kind = ODFS_NODE_VIRTUAL;
-            out->size = ctx->tracks[i].file_size;
-            out->extent.lba = (uint32_t)(i + 2);
-            out->extent.length = (uint32_t)ctx->tracks[i].file_size;
-            memcpy(out->name, tname, strlen(tname) + 1);
+            cdda_fill_track_node(ctx, i, out);
             return ODFS_OK;
         }
     }

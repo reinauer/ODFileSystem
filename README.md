@@ -120,7 +120,7 @@ in on-disc order using `~2`, `~3`, and so on.
 
 ### CDDA
 
-Audio tracks are exposed as virtual WAV files. On mixed-mode discs they appear in a `CDDA/` directory, and on pure audio discs they appear at the root.
+Audio tracks are exposed as virtual WAV files. On mixed-mode discs they appear in a `CDDA/` directory, and on pure audio discs they appear at the root. When the drive returns CD-Text, the disc and track metadata is exposed as a `CD-TEXT.txt` file and each track's title becomes the AmigaDOS file comment on its virtual audio file.
 
 ### Amiga Rock Ridge AS
 
