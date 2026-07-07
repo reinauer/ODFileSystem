@@ -188,6 +188,12 @@ static int amiga_can_read_direct(handler_global_t *g, const void *buf,
     return amiga_direct_memtype_ok(de->de_BufMemType, buf, len);
 }
 
+static odfs_err_t amiga_read_hi(handler_global_t *g,
+                                struct IOStdReq *req,
+                                uint32_t lba,
+                                uint32_t bytes,
+                                void *buf);
+
 static odfs_err_t amiga_read_direct(handler_global_t *g,
                                     struct IOStdReq *req,
                                     uint32_t lba,
@@ -207,15 +213,14 @@ static odfs_err_t amiga_read_direct(handler_global_t *g,
         byte_offset_lo = lba * g->sector_size;
     }
 
+    if (byte_offset_hi != 0)
+        return amiga_read_hi(g, req, lba, bytes, buf);
+
     req->io_Offset = byte_offset_lo;
-    req->io_Actual = byte_offset_hi;
+    req->io_Actual = 0;
     req->io_Length = bytes;
     req->io_Data = buf;
-
-    if (byte_offset_hi != 0)
-        req->io_Command = TD_READ64;
-    else
-        req->io_Command = CMD_READ;
+    req->io_Command = CMD_READ;
 
     if (DoIO((struct IORequest *)req) != 0 ||
         req->io_Error != 0 ||
@@ -237,6 +242,159 @@ static odfs_err_t amiga_read_direct(handler_global_t *g,
     return ODFS_OK;
 }
 #endif
+
+#ifndef NSCMD_TD_READ64
+#define NSCMD_TD_READ64 0xC000  /* devices/newstyle.h */
+#endif
+
+/*
+ * Issue a SCSI READ(10) through HD_SCSICMD. The workhorse fallback for
+ * byte offsets past 4 GiB on drivers that implement neither TD64 nor
+ * NSD 64-bit commands: READ(10) addresses by block number, so the
+ * 32-bit byte-offset limit of CMD_READ never enters the picture. Every
+ * ATAPI/SCSI CD/DVD drive speaks it.
+ */
+static odfs_err_t scsi_read10(handler_global_t *g,
+                              struct IOStdReq *req,
+                              uint32_t lba,
+                              uint32_t bytes,
+                              void *buf,
+                              LONG *io_error_out)
+{
+    uint8_t cmd[10];
+    uint8_t sense[32];
+    struct SCSICmd scsi;
+    uint32_t blocks = bytes / 2048;
+    LONG io_rc;
+
+    (void)g;
+
+    memset(cmd, 0, sizeof(cmd));
+    memset(sense, 0, sizeof(sense));
+    memset(&scsi, 0, sizeof(scsi));
+
+    cmd[0] = 0x28; /* READ(10) */
+    cmd[2] = (uint8_t)(lba >> 24);
+    cmd[3] = (uint8_t)(lba >> 16);
+    cmd[4] = (uint8_t)(lba >> 8);
+    cmd[5] = (uint8_t)lba;
+    cmd[7] = (uint8_t)(blocks >> 8);
+    cmd[8] = (uint8_t)blocks;
+
+    scsi.scsi_Data = (UWORD *)buf;
+    scsi.scsi_Length = bytes;
+    scsi.scsi_CmdLength = 10;
+    scsi.scsi_Command = cmd;
+    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
+
+    req->io_Command = HD_SCSICMD;
+    req->io_Data    = &scsi;
+    req->io_Length  = sizeof(scsi);
+
+    io_rc = DoIO((struct IORequest *)req);
+    if (io_error_out)
+        *io_error_out = req->io_Error;
+    if (io_rc != 0 || req->io_Error != 0 || scsi.scsi_Status != 0 ||
+        scsi.scsi_Actual != bytes)
+        return ODFS_ERR_IO;
+
+    return ODFS_OK;
+}
+
+/*
+ * Read bytes at a byte offset of 4 GiB or more (only reachable with
+ * 2048-byte sectors, so lba > 0x1FFFFF). CMD_READ's ULONG io_Offset
+ * cannot express the offset; it silently wraps — reading the wrong
+ * sectors — so a 64-bit-capable path is mandatory here.
+ *
+ * Drivers disagree on which one they provide (issue #7:
+ * telmexatapi.device answers TD_READ64 with IOERR_NOCMD). Probe
+ * TD_READ64, then NSCMD_TD_READ64, then fall back to SCSI READ(10),
+ * and remember the first method that works for the rest of the mount.
+ * Only probe rejections (IOERR_NOCMD) advance the chain: once a method
+ * has been selected, a failure is a real medium error and is reported,
+ * not papered over by switching commands.
+ */
+static odfs_err_t amiga_read_hi(handler_global_t *g,
+                                struct IOStdReq *req,
+                                uint32_t lba,
+                                uint32_t bytes,
+                                void *buf)
+{
+    int mode = g->read64_mode;
+    int probing = (mode == ODFS_READ64_UNPROBED);
+    LONG io_error = 0;
+
+    if (mode == ODFS_READ64_NONE)
+        return ODFS_ERR_UNSUPPORTED;
+    if (probing)
+        mode = ODFS_READ64_TD64;
+
+    for (;;) {
+        odfs_err_t err;
+
+        if (mode == ODFS_READ64_TD64 || mode == ODFS_READ64_NSD) {
+            req->io_Command = (mode == ODFS_READ64_TD64) ? TD_READ64
+                                                         : NSCMD_TD_READ64;
+            req->io_Offset  = lba << 11;
+            req->io_Actual  = lba >> 21; /* high 32 bits of byte offset */
+            req->io_Length  = bytes;
+            req->io_Data    = buf;
+
+            if (DoIO((struct IORequest *)req) == 0 &&
+                req->io_Error == 0 &&
+                req->io_Actual == bytes)
+                err = ODFS_OK;
+            else {
+                io_error = req->io_Error;
+                err = ODFS_ERR_IO;
+            }
+        } else {
+            err = scsi_read10(g, req, lba, bytes, buf, &io_error);
+        }
+
+        if (err == ODFS_OK) {
+            if (probing) {
+                g->read64_mode = mode;
+                ODFS_INFO(&g->log, ODFS_SUB_IO,
+                          "reads past 4 GiB use %s",
+                          mode == ODFS_READ64_TD64 ? "TD_READ64" :
+                          mode == ODFS_READ64_NSD  ? "NSCMD_TD_READ64" :
+                                                     "SCSI READ(10)");
+            }
+            return ODFS_OK;
+        }
+
+        /* an unsupported command only advances the probe chain */
+        if (probing && io_error == IOERR_NOCMD &&
+            mode != ODFS_READ64_SCSI) {
+            mode++;
+            continue;
+        }
+
+        if (probing && mode == ODFS_READ64_SCSI &&
+            io_error == IOERR_NOCMD) {
+            g->read64_mode = ODFS_READ64_NONE;
+            ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                       "device offers no way to read past 4 GiB "
+                       "(TD64/NSD/HD_SCSICMD all rejected); large "
+                       "media will be partly unreadable");
+            return ODFS_ERR_UNSUPPORTED;
+        }
+
+        ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                   "64-bit read failed unit=%lu lba=%lu bytes=%lu "
+                   "mode=%d io_Error=%ld",
+                   (unsigned long)g->devunit,
+                   (unsigned long)lba,
+                   (unsigned long)bytes,
+                   mode,
+                   (long)io_error);
+        return ODFS_ERR_IO;
+    }
+}
 
 static LONG changeint_signal(APTR data)
 {
@@ -448,15 +606,22 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
             byte_offset_lo = cur_lba * g->sector_size;
         }
 
+        if (byte_offset_hi != 0) {
+            if (amiga_read_hi(g, req, cur_lba, chunk, g->dma_buf)
+                    != ODFS_OK) {
+                ret = ODFS_ERR_IO;
+                goto out;
+            }
+            memcpy(out + done, g->dma_buf, chunk);
+            done += chunk;
+            continue;
+        }
+
         req->io_Offset = byte_offset_lo;
-        req->io_Actual = byte_offset_hi;
+        req->io_Actual = 0;
         req->io_Length = chunk;
         req->io_Data   = g->dma_buf;
-
-        if (byte_offset_hi != 0)
-            req->io_Command = TD_READ64;
-        else
-            req->io_Command = CMD_READ;
+        req->io_Command = CMD_READ;
 
         if (DoIO((struct IORequest *)req) != 0 ||
             req->io_Error != 0 ||
@@ -2098,8 +2263,11 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
 #if !ODFS_AMIGA_OS4
     fib->fib_EntryType = fib->fib_DirEntryType;
 #endif
-    fib->fib_Size = (LONG)info.size;
-    fib->fib_NumBlocks = (info.size + 511) / 512;
+    /* fib_Size is a signed LONG; a >=2 GiB DVD file would wrap negative
+     * and make copy tools misbehave. Saturate like other filesystems. */
+    fib->fib_Size = (info.size > 0x7FFFFFFFull) ? 0x7FFFFFFFl
+                                                : (LONG)info.size;
+    fib->fib_NumBlocks = (LONG)((info.size + 511) / 512);
     fib->fib_Protection = info.protection;
     fib->fib_Date = info.date;
 
@@ -3704,7 +3872,8 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
                 ed->ed_Type = ST_FILE;
         }
         if (data >= ED_SIZE)
-            ed->ed_Size = (ULONG)entry->size;
+            ed->ed_Size = (entry->size > 0xFFFFFFFFull)
+                              ? 0xFFFFFFFFul : (ULONG)entry->size;
 
         ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
         *cursor = ed->ed_Next;
@@ -3740,7 +3909,8 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
     if (data >= ED_TYPE)
         ed->ed_Type = info.fib_type;
     if (data >= ED_SIZE)
-        ed->ed_Size = (ULONG)info.size;
+        ed->ed_Size = (info.size > 0xFFFFFFFFull)
+                      ? 0xFFFFFFFFul : (ULONG)info.size;
     if (data >= ED_PROTECTION)
         ed->ed_Prot = info.protection;
     if (data >= ED_DATE) {

@@ -122,6 +122,12 @@ typedef struct handler_global {
     int                  toc_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  last_session_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  read_cd_audio;   /* -1 unknown, 0 unsupported, 1 ok */
+    int                  read64_mode;     /* how to read past 4 GiB: see ODFS_READ64_* */
+#define ODFS_READ64_UNPROBED 0
+#define ODFS_READ64_TD64     1   /* TD_READ64 (trackdisk64) */
+#define ODFS_READ64_NSD      2   /* NSCMD_TD_READ64 (new style device) */
+#define ODFS_READ64_SCSI     3   /* SCSI READ(10) via HD_SCSICMD */
+#define ODFS_READ64_NONE     (-1)
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
 
     /* media change */
