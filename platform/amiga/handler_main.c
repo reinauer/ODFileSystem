@@ -53,7 +53,7 @@
 #define ODFS_GIT_VERSION "unknown"
 #endif
 
-static const char version_string[] __attribute__((used)) =
+const char version_string[] __attribute__((used)) =
     "$VER: ODFileSystem " ODFS_GIT_VERSION
     " (" ODFS_AMIGA_DATE ")";
 
@@ -82,6 +82,7 @@ static int toc_has_data_track(const odfs_toc_t *toc);
 static void copy_pure_audio_volume_name(handler_global_t *g);
 #endif
 static int scsi_is_unsupported_command(const uint8_t *sense);
+
 
 /* ------------------------------------------------------------------ */
 /* Amiga media adapter                                                 */
