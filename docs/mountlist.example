@@ -18,6 +18,12 @@ CD0:
     Priority  = 5
     GlobVec   = -1
     DosType   = 0x43443031
+    /* ROM CD filesystems (e.g. the A4091's) register 'CD01' in
+     * FileSystem.resource; without ForceLoad, Mount silently uses
+     * that ROM filesystem instead of L:ODFileSystem and overrides
+     * StackSize.
+     */
+    ForceLoad = 1
     /* Device and unit — adjust for your hardware:
      *
      * Real Amiga SCSI:

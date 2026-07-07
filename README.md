@@ -303,6 +303,7 @@ CD0:
     Priority  = 5
     GlobVec   = -1
     DosType   = 0x43443031
+    ForceLoad = 1
     Device    = scsi.device
     Unit      = 2
     Flags     = 0
@@ -318,6 +319,11 @@ CD0:
     Activate  = 1
 #
 ```
+
+`ForceLoad = 1` matters on systems whose controller ROM registers a CD
+filesystem for DosType 'CD01' in FileSystem.resource (the A4091 does):
+without it, Mount silently uses that ROM filesystem instead of
+`L:ODFileSystem` and overrides the mountlist StackSize.
 
 Optional handler control flags can be supplied through the mount entry control string, for example:
 
