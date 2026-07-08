@@ -237,7 +237,13 @@ static struct ExamineData *alloc_examine_data_from_context(
         return NULL;
 
     ed->EXDinfo = 0;
-    ed->Type = info.is_dir ? FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
+    if (node->kind == ODFS_NODE_SYMLINK)
+        /* FSOF_LINK marks it a link (EXD_IS_LINK); the FSO_TYPE_SOFTLINK
+         * descriptor in the low byte makes EXD_IS_SOFTLINK true too. DOS
+         * then resolves the target with FSReadSoftLink. */
+        ed->Type = FSO_TYPE_SOFTLINK | FSOF_LINK;
+    else
+        ed->Type = info.is_dir ? FSO_TYPE_DIRECTORY : FSO_TYPE_FILE;
     ed->FileSize = info.is_dir ? -1LL : (int64)info.size;
     ed->Date = info.date;
     ed->RefCount = 0;
@@ -736,12 +742,28 @@ static int32 vp_read_soft_link(struct FSVP *vp,
                                STRPTR buf,
                                int32 bufsize)
 {
-    set_unsupported(vp, res2);
-    (void)rel_dir;
-    (void)linkname;
-    (void)buf;
-    (void)bufsize;
-    return DOSFALSE;
+    handler_global_t *g = vp_require_global(vp, res2);
+    LONG err = 0;
+    LONG len;
+
+    if (!g)
+        return -1;
+
+    /*
+     * FSReadSoftLink returns the target length, -1 on error, or -2 when
+     * the buffer is too small (res2 carries the DOS error). The shared
+     * resolver reads directory sectors, which in this caller-task
+     * context route through a per-task IO request; hold the filesystem
+     * semaphore around it like every other vector callback.
+     */
+    fs_lock(g);
+    len = odfs_handler_read_soft_link(g, lock_from_vector(rel_dir),
+                                      (const char *)linkname,
+                                      (char *)buf, (LONG)bufsize, &err);
+    fs_unlock(g);
+
+    set_dos_error(res2, err);
+    return len;
 }
 
 static int32 vp_same_lock(struct FSVP *vp,

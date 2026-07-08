@@ -3204,120 +3204,167 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 }
 
 /*
- * ACTION_READ_LINK: Arg1 = dir lock, Arg2 = path that stopped with
- * ERROR_IS_SOFT_LINK (a plain C string, unlike other packets), Arg3 =
- * output buffer, Arg4 = buffer size. Res1 = result length, -1 on error,
- * -2 if the buffer is too small (per the ReadLink() autodoc). The link
- * target is returned in AmigaDOS path syntax with any unconsumed path
- * remainder re-appended, so DOS can retry the original request with it.
+ * Working set for odfs_handler_read_soft_link, heap-allocated rather
+ * than placed on the stack. On OS4 the FSReadSoftLink vector runs in
+ * the calling process's context, so this resolver executes on the
+ * caller's stack; with ODFS_NAME_MAX at 256 the three embedded nodes
+ * plus the two path buffers are ~2.9 KiB, enough to overflow a small
+ * caller stack when a path crosses a symlink. Keep them off the stack,
+ * matching how the lock/examine vector paths resolve into a pooled
+ * entry instead of stack nodes.
  */
-static void action_read_link(handler_global_t *g, struct DosPacket *pkt)
+typedef struct readlink_scratch {
+    odfs_node_t     result;
+    odfs_node_t     parent;
+    odfs_node_t     grandparent;
+    odfs_link_hit_t hit;
+    char            target[512];
+    char            apath[512]; /* "amiga" is a predefined macro on m68k */
+} readlink_scratch_t;
+
+LONG odfs_handler_read_soft_link(handler_global_t *g,
+                                 odfs_lock_t *parent_lock,
+                                 const char *path,
+                                 char *buf, LONG bufsize,
+                                 LONG *err_out)
 {
-    odfs_lock_t *parent_lock = LOCK_FROM_BPTR(pkt->dp_Arg1);
-    const char *path = (const char *)pkt->dp_Arg2;
-    char *user_buf = (char *)pkt->dp_Arg3;
-    LONG user_size = pkt->dp_Arg4;
     const odfs_node_t *start;
     const odfs_node_t *start_parent;
     const odfs_node_t *start_grandparent;
-    odfs_node_t result, parent, grandparent;
-    odfs_link_hit_t hit;
-    char target[512];
-    char apath[512]; /* "amiga" is a predefined macro on m68k-amigaos-gcc */
+    readlink_scratch_t *s;
     size_t alen;
     odfs_err_t err;
+    LONG ret = -1;
+    LONG rerr = ERROR_REQUIRED_ARG_MISSING;
 
-    pkt->dp_Res1 = -1;
+    if (err_out)
+        *err_out = 0;
 
-    if (!path || !user_buf || user_size <= 0) {
-        pkt->dp_Res2 = ERROR_REQUIRED_ARG_MISSING;
-        return;
+    if (!g || !path || !buf || bufsize <= 0) {
+        if (err_out)
+            *err_out = ERROR_REQUIRED_ARG_MISSING;
+        return -1;
     }
 
     if (parent_lock) {
         LONG err_dos;
 
         if (!lock_is_active(g, parent_lock)) {
-            pkt->dp_Res2 = ERROR_INVALID_LOCK;
-            return;
+            if (err_out)
+                *err_out = ERROR_INVALID_LOCK;
+            return -1;
         }
         err_dos = validate_object_volume(g, parent_lock->entry->volume);
         if (err_dos != 0) {
-            pkt->dp_Res2 = err_dos;
-            return;
+            if (err_out)
+                *err_out = err_dos;
+            return -1;
         }
         start = lock_node(parent_lock);
         start_parent = lock_parent_node(parent_lock);
         start_grandparent = lock_grandparent_node(parent_lock);
     } else {
         if (!g->mounted) {
-            pkt->dp_Res2 = ERROR_NO_DISK;
-            return;
+            if (err_out)
+                *err_out = ERROR_NO_DISK;
+            return -1;
         }
         start = &g->mount.root;
         start_parent = &g->mount.root;
         start_grandparent = &g->mount.root;
     }
 
-    memset(&hit, 0, sizeof(hit));
+    s = odfs_amiga_alloc_mem(sizeof(*s), MEMF_PUBLIC);
+    if (!s) {
+        if (err_out)
+            *err_out = ERROR_NO_FREE_STORE;
+        return -1;
+    }
+
+    memset(&s->hit, 0, sizeof(s->hit));
     err = resolve_amiga_path(g, start, start_parent, start_grandparent,
-                             path, &result, &parent, &grandparent,
-                             NULL, &hit);
+                             path, &s->result, &s->parent, &s->grandparent,
+                             NULL, &s->hit);
     if (err == ODFS_OK) {
         /* the object exists but is not a soft link */
-        pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
-        return;
+        rerr = ERROR_OBJECT_WRONG_TYPE;
+        goto out;
     }
-    if (err != ODFS_ERR_IS_SYMLINK || hit.name[0] == '\0') {
-        pkt->dp_Res2 = odfs_err_to_dos(err);
-        return;
+    if (err != ODFS_ERR_IS_SYMLINK || s->hit.name[0] == '\0') {
+        rerr = odfs_err_to_dos(err);
+        goto out;
     }
 
-    err = odfs_readlink(&g->mount, &hit.parent, hit.name,
-                        target, sizeof(target));
+    err = odfs_readlink(&g->mount, &s->hit.parent, s->hit.name,
+                        s->target, sizeof(s->target));
     if (err != ODFS_OK) {
-        pkt->dp_Res2 = odfs_err_to_dos(err);
-        return;
+        rerr = odfs_err_to_dos(err);
+        goto out;
     }
 
-    if (odfs_posix_to_amiga_path(target, apath, sizeof(apath)) != ODFS_OK) {
-        pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
-        return;
+    if (odfs_posix_to_amiga_path(s->target, s->apath,
+                                 sizeof(s->apath)) != ODFS_OK) {
+        rerr = ERROR_LINE_TOO_LONG;
+        goto out;
     }
-    alen = strlen(apath);
+    alen = strlen(s->apath);
 
     /* re-append what followed the link in the original path */
-    if (hit.rest && *hit.rest) {
-        const char *r = hit.rest;
+    if (s->hit.rest && *s->hit.rest) {
+        const char *r = s->hit.rest;
         size_t rlen;
 
         if (*r == '/')
             r++;
-        if (alen > 0 && apath[alen - 1] != '/' && apath[alen - 1] != ':') {
-            if (alen + 1 >= sizeof(apath)) {
-                pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
-                return;
+        if (alen > 0 && s->apath[alen - 1] != '/' && s->apath[alen - 1] != ':') {
+            if (alen + 1 >= sizeof(s->apath)) {
+                rerr = ERROR_LINE_TOO_LONG;
+                goto out;
             }
-            apath[alen++] = '/';
+            s->apath[alen++] = '/';
         }
         rlen = strlen(r);
-        if (alen + rlen >= sizeof(apath)) {
-            pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
-            return;
+        if (alen + rlen >= sizeof(s->apath)) {
+            rerr = ERROR_LINE_TOO_LONG;
+            goto out;
         }
-        memcpy(apath + alen, r, rlen + 1);
+        memcpy(s->apath + alen, r, rlen + 1);
         alen += rlen;
     }
 
-    if ((LONG)(alen + 1) > user_size) {
-        pkt->dp_Res1 = -2; /* buffer too small */
-        pkt->dp_Res2 = ERROR_LINE_TOO_LONG;
-        return;
+    if ((LONG)(alen + 1) > bufsize) {
+        rerr = ERROR_LINE_TOO_LONG;
+        ret = -2; /* buffer too small */
+        goto out;
     }
 
-    memcpy(user_buf, apath, alen + 1);
-    pkt->dp_Res1 = (LONG)alen;
-    pkt->dp_Res2 = 0;
+    memcpy(buf, s->apath, alen + 1);
+    odfs_amiga_free_mem(s, sizeof(*s));
+    return (LONG)alen;
+
+out:
+    odfs_amiga_free_mem(s, sizeof(*s));
+    if (err_out)
+        *err_out = rerr;
+    return ret;
+}
+
+/*
+ * ACTION_READ_LINK: Arg1 = dir lock, Arg2 = path that stopped with
+ * ERROR_IS_SOFT_LINK (a plain C string, unlike other packets), Arg3 =
+ * output buffer, Arg4 = buffer size. Res1 = result length, -1 on error,
+ * -2 if the buffer is too small (per the ReadLink() autodoc).
+ */
+static void action_read_link(handler_global_t *g, struct DosPacket *pkt)
+{
+    LONG err = 0;
+
+    pkt->dp_Res1 = odfs_handler_read_soft_link(g,
+                                               LOCK_FROM_BPTR(pkt->dp_Arg1),
+                                               (const char *)pkt->dp_Arg2,
+                                               (char *)pkt->dp_Arg3,
+                                               pkt->dp_Arg4, &err);
+    pkt->dp_Res2 = err;
 }
 
 static void action_free_lock(handler_global_t *g, struct DosPacket *pkt)

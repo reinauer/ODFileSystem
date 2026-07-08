@@ -325,6 +325,22 @@ typedef struct odfs_handler_node_info {
 void odfs_handler_fill_node_info(handler_global_t *g,
                                  const odfs_node_t *node,
                                  odfs_handler_node_info_t *info);
+
+/*
+ * Resolve the soft link that `path` (relative to parent_lock, or the
+ * volume root when parent_lock is NULL) stopped on, writing the target
+ * in AmigaDOS path syntax — with any unconsumed path remainder
+ * re-appended — into buf. Shared by the packet ACTION_READ_LINK handler
+ * and the OS4 FSReadSoftLink vector. Returns the target length in bytes
+ * (excluding the terminating NUL) on success, -1 on error, or -2 when
+ * buf is too small; *err_out receives the DOS error code for the -1/-2
+ * cases and 0 on success.
+ */
+LONG odfs_handler_read_soft_link(handler_global_t *g,
+                                 odfs_lock_t *parent_lock,
+                                 const char *path,
+                                 char *buf, LONG bufsize,
+                                 LONG *err_out);
 #if ODFS_AMIGA_OS4
 LONG odfs_handler_resolve_object_node(handler_global_t *g,
                                       odfs_lock_t *parent_lock,
