@@ -104,8 +104,8 @@ TEST(cue_mode2_2352_reads_cooked_sectors)
 #define TEST_AUDIO_FRAME_SIZE 2352
 
 typedef struct test_dir_entry {
-    char    name[64];
-    char    comment[80];
+    char    name[ODFS_NAME_MAX];
+    char    comment[ODFS_AMIGA_COMMENT_MAX];
     uint8_t has_comment;
 } test_dir_entry_t;
 
