@@ -2199,6 +2199,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
             *cur = g->cdda_root;
             has_grandparent = 1;
             p = end;
+            if (*p == '/')
+                p++;
             continue;
         }
 #endif
