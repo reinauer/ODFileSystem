@@ -65,7 +65,12 @@ typedef struct odfs_extent {
  * the charset converters and disambiguated by namefix when needed.
  */
 #ifndef ODFS_NAME_MAX
-#if ODFS_PLATFORM_AMIGA
+#if ODFS_PLATFORM_AMIGA && defined(__amigaos4__)
+/* OS4 ExamineData carries C-string names, so long Rock Ridge and
+ * Joliet names (up to 255 bytes of UTF-8) are representable natively;
+ * only the legacy FIB path truncates, at its own 106-byte limit. */
+#define ODFS_NAME_MAX 256
+#elif ODFS_PLATFORM_AMIGA
 #define ODFS_NAME_MAX 128
 #else
 #define ODFS_NAME_MAX 512
