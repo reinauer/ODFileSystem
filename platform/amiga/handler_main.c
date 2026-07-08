@@ -53,6 +53,19 @@
 #define ODFS_GIT_VERSION "unknown"
 #endif
 
+/*
+ * DismountDevice() flags, carried in ACTION_SHUTDOWN's dp_Arg1 (V51+).
+ * The m68k NDK predates them, so define locally when the SDK does not.
+ * Only DMDF_KEEPDEVICE changes our teardown: leave the device node
+ * published (for a later remount) instead of removing it from the list.
+ */
+#ifndef DMDF_KEEPDEVICE
+#define DMDF_KEEPDEVICE   (1L << 0)
+#endif
+#ifndef DMDF_REMOVEDEVICE
+#define DMDF_REMOVEDEVICE (1L << 1)
+#endif
+
 const char version_string[] __attribute__((used)) =
     "$VER: ODFileSystem " ODFS_GIT_VERSION
     " (" ODFS_AMIGA_DATE ")";
@@ -61,7 +74,7 @@ const char version_string[] __attribute__((used)) =
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
 static void publish_device_node(handler_global_t *g);
-static void unpublish_device_node(handler_global_t *g);
+static void unpublish_device_node(handler_global_t *g, int keep_device);
 #if ODFS_AMIGA_OS4
 static LONG activate_vector_port(handler_global_t *g);
 static void deactivate_vector_port(handler_global_t *g);
@@ -4670,7 +4683,7 @@ static void publish_device_node(handler_global_t *g)
     UnLockDosList(LDF_DEVICES | LDF_WRITE);
 }
 
-static void unpublish_device_node(handler_global_t *g)
+static void unpublish_device_node(handler_global_t *g, int keep_device)
 {
     struct DeviceNode *devnode;
 
@@ -4678,9 +4691,15 @@ static void unpublish_device_node(handler_global_t *g)
     if (!devnode)
         return;
 
+    /*
+     * Detach the handler process either way: dn_Task = NULL tells DOS the
+     * server is gone. With keep_device the node stays in the devices list
+     * so DOS can restart the handler on the next access (ACTION_SHUTDOWN
+     * with DMDF_KEEPDEVICE); otherwise remove and free the node we own.
+     */
     devnode->dn_Task = NULL;
 
-    if (g->published_devnode_owned) {
+    if (g->published_devnode_owned && !keep_device) {
         if (AttemptLockDosList(LDF_DEVICES | LDF_WRITE)) {
             if (RemDosEntry((struct DosList *)devnode))
                 destroy_device_node(devnode);
@@ -5345,6 +5364,7 @@ void handler_main_startup(struct Message *startup_msg)
     struct DosEnvec *de;
     ULONG dossig, chgsig, waitmask;
     int running = 1;
+    int keep_device;
 
     (void)version_string; /* ensure $VER is not optimized out */
 
@@ -5729,10 +5749,28 @@ void handler_main_startup(struct Message *startup_msg)
 
     /*
      * ---- shutdown ----
-     * Invalidate the vector port first so dos.library stops vectoring
-     * new callers, then tear down DOS-visible state while holding the
-     * filesystem semaphore so in-flight vector calls finish first.
-     * The shutdown packet is replied only after the teardown is done.
+     * ACTION_SHUTDOWN (V51+, from DismountDevice()) passes DismountDevice
+     * flags in dp_Arg1; DMDF_KEEPDEVICE asks us to leave the device node
+     * published for a later remount. ACTION_DIE carries no flags, so it
+     * keeps the historical behavior of removing the node. Only OS4 ever
+     * sends ACTION_SHUTDOWN, so classic/ROM builds fold this to 0.
+     */
+#if ODFS_AMIGA_OS4
+    keep_device = (shutdown_pkt &&
+                   shutdown_pkt->dp_Type == ACTION_SHUTDOWN &&
+                   (shutdown_pkt->dp_Arg1 & DMDF_KEEPDEVICE)) ? 1 : 0;
+    if (keep_device)
+        ODFS_INFO(&g->log, ODFS_SUB_CORE,
+                  "shutdown: keeping device node for remount (DMDF_KEEPDEVICE)");
+#else
+    keep_device = 0;
+#endif
+
+    /*
+     * Invalidate the vector port first so dos.library stops vectoring new
+     * callers, then tear down DOS-visible state while holding the
+     * filesystem semaphore so in-flight vector calls finish first. The
+     * shutdown packet is replied only after the teardown is done.
      */
     ODFS_FS_LOCK(g);
 #if ODFS_AMIGA_OS4
@@ -5741,7 +5779,7 @@ void handler_main_startup(struct Message *startup_msg)
     remove_media_change(g);
     unmount_volume(g);
     drain_all_objects(g);
-    unpublish_device_node(g);
+    unpublish_device_node(g, keep_device);
     ODFS_FS_UNLOCK(g);
 
     if (shutdown_pkt) {
