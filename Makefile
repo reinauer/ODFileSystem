@@ -534,7 +534,7 @@ integration-check: amiga-test
 
 tools: $(TOOL_BINS)
 
-$(HOST_BUILD)/tools/imginfo: tools/imginfo/imginfo.c $(HOST_BUILD)/libodfs.a
+$(HOST_BUILD)/tools/imginfo: tools/imginfo/imginfo.c tools/imgmount.h $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
 	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs

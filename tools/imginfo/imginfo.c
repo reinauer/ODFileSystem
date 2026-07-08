@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "../imgmount.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -48,7 +49,7 @@ int main(int argc, char **argv)
     odfs_log_set_level(&log, ODFS_LOG_INFO);
     odfs_mount_opts_default(&opts);
 
-    err = odfs_mount(&media, &opts, &log, &mnt);
+    err = img_mount_image(&media, &opts, &log, &mnt);
     if (err == ODFS_OK) {
         printf("backend: %s\n", odfs_backend_type_name(mnt.active_backend));
         printf("volume: %s\n", mnt.volume_name);

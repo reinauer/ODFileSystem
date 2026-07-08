@@ -50,6 +50,8 @@ static odfs_err_t img_mount_image(odfs_media_t *media,
         odfs_mount_register_backend(mnt, ODFS_BACKEND_CDDA,
                                     &cdda_backend_ops, cdda_ctx,
                                     &cdda_root);
+        (void)cdda_backend_ops.get_volume_name(cdda_ctx, mnt->volume_name,
+                                               sizeof(mnt->volume_name));
         return ODFS_OK;
     }
 
