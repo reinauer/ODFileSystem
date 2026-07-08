@@ -465,6 +465,82 @@ static void cdda_extract_track_titles(cdda_context_t *ctx,
      * incomplete; drop it rather than store a truncated title */
 }
 
+/*
+ * Render the string-typed packs (0x80-0x85) of one character-set
+ * block as one line per stored string. Characters flow across packs
+ * exactly as in cdda_extract_track_titles(); rendering per pack run
+ * would attribute the tail of one string to the next track's line.
+ * Returns 0 when the text buffer is full.
+ */
+static int cdda_render_cdtext_strings(const uint8_t *raw, size_t pack_count,
+                                      uint8_t type, uint8_t block,
+                                      char *buf, size_t buf_size,
+                                      size_t *used)
+{
+    char cur[256];
+    char clean[256];
+    size_t cur_len = 0;
+    int cur_track = -1;
+    int skip_current = 0;
+
+    for (size_t i = 0; i < pack_count; i++) {
+        const uint8_t *pack = raw + 4u + i * 18u;
+        uint8_t bncp = pack[3];
+
+        if (pack[0] != type)
+            continue;
+        if (((bncp >> 4) & 0x07) != block)
+            continue;
+        if (bncp & 0x80)
+            continue; /* DBCS packs keep the pack-run rendering */
+
+        if ((bncp & 0x0f) == 0) {
+            /* pack starts a fresh string: resynchronize */
+            cur_track = pack[1];
+            cur_len = 0;
+            skip_current = 0;
+        } else if (cur_track < 0) {
+            /* joined mid-string: the head of this string is missing */
+            cur_track = pack[1];
+            cur_len = 0;
+            skip_current = 1;
+        }
+
+        for (int b = 0; b < 12; b++) {
+            uint8_t ch = pack[4 + b];
+
+            if (ch != 0) {
+                if (cur_len + 1 < sizeof(cur))
+                    cur[cur_len++] = (char)ch;
+                continue;
+            }
+
+            if (!skip_current && cur_len != 0) {
+                cdda_sanitize_ascii(clean, sizeof(clean),
+                                    (const uint8_t *)cur, cur_len);
+                if (block != 0 &&
+                    !cdda_appendf(buf, buf_size, used, "BLOCK%02u.", block))
+                    return 0;
+                if (cur_track == 0) {
+                    if (!cdda_appendf(buf, buf_size, used, "DISC.%s=%s\n",
+                                      cdda_cdtext_type_name(type, 0), clean))
+                        return 0;
+                } else if (!cdda_appendf(buf, buf_size, used,
+                                         "TRACK%02u.%s=%s\n", cur_track,
+                                         cdda_cdtext_type_name(type,
+                                                        (uint8_t)cur_track),
+                                         clean)) {
+                    return 0;
+                }
+            }
+            cur_track++;
+            cur_len = 0;
+            skip_current = 0;
+        }
+    }
+    return 1;
+}
+
 static void cdda_generate_cdtext(cdda_context_t *ctx)
 {
     uint8_t *raw = NULL;
@@ -515,6 +591,19 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
         return;
     }
 
+    for (uint8_t type = 0x80; type <= 0x85; type++) {
+        for (uint8_t block = 0; block < 8; block++) {
+            if (!cdda_render_cdtext_strings(raw, pack_count, type, block,
+                                            text, 128u + raw_size * 4u,
+                                            &used)) {
+                odfs_free(field_buf);
+                odfs_free(text);
+                odfs_free(raw);
+                return;
+            }
+        }
+    }
+
     for (size_t i = 0; i < pack_count; i++) {
         const uint8_t *pack = raw + 4u + i * 18u;
         uint8_t type = pack[0];
@@ -522,6 +611,10 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
         uint8_t bncp = pack[3];
         uint8_t block = (bncp >> 4) & 0x07;
         int is_dbcs = (bncp & 0x80) != 0;
+
+        /* string types were rendered above, one line per string */
+        if (type >= 0x80 && type <= 0x85 && !is_dbcs)
+            continue;
 
         if (!have_current ||
             type != current_type ||
