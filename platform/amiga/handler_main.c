@@ -1405,6 +1405,22 @@ static odfs_entry_t *alloc_entry_blank(handler_global_t *g,
     return entry;
 }
 
+/*
+ * alloc_entry_blank() returns NULL both when the entry pool and heap are
+ * exhausted and when there is simply no mounted volume to hang the entry
+ * off (g->current_volume == NULL). Callers that resolve an object from a
+ * device root must not report the latter as ERROR_NO_FREE_STORE: with no
+ * disc in the drive LIST/DIR CD0: would then answer "Not enough memory
+ * available" even with megabytes free (issue #13). Map a missing volume to
+ * the disc-state error instead, mirroring validate_object_volume().
+ */
+static LONG blank_entry_error(const handler_global_t *g)
+{
+    if (!g->current_volume)
+        return g->mounted ? ERROR_DEVICE_NOT_MOUNTED : ERROR_NO_DISK;
+    return ERROR_NO_FREE_STORE;
+}
+
 static odfs_entry_t *retain_entry(odfs_entry_t *entry)
 {
     if (entry)
@@ -2499,7 +2515,7 @@ LONG odfs_handler_lock_object(handler_global_t *g,
 
     entry = alloc_entry_blank(g, g->current_volume);
     if (!entry)
-        return ERROR_NO_FREE_STORE;
+        return blank_entry_error(g);
 
     err_dos = resolve_object_into_entry(g, parent_lock, path, entry);
     if (err_dos != 0) {
@@ -2840,7 +2856,7 @@ LONG odfs_handler_open_object(handler_global_t *g,
 
     entry = alloc_entry_blank(g, g->current_volume);
     if (!entry)
-        return ERROR_NO_FREE_STORE;
+        return blank_entry_error(g);
 
     err_dos = resolve_object_into_entry(g, dirlock, path, entry);
     if (err_dos != 0) {
