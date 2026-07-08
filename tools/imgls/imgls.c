@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "../imgmount.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,7 +91,7 @@ int main(int argc, char **argv)
     if (force_hfs)
         opts.prefer_hfs = 1;
 
-    err = odfs_mount(&media, &opts, &log, &mnt);
+    err = img_mount_image(&media, &opts, &log, &mnt);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: mount failed: %s\n", odfs_err_str(err));
         odfs_media_close(&media);
