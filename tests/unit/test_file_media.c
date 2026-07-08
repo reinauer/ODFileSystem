@@ -274,6 +274,15 @@ TEST(cue_audio_wav_exposes_cdtext_comments)
     /* track 2 has no PERFORMER line: nothing must be invented */
     ASSERT(strstr(buf, "TRACK02.PERFORMER") == NULL);
 
+    /* the disc title names the volume */
+    {
+        char volname[64];
+
+        ASSERT_OK(cdda_backend_ops.get_volume_name(backend_ctx, volname,
+                                                   sizeof(volname)));
+        ASSERT_STR_EQ(volname, "A Kind Of Magic");
+    }
+
     cdda_backend_ops.unmount(backend_ctx);
     odfs_media_close(&media);
 

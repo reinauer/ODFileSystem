@@ -48,6 +48,7 @@ typedef struct cdda_context {
     int                is_mixed_mode;   /* has both data and audio tracks */
     cdda_file_format_t file_format;
     char               volume_name[32];
+    char               album_title[32]; /* CD-Text disc title, "" if none */
     char               *cddb_text;
     size_t             cddb_size;
     char               *cdtext_text;

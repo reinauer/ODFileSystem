@@ -387,6 +387,15 @@ TEST(cdda_cdtext_file_exposes_parsed_metadata)
     /* the album title (track 0) must not leak onto track files */
     ASSERT(strcmp(collect.entries[2].amiga_as.comment, "Album") != 0);
 
+    /* ...it names the volume instead of the generic disc-id label */
+    {
+        char volname[64];
+
+        ASSERT_OK(cdda_backend_ops.get_volume_name(backend_ctx, volname,
+                                                   sizeof(volname)));
+        ASSERT_STR_EQ(volname, "Album");
+    }
+
     cdda_backend_ops.unmount(backend_ctx);
 }
 

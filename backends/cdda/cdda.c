@@ -147,6 +147,24 @@ static void cdda_set_volume_name(cdda_context_t *ctx)
     ctx->volume_name[19] = '\0';
 }
 
+/*
+ * A CD-Text disc title makes a friendlier volume name than the
+ * generic disc-id label. ':' and '/' cannot appear in an AmigaDOS
+ * volume name.
+ */
+static void cdda_set_album_volume_name(cdda_context_t *ctx)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(ctx->volume_name) - 1 &&
+                ctx->album_title[i] != '\0'; i++) {
+        char ch = ctx->album_title[i];
+
+        ctx->volume_name[i] = (ch == ':' || ch == '/') ? '-' : ch;
+    }
+    ctx->volume_name[i] = '\0';
+}
+
 static int cdda_appendf(char *buf, size_t buf_size, size_t *used,
                         const char *fmt, ...)
 {
@@ -377,9 +395,16 @@ static void cdda_store_track_title(cdda_context_t *ctx, int track,
 {
     cdda_track_t *trk = NULL;
 
-    /* track 0 is the album title; only per-track titles become comments */
-    if (track <= 0 || len == 0)
+    if (track < 0 || len == 0)
         return;
+
+    /* track 0 is the album title; it names the volume, not a file */
+    if (track == 0) {
+        if (!(len == 1 && title[0] == '\t'))
+            cdda_sanitize_ascii(ctx->album_title, sizeof(ctx->album_title),
+                                (const uint8_t *)title, len);
+        return;
+    }
 
     for (int i = 0; i < ctx->track_count; i++) {
         if (ctx->tracks[i].number == track) {
@@ -946,6 +971,9 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
 
     cdda_generate_cddb(ctx);
     cdda_generate_cdtext(ctx);
+
+    if (!ctx->is_mixed_mode && ctx->album_title[0] != '\0')
+        cdda_set_album_volume_name(ctx);
 
     /* build root node */
     memset(root_out, 0, sizeof(*root_out));
