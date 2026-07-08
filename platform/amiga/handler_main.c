@@ -551,32 +551,62 @@ static struct IOStdReq *vector_io_request_for_current_task(handler_global_t *g)
 }
 #endif
 
+/*
+ * IO request the current task may wait on. In the handler task this is
+ * g->devreq. On OS4, native vector callbacks run in the caller's task,
+ * but g->devreq replies to the handler task's port: if a caller-task
+ * DoIO() has to wait for completion, the device signals the wrong task
+ * and the caller blocks forever. Such callers get a cached request with
+ * a reply port owned by their own task instead. Vector callbacks are
+ * serialized by fs_sem, so one cached caller-task request is enough.
+ * Returns NULL when no request can be obtained.
+ */
+static struct IOStdReq *media_io_request(handler_global_t *g)
+{
+#if ODFS_AMIGA_OS4
+    if (FindTask(NULL) != g->handler_task)
+        return vector_io_request_for_current_task(g);
+#endif
+    return g->devreq;
+}
+
+/*
+ * Submit an HD_SCSICMD through the current task's IO request and wait
+ * for it. Returns the DoIO() result and stores the request's io_Error
+ * in *io_err (IOERR_OPENFAIL when no request could be obtained).
+ */
+static LONG scsi_do(handler_global_t *g, struct SCSICmd *scsi, BYTE *io_err)
+{
+    struct IOStdReq *req = media_io_request(g);
+    LONG io_rc;
+
+    if (!req) {
+        *io_err = IOERR_OPENFAIL;
+        return -1;
+    }
+
+    req->io_Command = HD_SCSICMD;
+    req->io_Data    = scsi;
+    req->io_Length  = sizeof(*scsi);
+
+    io_rc = DoIO((struct IORequest *)req);
+    *io_err = req->io_Error;
+    return io_rc;
+}
+
 static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
                                       uint32_t count, void *buf)
 {
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
-    struct IOStdReq *req = g->devreq;
+    struct IOStdReq *req = media_io_request(g);
     uint32_t total_bytes = count * g->sector_size;
     uint8_t *out = buf;
     uint32_t done = 0;
     odfs_err_t ret = ODFS_OK;
 
-#if ODFS_AMIGA_OS4
-    /*
-     * Native vector callbacks run in the caller's task, but g->devreq
-     * replies to the handler task's port. If a caller-task DoIO() has to
-     * wait for completion, the device signals the wrong task and the
-     * caller blocks forever. Use a request with a reply port owned by the
-     * current task for vector-context media I/O. Vector callbacks are
-     * serialized by fs_sem, so one cached caller-task request is enough.
-     */
-    if (FindTask(NULL) != g->handler_task) {
-        req = vector_io_request_for_current_task(g);
-        if (!req)
-            return ODFS_ERR_NOMEM;
-    }
-#endif
+    if (!req)
+        return ODFS_ERR_NOMEM;
 
 #if !ODFS_AMIGA_OS4
     if (amiga_can_read_direct(g, out, total_bytes, count))
@@ -670,6 +700,7 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
     uint8_t buf[12];
     uint8_t sense[32];
     struct SCSICmd scsi;
+    BYTE io_err;
     LONG io_rc;
 
     if (!lba_out)
@@ -699,12 +730,8 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
     scsi.scsi_SenseData = sense;
     scsi.scsi_SenseLength = sizeof(sense);
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->last_session_passthrough != 0) {
                 g->last_session_passthrough = 0;
@@ -718,7 +745,7 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
                   "READ TOC multisession info failed io_rc=%ld io_Error=%ld "
                   "scsi_Status=%lu sense=%02x/%02x/%02x",
                   (long)io_rc,
-                  (long)g->devreq->io_Error,
+                  (long)io_err,
                   (unsigned long)scsi.scsi_Status,
                   (unsigned int)(sense[2] & 0x0f),
                   (unsigned int)sense[12],
@@ -766,6 +793,7 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     uint8_t cmd[12];
     uint8_t sense[32];
     struct SCSICmd scsi;
+    BYTE io_err;
     LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
@@ -797,12 +825,8 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     scsi.scsi_SenseData  = sense;
     scsi.scsi_SenseLength = sizeof(sense);
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
         scsi.scsi_Actual != scsi.scsi_Length) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->read_cd_audio != 0) {
@@ -818,7 +842,7 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
                    "scsi_Status=%lu scsi_Actual=%lu scsi_Length=%lu "
                    "lba=%lu count=%lu sense=%02x/%02x/%02x sense_actual=%u",
                    (long)io_rc,
-                   (long)g->devreq->io_Error,
+                   (long)io_err,
                    (unsigned long)scsi.scsi_Status,
                    (unsigned long)scsi.scsi_Actual,
                    (unsigned long)scsi.scsi_Length,
@@ -857,6 +881,7 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     uint8_t buf[256];
     uint8_t sense[32];
     struct SCSICmd scsi;
+    BYTE io_err;
     LONG io_rc;
 
     memset(toc, 0, sizeof(*toc));
@@ -884,12 +909,8 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     scsi.scsi_SenseData = sense;
     scsi.scsi_SenseLength = sizeof(sense);
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->toc_passthrough != 0) {
                 g->toc_passthrough = 0;
@@ -903,7 +924,7 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
                   "READ TOC (0x43) failed io_rc=%ld io_Error=%ld "
                   "scsi_Status=%lu sense=%02x/%02x/%02x sense_actual=%u",
                   (long)io_rc,
-                  (long)g->devreq->io_Error,
+                  (long)io_err,
                   (unsigned long)scsi.scsi_Status,
                   (unsigned int)(sense[2] & 0x0f),
                   (unsigned int)sense[12],
@@ -1001,6 +1022,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     struct SCSICmd scsi;
     uint16_t data_len;
     size_t total_len;
+    BYTE io_err;
     LONG io_rc;
 
     if (!buf_out || !len_out)
@@ -1031,12 +1053,8 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     scsi.scsi_SenseData = sense;
     scsi.scsi_SenseLength = sizeof(sense);
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->cdtext_passthrough != 0) {
                 g->cdtext_passthrough = 0;
@@ -1050,7 +1068,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
                   "READ TOC CD-Text header unavailable io_rc=%ld "
                   "io_Error=%ld scsi_Status=%lu sense=%02x/%02x/%02x",
                   (long)io_rc,
-                  (long)g->devreq->io_Error,
+                  (long)io_err,
                   (unsigned long)scsi.scsi_Status,
                   (unsigned int)(sense[2] & 0x0f),
                   (unsigned int)sense[12],
@@ -1087,12 +1105,8 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     scsi.scsi_SenseData = sense;
     scsi.scsi_SenseLength = sizeof(sense);
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0 ||
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
         scsi.scsi_Actual < sizeof(hdr)) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->cdtext_passthrough != 0) {
@@ -1108,7 +1122,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
                   "READ TOC CD-Text unavailable io_rc=%ld io_Error=%ld "
                   "scsi_Status=%lu actual=%lu sense=%02x/%02x/%02x",
                   (long)io_rc,
-                  (long)g->devreq->io_Error,
+                  (long)io_err,
                   (unsigned long)scsi.scsi_Status,
                   (unsigned long)scsi.scsi_Actual,
                   (unsigned int)(sense[2] & 0x0f),
@@ -1147,6 +1161,7 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     uint8_t cmd[6];
     uint8_t mode_data[12];
     struct SCSICmd scsi;
+    BYTE io_err;
     LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
@@ -1172,18 +1187,14 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     scsi.scsi_Command    = cmd;
     scsi.scsi_Flags      = SCSIF_WRITE | SCSIF_AUTOSENSE;
 
-    g->devreq->io_Command = HD_SCSICMD;
-    g->devreq->io_Data    = &scsi;
-    g->devreq->io_Length  = sizeof(scsi);
-
-    io_rc = DoIO((struct IORequest *)g->devreq);
-    if (io_rc != 0 || g->devreq->io_Error != 0 || scsi.scsi_Status != 0) {
+    io_rc = scsi_do(g, &scsi, &io_err);
+    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
         ODFS_WARN(&g->log, ODFS_SUB_IO,
                   "MODE SELECT failed block_length=%lu io_rc=%ld "
                   "io_Error=%ld scsi_Status=%lu",
                   (unsigned long)block_length,
                   (long)io_rc,
-                  (long)g->devreq->io_Error,
+                  (long)io_err,
                   (unsigned long)scsi.scsi_Status);
         return 0;
     }
@@ -5160,34 +5171,43 @@ static void remove_media_change(handler_global_t *g)
 
 static int query_media_change_count(handler_global_t *g, ULONG *count)
 {
+    struct IOStdReq *req;
+
     if (!g || !g->devreq)
         return 0;
+    req = media_io_request(g);
+    if (!req)
+        return 0;
 
-    g->devreq->io_Command = TD_CHANGENUM;
-    if (DoIO((struct IORequest *)g->devreq) != 0)
+    req->io_Command = TD_CHANGENUM;
+    if (DoIO((struct IORequest *)req) != 0)
         return 0;
 
     if (count)
-        *count = g->devreq->io_Actual;
+        *count = req->io_Actual;
 
     return 1;
 }
 
 static int query_media_present(handler_global_t *g, ULONG *status)
 {
+    struct IOStdReq *req;
     ULONG actual;
 
     if (!g || !g->devreq)
         return 0;
+    req = media_io_request(g);
+    if (!req)
+        return 0;
 
     /* a driver that succeeds without writing io_Actual then reads as
      * "disk present", which falls through to the mount probe */
-    g->devreq->io_Actual = 0;
-    g->devreq->io_Command = TD_CHANGESTATE;
-    if (DoIO((struct IORequest *)g->devreq) != 0)
+    req->io_Actual = 0;
+    req->io_Command = TD_CHANGESTATE;
+    if (DoIO((struct IORequest *)req) != 0)
         return 0;
 
-    actual = g->devreq->io_Actual;
+    actual = req->io_Actual;
     if (status)
         *status = actual;
 
@@ -5203,13 +5223,18 @@ static int query_media_present(handler_global_t *g, ULONG *status)
 static LONG probe_drive_geometry(handler_global_t *g)
 {
     struct DriveGeometry geom;
+    struct IOStdReq *req;
     LONG geo_rc;
 
+    req = media_io_request(g);
+    if (!req)
+        return IOERR_OPENFAIL;
+
     memset(&geom, 0, sizeof(geom));
-    g->devreq->io_Command = TD_GETGEOMETRY;
-    g->devreq->io_Data    = &geom;
-    g->devreq->io_Length  = sizeof(geom);
-    geo_rc = DoIO((struct IORequest *)g->devreq);
+    req->io_Command = TD_GETGEOMETRY;
+    req->io_Data    = &geom;
+    req->io_Length  = sizeof(geom);
+    geo_rc = DoIO((struct IORequest *)req);
     ODFS_INFO(&g->log, ODFS_SUB_IO,
               "geometry rc=%ld sector=%lu", (long)geo_rc,
               (unsigned long)geom.dg_SectorSize);
