@@ -57,12 +57,15 @@ _entrypoint:
 	cmp.l	#MIN_STACK,d0
 	bge.s	.stack_ok
 
-	/* Stack too small — allocate a new one */
+	/* Stack too small — allocate a new one. If the allocation fails,
+	 * run on the caller's stack anyway: the C entry replies the
+	 * startup packet on its own failure paths, and exiting here
+	 * without a reply would hang the mounting context. */
 	move.l	#SWAP_STACK,d0
 	move.l	#MEMF_PUBLIC+MEMF_CLEAR,d1
 	jsr	_LVOAllocMem(a6)
 	tst.l	d0
-	beq.s	.fail
+	beq.s	.stack_ok
 	move.l	d0,a5			/* a5 = stack base */
 
 	/* Set up StackSwap structure on current stack */
@@ -94,5 +97,4 @@ _entrypoint:
 	jsr	_handler_main		/* C entry point */
 
 .done:
-.fail:
 	rts
