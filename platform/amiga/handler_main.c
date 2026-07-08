@@ -1663,9 +1663,20 @@ static ULONG node_protection(const odfs_node_t *node)
     if (node->amiga_as.has_protection) {
         prot = node->amiga_as.protection[3];
     } else if (node->mode != 0) {
-        /* MakeCD table 6 default mapping from PX to classic Amiga bits. */
-        if ((node->mode & 0200) == 0)
-            prot |= FIBF_DELETE | FIBF_WRITE;
+        /*
+         * Map POSIX (Rock Ridge PX / UDF) permissions to classic Amiga
+         * bits, following the MakeCD table 6 read/execute mapping.
+         *
+         * The owner write and delete bits are deliberately left granted.
+         * The volume is read-only and already rejects every write at the
+         * packet layer, so the low-nibble RWED bits are cosmetic on the
+         * disc itself; their only lasting effect is that Directory Opus and
+         * "Copy CLONE" clone them onto the destination when a file is copied
+         * to a writable volume.  Denying write/delete here therefore forces
+         * a manual "protect +wd" on every copied file.  CD masters strip the
+         * POSIX write bit unconditionally, so honouring it would mark
+         * essentially every file on the disc as write- and delete-protected.
+         */
         if ((node->mode & 0100) == 0)
             prot |= FIBF_EXECUTE;
         if ((node->mode & 0400) == 0)
@@ -1703,7 +1714,13 @@ static ULONG node_protection(const odfs_node_t *node)
             prot |= FIBF_OTR_READ;
 #endif
     } else {
-        prot = FIBF_WRITE | FIBF_DELETE;
+        /*
+         * No permission metadata (plain ISO 9660 or UDF): present the file
+         * as fully accessible (----rwed) rather than write/delete protected,
+         * so copies to a writable volume need no manual "protect".  The disc
+         * stays read-only through the packet layer regardless of these bits.
+         */
+        prot = 0;
     }
 
     return prot;
