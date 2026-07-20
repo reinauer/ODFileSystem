@@ -84,7 +84,8 @@ static void unmount_volume(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
 static void destroy_device_node(struct DeviceNode *devnode);
 static void destroy_volume_node(struct DeviceList *volnode);
-static void detach_volume_node(struct DeviceList *volnode);
+static int detach_volume_node(odfs_volume_t *volume);
+static void reap_stale_volumes(handler_global_t *g);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
 static int query_media_present(handler_global_t *g, ULONG *status);
@@ -1538,6 +1539,7 @@ static odfs_volume_t *alloc_volume(handler_global_t *g, struct DeviceList *volno
 
     volume->volnode = volnode;
     volume->id = g->next_volume_id++;
+    AddTail((struct List *)&g->volumes, (struct Node *)&volume->node);
     return volume;
 }
 
@@ -1588,18 +1590,34 @@ static void unlink_volume_lock(odfs_volume_t *volume, odfs_lock_t *ol)
     Permit();
 }
 
-static void destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
+static int destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
 {
     if (!volume)
-        return;
+        return 1;
 
     if (volume->volnode) {
-        detach_volume_node(volume->volnode);
+        if (!detach_volume_node(volume))
+            return 0;
         destroy_volume_node(volume->volnode);
     }
     if (g->volnode == volume->volnode)
         g->volnode = NULL;
     free_volume(volume);
+    return 1;
+}
+
+static void reap_stale_volumes(handler_global_t *g)
+{
+    odfs_volume_t *volume;
+    odfs_volume_t *next;
+
+    for (volume = (odfs_volume_t *)g->volumes.mlh_Head;
+         volume->node.mln_Succ;
+         volume = next) {
+        next = (odfs_volume_t *)volume->node.mln_Succ;
+        if (volume != g->current_volume && volume->object_count == 0)
+            (void)destroy_stale_volume(g, volume);
+    }
 }
 
 static void retain_volume_object(odfs_volume_t *volume)
@@ -1618,7 +1636,7 @@ static void release_volume_object(handler_global_t *g, odfs_volume_t *volume)
         return;
 
     if (volume->object_count == 0)
-        destroy_stale_volume(g, volume);
+        (void)destroy_stale_volume(g, volume);
 }
 
 static LONG validate_object_volume(handler_global_t *g, odfs_volume_t *volume)
@@ -1831,8 +1849,11 @@ static odfs_err_t read_file_node(handler_global_t *g,
 
 static void free_volume(odfs_volume_t *volume)
 {
-    if (volume)
-        odfs_amiga_free_mem(volume, sizeof(*volume));
+    if (!volume)
+        return;
+
+    Remove((struct Node *)&volume->node);
+    odfs_amiga_free_mem(volume, sizeof(*volume));
 }
 
 static void mount_volume(handler_global_t *g);
@@ -4796,16 +4817,26 @@ static void destroy_volume_node(struct DeviceList *volnode)
     odfs_amiga_delete_dos_entry(volnode);
 }
 
-static void detach_volume_node(struct DeviceList *volnode)
+static int detach_volume_node(odfs_volume_t *volume)
 {
-    if (!volnode || !volnode->dl_Task)
-        return;
+    struct DeviceList *volnode;
+    int removed;
 
-    if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
-        RemDosEntry((struct DosList *)volnode);
-        UnLockDosList(LDF_VOLUMES | LDF_WRITE);
-    }
+    if (!volume || !volume->volnode || !volume->listed)
+        return 1;
+
+    volnode = volume->volnode;
+    if (!AttemptLockDosList(LDF_VOLUMES | LDF_WRITE))
+        return 0;
+
+    removed = RemDosEntry((struct DosList *)volnode) ? 1 : 0;
+    UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+    if (!removed)
+        return 0;
+
+    volume->listed = 0;
     volnode->dl_Task = NULL;
+    return 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -5110,7 +5141,8 @@ static void mount_volume(handler_global_t *g)
             return;
         }
         if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
-            AddDosEntry((struct DosList *)g->volnode);
+            if (AddDosEntry((struct DosList *)g->volnode))
+                g->current_volume->listed = 1;
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
         }
         notify_workbench_disk_change(TRUE);
@@ -5140,13 +5172,24 @@ static void unmount_volume(handler_global_t *g)
     if (!volume)
         return;
 
-    detach_volume_node(volume->volnode);
-    notify_workbench_disk_change(FALSE);
+    /* A listed stale volume must remain visible to DOS, but it must no
+     * longer look active even if removing it has to be retried later. */
+    Forbid();
+    volume->volnode->dl_Task = NULL;
+    Permit();
+
     if (volume->object_count != 0) {
+        /*
+         * Keep stale volumes discoverable while DOS clients still hold
+         * locks or file handles. Workbench uses the retained volume node to
+         * find and validate .backdrop locks after IECLASS_DISKREMOVED.
+         */
+        notify_workbench_disk_change(FALSE);
         return;
     }
 
-    destroy_stale_volume(g, volume);
+    (void)destroy_stale_volume(g, volume);
+    notify_workbench_disk_change(FALSE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5397,6 +5440,9 @@ void handler_main_startup(struct Message *startup_msg)
     g->fhlist.mlh_Head       = (struct MinNode *)&g->fhlist.mlh_Tail;
     g->fhlist.mlh_Tail       = NULL;
     g->fhlist.mlh_TailPred   = (struct MinNode *)&g->fhlist.mlh_Head;
+    g->volumes.mlh_Head      = (struct MinNode *)&g->volumes.mlh_Tail;
+    g->volumes.mlh_Tail      = NULL;
+    g->volumes.mlh_TailPred  = (struct MinNode *)&g->volumes.mlh_Head;
     g->next_volume_id = 1;
 #if ODFS_AMIGA_OS4
     g->vector_sigbit = -1;
@@ -5743,6 +5789,10 @@ void handler_main_startup(struct Message *startup_msg)
                 handle_packet(g, pkt);
                 ODFS_FS_UNLOCK(g);
                 return_packet(g, pkt);
+
+                ODFS_FS_LOCK(g);
+                reap_stale_volumes(g);
+                ODFS_FS_UNLOCK(g);
             }
         }
     }

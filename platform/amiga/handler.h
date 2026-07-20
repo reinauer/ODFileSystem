@@ -156,6 +156,7 @@ typedef struct handler_global {
     /* lock list */
     struct MinList       locklist;      /* active locks */
     struct MinList       fhlist;        /* active file handles */
+    struct MinList       volumes;       /* current and stale volumes */
     ULONG                next_volume_id;/* next volume generation */
 } handler_global_t;
 
@@ -167,6 +168,7 @@ struct odfs_volume {
     odfs_lock_t        *lock_head;
     ULONG               id;
     ULONG               object_count;
+    int                 listed;         /* volnode is in the DOS list */
 };
 
 /* ---- object metadata shared by locks and filehandles ---- */
