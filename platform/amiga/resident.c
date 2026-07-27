@@ -26,8 +26,14 @@
 #define MAJOR_VER 0
 #define MINOR_VER 6
 
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
+
 extern const char version_string[];
 static const char name_string[] = "ODFileSystem";
+static const char creator_string[] =
+    "ODFileSystem " STRINGIFY(MAJOR_VER) "." STRINGIFY(MINOR_VER)
+    " (" ODFS_AMIGA_DATE ")";
 
 void entrypoint(void);
 static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6"));
@@ -73,7 +79,7 @@ static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6")) {
                 if (seglist == NULL) {
                     seglist = MKBADDR((UBYTE *)entrypoint - 4);
                 }
-                fse->fse_Node.ln_Name = (char *)name_string;
+                fse->fse_Node.ln_Name = (char *)creator_string;
                 fse->fse_DosType      = DOSTYPE;
                 fse->fse_GlobalVec    = -1;
                 fse->fse_PatchFlags   = 0x190;
