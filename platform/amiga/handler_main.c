@@ -2059,48 +2059,16 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
 {
+    odfs_entry_t *entry;
     odfs_lock_t *ol;
-    struct FileLock *lock;
 
     if (!src)
         return NULL;
 
-    ol = pool_pop(&g->lock_pool);
+    entry = retain_entry(src->entry);
+    ol = lock_from_entry(g, entry, ODFS_LOCK_DOS(src)->fl_Access);
     if (!ol)
-        ol = odfs_amiga_alloc_mem(sizeof(*ol), MEMF_PUBLIC);
-    if (!ol)
-        return NULL;
-    memset(ol, 0, sizeof(*ol));
-
-#if ODFS_AMIGA_OS4
-    ol->lock = AllocDosObjectTags(DOS_LOCK,
-                                  ADO_DOSType, ODFS_OS4_CD_DOSTYPE,
-                                  TAG_DONE);
-    if (!ol->lock) {
-        odfs_amiga_free_mem(ol, sizeof(*ol));
-        return NULL;
-    }
-#endif
-    ol->entry = retain_entry(src->entry);
-    ol->key = src->key;
-    ol->magic = ODFS_LOCK_MAGIC;
-#if !ODFS_AMIGA_OS4
-    ol->dos_private[0] = 0;
-    ol->dos_private[1] = 0;
-#endif
-    lock = ODFS_LOCK_DOS(ol);
-    lock->fl_Link = 0;
-    lock->fl_Key = ol->key;
-    lock->fl_Access = ODFS_LOCK_DOS(src)->fl_Access;
-    lock->fl_Task = g->dosport;
-    lock->fl_Volume = MKBADDR(volume_node_ptr(ol->entry->volume));
-#if ODFS_AMIGA_OS4
-    lock->fl_FSPrivate1 = ol;
-    lock->fl_FSPrivate2 = ol->entry;
-#endif
-    retain_volume_object(ol->entry->volume);
-    AddTail((struct List *)&g->locklist, (struct Node *)&ol->node);
-    link_volume_lock(ol->entry->volume, ol);
+        release_entry(g, entry);
     return ol;
 }
 
