@@ -305,7 +305,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 
 .PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
 .PHONY: check golden-check malformed-check fuzz-check integration-check
-.PHONY: clean size amigaos3-lha amigaos4-lha
+.PHONY: clean distclean size amigaos3-lha amigaos4-lha
 
 all: host
 
@@ -624,6 +624,8 @@ endif
 clean:
 	@echo "  CLEAN"
 	@rm -rf build
+
+distclean: clean
 
 -include $(HOST_LIB_DEPS) $(AMIGA_LIB_DEPS) $(AMIGA_ASM_DEPS) \
 	$(TEST_DEPS) $(FUZZ_DEPS) $(TOOL_DEPS)
