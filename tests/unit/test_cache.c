@@ -94,6 +94,40 @@ static void make_stream_media(odfs_media_t *m, stream_read_counts_t *reads)
     m->ctx = reads;
 }
 
+typedef struct failing_read_state {
+    int      calls;
+    uint32_t fail_lba;
+} failing_read_state_t;
+
+static odfs_err_t failing_mock_read_sectors(void *ctx, uint32_t lba,
+                                            uint32_t count, void *buf)
+{
+    failing_read_state_t *state = ctx;
+    uint8_t *out = buf;
+
+    state->calls++;
+    for (uint32_t s = 0; s < count; s++)
+        memset(out + (size_t)s * MOCK_SECTOR_SIZE,
+               (uint8_t)(lba + s), MOCK_SECTOR_SIZE);
+
+    return lba == state->fail_lba ? ODFS_ERR_IO : ODFS_OK;
+}
+
+static const odfs_media_ops_t failing_mock_ops = {
+    .read_sectors = failing_mock_read_sectors,
+    .sector_size  = mock_sector_size,
+    .sector_count = mock_sector_count,
+    .read_toc     = NULL,
+    .close        = NULL,
+};
+
+static void make_failing_media(odfs_media_t *m,
+                               failing_read_state_t *state)
+{
+    m->ops = &failing_mock_ops;
+    m->ctx = state;
+}
+
 TEST(cache_init_destroy)
 {
     odfs_cache_t cache;
@@ -292,6 +326,56 @@ TEST(cache_read_bytes_caches_unaligned_edges)
     ASSERT_EQ(buf[0], 20);
     ASSERT_EQ(buf[MOCK_SECTOR_SIZE - 100], 21);
     ASSERT_EQ(buf[len - 1], 23);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(cache_failed_read_does_not_commit_victim)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    failing_read_state_t state = {0, 2};
+    const odfs_cache_stats_t *stats;
+    const uint8_t *data;
+
+    make_failing_media(&media, &state);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 1, &data));
+    stats = odfs_cache_get_stats(&cache);
+
+    ASSERT_EQ(odfs_cache_read(&cache, 2, &data), ODFS_ERR_IO);
+    ASSERT_EQ(cache.valid_count, 2);
+    ASSERT_EQ(stats->evictions, 0);
+    ASSERT_EQ(state.calls, 3);
+
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_EQ(state.calls, 3);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(cache_sequential_miss_installs_readahead)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    stream_read_counts_t reads = {0, 0};
+    const uint8_t *data;
+
+    make_stream_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 32));
+
+    ASSERT_OK(odfs_cache_read(&cache, 10, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 11, &data));
+    ASSERT_EQ(data[0], 11);
+    ASSERT_EQ(reads.calls, 2);
+    ASSERT_EQ(reads.sectors, 9);
+
+    ASSERT_OK(odfs_cache_read(&cache, 18, &data));
+    ASSERT_EQ(data[0], 18);
+    ASSERT_EQ(reads.calls, 2);
+    ASSERT_EQ(cache.valid_count, 9);
 
     odfs_cache_destroy(&cache);
 }

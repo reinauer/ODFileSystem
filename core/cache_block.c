@@ -294,56 +294,69 @@ void odfs_cache_flush(odfs_cache_t *cache)
     cache_reset_indices(cache);
 }
 
-/* place one sector's data into a victim entry and index it */
-static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
-                             const uint8_t *src)
+static int32_t cache_reserve(const odfs_cache_t *cache)
 {
-    uint32_t victim;
-    int victim_valid;
+    int32_t victim;
 
     if (cache->valid_count < cache->capacity) {
-        if (cache->free_head < 0)
-            return -1;
-        victim = (uint32_t)cache->free_head;
+        victim = cache->free_head;
     } else {
-        if (cache->lru_tail < 0)
-            return -1;
-        victim = (uint32_t)cache->lru_tail;
+        victim = cache->lru_tail;
     }
 
-    victim_valid = cache->entries[victim].valid;
-    memcpy(cache->entries[victim].data, src, cache->sector_size);
+    if (victim < 0 || (uint32_t)victim >= cache->capacity)
+        return -1;
+    return victim;
+}
 
-    if (victim_valid) {
-        cache_remove_index(cache, victim);
-        cache_lru_remove(cache, victim);
+static int32_t cache_commit(odfs_cache_t *cache, int32_t victim,
+                            uint32_t lba)
+{
+    odfs_cache_entry_t *entry;
+
+    entry = &cache->entries[victim];
+    if (entry->valid) {
+        cache_remove_index(cache, (uint32_t)victim);
+        cache_lru_remove(cache, (uint32_t)victim);
         cache->stats.evictions++;
     } else {
         int32_t free_idx = cache_pop_free(cache);
 
-        if (free_idx != (int32_t)victim)
+        if (free_idx != victim)
             return -1;
         cache->valid_count++;
     }
 
-    cache->entries[victim].lba = lba;
-    cache->entries[victim].age = cache->clock;
-    cache->entries[victim].valid = 1;
-    cache_insert_index(cache, victim);
-    cache_lru_insert_head(cache, victim);
+    entry->lba = lba;
+    entry->age = cache->clock;
+    entry->valid = 1;
+    cache_insert_index(cache, (uint32_t)victim);
+    cache_lru_insert_head(cache, (uint32_t)victim);
 
     if (cache->valid_count > cache->stats.max_used)
         cache->stats.max_used = cache->valid_count;
 
-    return (int32_t)victim;
+    return victim;
+}
+
+/* place one sector's data into a victim entry and index it */
+static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
+                             const uint8_t *src)
+{
+    int32_t victim = cache_reserve(cache);
+
+    if (victim < 0)
+        return -1;
+
+    memcpy(cache->entries[victim].data, src, cache->sector_size);
+    return cache_commit(cache, victim, lba);
 }
 
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
                              const uint8_t **out)
 {
-    uint32_t victim = 0;
-    int victim_valid;
+    int32_t victim;
     int32_t hit;
     odfs_err_t err;
 
@@ -403,39 +416,16 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
 
     cache->last_miss_lba = lba;
 
-    if (cache->valid_count < cache->capacity) {
-        if (cache->free_head < 0)
-            return ODFS_ERR_CORRUPT;
-        victim = (uint32_t)cache->free_head;
-    } else {
-        if (cache->lru_tail < 0)
-            return ODFS_ERR_CORRUPT;
-        victim = (uint32_t)cache->lru_tail;
-    }
-    victim_valid = cache->entries[victim].valid;
+    victim = cache_reserve(cache);
+    if (victim < 0)
+        return ODFS_ERR_CORRUPT;
+
     err = odfs_media_read(cache->media, lba, 1, cache->entries[victim].data);
     if (err != ODFS_OK)
         return err;
 
-    if (victim_valid) {
-        cache_remove_index(cache, victim);
-        cache_lru_remove(cache, victim);
-        cache->stats.evictions++;
-    } else {
-        int32_t free_idx = cache_pop_free(cache);
-        if (free_idx != (int32_t)victim)
-            return ODFS_ERR_CORRUPT;
-        cache->valid_count++;
-    }
-
-    cache->entries[victim].lba = lba;
-    cache->entries[victim].age = cache->clock;
-    cache->entries[victim].valid = 1;
-    cache_insert_index(cache, victim);
-    cache_lru_insert_head(cache, victim);
-
-    if (cache->valid_count > cache->stats.max_used)
-        cache->stats.max_used = cache->valid_count;
+    if (cache_commit(cache, victim, lba) < 0)
+        return ODFS_ERR_CORRUPT;
 
     *out = cache->entries[victim].data;
     return ODFS_OK;
