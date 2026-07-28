@@ -41,6 +41,14 @@ By default the script expects:
 If neither `AMIFUSE_IMAGE` nor `AMIGAOS32_ISO` is set, the script generates a
 small temporary ISO with that content and uses it for the smoke test.
 
+The file-handle packet checks always use the committed plain ISO and Joliet
+fixtures. The plain ISO case expects canonical uppercase names, while the
+Joliet case expects its original lowercase names. Each lookup deliberately uses
+the opposite case so that returning the query spelling cannot satisfy the test.
+This keeps those checks independent of the ISO creation tool installed on the
+host. A supplied external image is also checked for the fixture layout or
+`C/Version` when either path is present.
+
 If `AMIGAOS32_ISO` is used, the script instead probes:
 
 - `CDVersion`
