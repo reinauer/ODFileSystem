@@ -115,6 +115,7 @@ static void notify_workbench_disk_change(BOOL inserted);
 static int toc_has_data_track(const odfs_toc_t *toc);
 static void copy_pure_audio_volume_name(handler_global_t *g);
 static void load_cdda_disk_icon(handler_global_t *g);
+static void finish_pure_audio_mount(handler_global_t *g);
 #endif
 static int scsi_is_unsupported_command(const uint8_t *sense);
 
@@ -5230,6 +5231,23 @@ static void copy_pure_audio_volume_name(handler_global_t *g)
     memcpy(g->volname, ctx->volume_name, sizeof(ctx->volume_name));
     g->volname[sizeof(ctx->volume_name) - 1] = '\0';
 }
+
+static void finish_pure_audio_mount(handler_global_t *g)
+{
+    g->has_cdda = 1;
+    g->mounted = 1;
+    g->mount.root = g->cdda_root;
+    g->mount.backend_ops = &cdda_backend_ops;
+    g->mount.backend_ctx = g->cdda_ctx;
+    g->mount.active_backend = ODFS_BACKEND_CDDA;
+    odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
+                                &cdda_backend_ops, g->cdda_ctx,
+                                &g->cdda_root);
+    load_cdda_disk_icon(g);
+    copy_pure_audio_volume_name(g);
+    ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+              "mounted pure audio CD via CDDA backend");
+}
 #endif
 
 static void mount_volume(handler_global_t *g)
@@ -5288,19 +5306,7 @@ static void mount_volume(handler_global_t *g)
             g->mount.media = g->media;
             g->mount.log = g->log;
             g->mount.opts = opts;
-            g->has_cdda = 1;
-            g->mounted = 1;
-            g->mount.root = g->cdda_root;
-            g->mount.backend_ops = &cdda_backend_ops;
-            g->mount.backend_ctx = g->cdda_ctx;
-            g->mount.active_backend = ODFS_BACKEND_CDDA;
-            odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
-                                        &cdda_backend_ops, g->cdda_ctx,
-                                        &g->cdda_root);
-            load_cdda_disk_icon(g);
-            copy_pure_audio_volume_name(g);
-            ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
-                      "mounted pure audio CD via CDDA backend");
+            finish_pure_audio_mount(g);
         }
     }
 #endif
@@ -5320,19 +5326,7 @@ static void mount_volume(handler_global_t *g)
                 cdda_err = cdda_mount_from_toc(&toc, 0, &opts, &g->media,
                                                &g->cdda_root, &g->cdda_ctx);
             if (toc_err == ODFS_OK && cdda_err == ODFS_OK) {
-                g->has_cdda = 1;
-                g->mounted = 1;
-                g->mount.root = g->cdda_root;
-                g->mount.backend_ops = &cdda_backend_ops;
-                g->mount.backend_ctx = g->cdda_ctx;
-                g->mount.active_backend = ODFS_BACKEND_CDDA;
-                odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
-                                            &cdda_backend_ops, g->cdda_ctx,
-                                            &g->cdda_root);
-                load_cdda_disk_icon(g);
-                copy_pure_audio_volume_name(g);
-                ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
-                          "mounted pure audio CD via CDDA backend");
+                finish_pure_audio_mount(g);
             } else if (toc_err != ODFS_OK) {
                 ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
                           "audio CD fallback failed to read TOC: %s",
