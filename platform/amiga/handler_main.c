@@ -284,6 +284,21 @@ static odfs_err_t amiga_read_direct(handler_global_t *g,
 #define NSCMD_TD_READ64 0xC000  /* devices/newstyle.h */
 #endif
 
+static void scsi_init_read(struct SCSICmd *scsi,
+                           void *data, ULONG data_len,
+                           UBYTE *command, UWORD command_len,
+                           UBYTE *sense, UWORD sense_len)
+{
+    memset(scsi, 0, sizeof(*scsi));
+    scsi->scsi_Data = (UWORD *)data;
+    scsi->scsi_Length = data_len;
+    scsi->scsi_CmdLength = command_len;
+    scsi->scsi_Command = command;
+    scsi->scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+    scsi->scsi_SenseData = sense;
+    scsi->scsi_SenseLength = sense_len;
+}
+
 /*
  * Issue a SCSI READ(10) through HD_SCSICMD. The workhorse fallback for
  * byte offsets past 4 GiB on drivers that implement neither TD64 nor
@@ -308,7 +323,6 @@ static odfs_err_t scsi_read10(handler_global_t *g,
 
     memset(cmd, 0, sizeof(cmd));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     cmd[0] = 0x28; /* READ(10) */
     cmd[2] = (uint8_t)(lba >> 24);
@@ -318,13 +332,8 @@ static odfs_err_t scsi_read10(handler_global_t *g,
     cmd[7] = (uint8_t)(blocks >> 8);
     cmd[8] = (uint8_t)blocks;
 
-    scsi.scsi_Data = (UWORD *)buf;
-    scsi.scsi_Length = bytes;
-    scsi.scsi_CmdLength = 10;
-    scsi.scsi_Command = cmd;
-    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, buf, bytes, cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     req->io_Command = HD_SCSICMD;
     req->io_Data    = &scsi;
@@ -750,7 +759,6 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
     memset(cmd, 0, sizeof(cmd));
     memset(buf, 0, sizeof(buf));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;  /* MSF=0 (LBA) */
@@ -758,13 +766,8 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
     cmd[7] = 0x00;
     cmd[8] = sizeof(buf);
 
-    scsi.scsi_Data = (UWORD *)buf;
-    scsi.scsi_Length = sizeof(buf);
-    scsi.scsi_CmdLength = 10;
-    scsi.scsi_Command = cmd;
-    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, buf, sizeof(buf), cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
@@ -834,7 +837,6 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
 
     memset(cmd, 0, sizeof(cmd));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     if (g->read_cd_audio == 0)
         return ODFS_ERR_UNSUPPORTED;
@@ -853,13 +855,8 @@ static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
     cmd[8] = (uint8_t)(count);
     cmd[9] = 0x10;  /* flags: read user data (2352 bytes per frame) */
 
-    scsi.scsi_Data      = (UWORD *)buf;
-    scsi.scsi_Length     = count * 2352;
-    scsi.scsi_CmdLength  = 12;
-    scsi.scsi_Command    = cmd;
-    scsi.scsi_Flags      = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData  = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, buf, count * 2352, cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
@@ -924,7 +921,6 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     memset(cmd, 0, sizeof(cmd));
     memset(buf, 0, sizeof(buf));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     if (g->toc_passthrough == 0)
         return ODFS_ERR_UNSUPPORTED;
@@ -937,13 +933,8 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     cmd[7] = (sizeof(buf) >> 8) & 0xFF;
     cmd[8] = sizeof(buf) & 0xFF;
 
-    scsi.scsi_Data = (UWORD *)buf;
-    scsi.scsi_Length = sizeof(buf);
-    scsi.scsi_CmdLength = 10;
-    scsi.scsi_Command = cmd;
-    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, buf, sizeof(buf), cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
@@ -1073,7 +1064,6 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     memset(cmd, 0, sizeof(cmd));
     memset(hdr, 0, sizeof(hdr));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;  /* MSF=0 */
@@ -1081,13 +1071,8 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     cmd[7] = 0x00;
     cmd[8] = sizeof(hdr);
 
-    scsi.scsi_Data = (UWORD *)hdr;
-    scsi.scsi_Length = sizeof(hdr);
-    scsi.scsi_CmdLength = 10;
-    scsi.scsi_Command = cmd;
-    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, hdr, sizeof(hdr), cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
@@ -1125,7 +1110,6 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 
     memset(cmd, 0, sizeof(cmd));
     memset(sense, 0, sizeof(sense));
-    memset(&scsi, 0, sizeof(scsi));
 
     cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;  /* MSF=0 */
@@ -1133,13 +1117,8 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     cmd[7] = (uint8_t)(total_len >> 8);
     cmd[8] = (uint8_t)(total_len);
 
-    scsi.scsi_Data = (UWORD *)buf;
-    scsi.scsi_Length = (ULONG)total_len;
-    scsi.scsi_CmdLength = 10;
-    scsi.scsi_Command = cmd;
-    scsi.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
-    scsi.scsi_SenseData = sense;
-    scsi.scsi_SenseLength = sizeof(sense);
+    scsi_init_read(&scsi, buf, (ULONG)total_len, cmd, sizeof(cmd),
+                   sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
