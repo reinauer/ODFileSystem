@@ -52,6 +52,8 @@ HOSTCC ?= cc
 
 AMIGA_DATE ?= $(shell date '+%-d.%-m.%Y')
 ODFS_GIT_VERSION ?= $(shell desc=$$(git describe --tags --match "v*" --dirty --always 2>/dev/null || echo unknown); printf '%s\n' "$$desc" | grep -q '^v' && printf '%s' "$$desc" || printf 'early-0-g%s' "$$desc")
+ODFS_VERSION_MAJOR ?= $(or $(shell printf '%s\n' "$(ODFS_GIT_VERSION)" | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p'),0)
+ODFS_VERSION_MINOR ?= $(or $(shell printf '%s\n' "$(ODFS_GIT_VERSION)" | sed -n 's/^v[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p'),0)
 
 INCLUDES = -I include -I backends
 AMIGA_PLATFORM_INCLUDES = -I platform/amiga \
@@ -115,6 +117,8 @@ FEATURE_CDDA         ?= 1
 FEATURE_DEFS = \
           -DODFS_AMIGA_DATE=\"$(AMIGA_DATE)\" \
           -DODFS_GIT_VERSION=\"$(ODFS_GIT_VERSION)\" \
+          -DODFS_VERSION_MAJOR=$(ODFS_VERSION_MAJOR) \
+          -DODFS_VERSION_MINOR=$(ODFS_VERSION_MINOR) \
           -DODFS_SERIAL_DEBUG=$(SERIAL_DEBUG) \
           -DODFS_PACKET_TRACE=$(PACKET_TRACE) \
           -DODFS_FEATURE_LOG=$(SERIAL_DEBUG) \

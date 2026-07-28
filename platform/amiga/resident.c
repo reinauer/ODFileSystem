@@ -23,17 +23,19 @@
 #include <resources/filesysres.h>
 
 #define DOSTYPE 0x43443031
-#define MAJOR_VER 0
-#define MINOR_VER 6
 
-#define STRINGIFY_(x) #x
-#define STRINGIFY(x) STRINGIFY_(x)
+#ifndef ODFS_VERSION_MAJOR
+#define ODFS_VERSION_MAJOR 0
+#endif
+
+#ifndef ODFS_VERSION_MINOR
+#define ODFS_VERSION_MINOR 0
+#endif
 
 extern const char version_string[];
 static const char name_string[] = "ODFileSystem";
 static const char creator_string[] =
-    "ODFileSystem " STRINGIFY(MAJOR_VER) "." STRINGIFY(MINOR_VER)
-    " (" ODFS_AMIGA_DATE ")";
+    "ODFileSystem " ODFS_GIT_VERSION " (" ODFS_AMIGA_DATE ")";
 
 void entrypoint(void);
 static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6"));
@@ -43,7 +45,7 @@ static const struct Resident __attribute__((used,no_reorder)) romtag = {
     .rt_MatchTag  = (APTR)&romtag,
     .rt_EndSkip   = (APTR)(&romtag+1),
     .rt_Flags     = RTF_COLDSTART,
-    .rt_Version   = MAJOR_VER,
+    .rt_Version   = ODFS_VERSION_MAJOR,
     .rt_Type      = NT_UNKNOWN,
     .rt_Pri       = 10,
     .rt_Name      = (APTR)&name_string,
@@ -84,7 +86,8 @@ static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6")) {
                 fse->fse_GlobalVec    = -1;
                 fse->fse_PatchFlags   = 0x190;
                 fse->fse_StackSize    = 16384;
-                fse->fse_Version      = MAJOR_VER << 16 | MINOR_VER;
+                fse->fse_Version      =
+                    ODFS_VERSION_MAJOR << 16 | ODFS_VERSION_MINOR;
                 fse->fse_SegList      = (BPTR)seglist;
                 fse->fse_Priority     = 10;
 
