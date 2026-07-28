@@ -35,6 +35,7 @@
 #include <devices/scsidisk.h>
 #include <devices/input.h>
 #include <devices/inputevent.h>
+#include <devices/timer.h>
 #include <dos/dostags.h>
 #include <dos/exall.h>
 
@@ -70,6 +71,20 @@ const char version_string[] __attribute__((used)) =
     "$VER: ODFileSystem " ODFS_GIT_VERSION
     " (" ODFS_AMIGA_DATE ")";
 
+#define VOLUME_PUBLISH_RETRY_MICROS 100000UL
+
+#if ODFS_AMIGA_OS4
+typedef struct TimeRequest odfs_timer_request_t;
+#define ODFS_TIMER_IO(tr)       (&(tr)->Request)
+#define ODFS_TIMER_SECONDS(tr)  ((tr)->Time.Seconds)
+#define ODFS_TIMER_MICROS(tr)   ((tr)->Time.Microseconds)
+#else
+typedef struct timerequest odfs_timer_request_t;
+#define ODFS_TIMER_IO(tr)       (&(tr)->tr_node)
+#define ODFS_TIMER_SECONDS(tr)  ((tr)->tr_time.tv_secs)
+#define ODFS_TIMER_MICROS(tr)   ((tr)->tr_time.tv_micro)
+#endif
+
 /* forward declarations */
 static void handle_packet(handler_global_t *g, struct DosPacket *pkt);
 static void return_packet(handler_global_t *g, struct DosPacket *pkt);
@@ -85,6 +100,11 @@ static void free_volume(odfs_volume_t *volume);
 static void destroy_device_node(struct DeviceNode *devnode);
 static void destroy_volume_node(struct DeviceList *volnode);
 static int detach_volume_node(odfs_volume_t *volume);
+static int publish_volume_node(handler_global_t *g);
+static void schedule_volume_publish_retry(handler_global_t *g);
+static void cancel_volume_publish_retry(handler_global_t *g);
+static void handle_volume_publish_retry(handler_global_t *g);
+static void destroy_volume_publish_timer(handler_global_t *g);
 static void reap_stale_volumes(handler_global_t *g);
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode);
 static int query_media_change_count(handler_global_t *g, ULONG *count);
@@ -4817,6 +4837,169 @@ static void destroy_volume_node(struct DeviceList *volnode)
     odfs_amiga_delete_dos_entry(volnode);
 }
 
+static int publish_volume_node(handler_global_t *g)
+{
+    struct DosList *list;
+    struct DosList *iter;
+    odfs_volume_t *volume;
+
+    if (!g || !(volume = g->current_volume) || !volume->volnode)
+        return 0;
+    if (volume->listed)
+        return 1;
+
+    list = AttemptLockDosList(LDF_VOLUMES | LDF_WRITE);
+    if (!list)
+        return 0;
+
+    /*
+     * Another DOS component may have linked the node returned through
+     * ACTION_DISK_INFO while our publication was pending. Recognize that
+     * exact node before calling AddDosEntry() so we neither duplicate it
+     * nor lose track of its DOS-list membership.
+     */
+    iter = list;
+    while ((iter = NextDosEntry(iter, LDF_VOLUMES)) != NULL) {
+        if (iter == (struct DosList *)volume->volnode) {
+            volume->listed = 1;
+            break;
+        }
+    }
+
+    if (!volume->listed) {
+        if (AddDosEntry((struct DosList *)volume->volnode)) {
+            volume->listed = 1;
+        } else {
+#if ODFS_SERIAL_DEBUG
+            ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                      "volume publication failed: AddDosEntry(%s)",
+                      g->volname);
+#endif
+        }
+    }
+
+    UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+    return volume->listed;
+}
+
+static int init_volume_publish_timer(handler_global_t *g)
+{
+    odfs_timer_request_t *timer;
+
+    if (g->publish_timer_open)
+        return 1;
+
+    g->publish_timer_port = odfs_amiga_create_msg_port();
+    if (!g->publish_timer_port)
+        return 0;
+
+    timer = (odfs_timer_request_t *)odfs_amiga_create_io_request(
+        g->publish_timer_port, sizeof(*timer));
+    if (!timer)
+        goto fail;
+
+    g->publish_timer_req = ODFS_TIMER_IO(timer);
+    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ,
+                   g->publish_timer_req, 0) != 0)
+        goto fail;
+
+    g->publish_timer_open = 1;
+    return 1;
+
+fail:
+    if (g->publish_timer_req) {
+        odfs_amiga_delete_io_request(g->publish_timer_req);
+        g->publish_timer_req = NULL;
+    }
+    odfs_amiga_delete_msg_port(g->publish_timer_port);
+    g->publish_timer_port = NULL;
+    return 0;
+}
+
+static void schedule_volume_publish_retry(handler_global_t *g)
+{
+    odfs_timer_request_t *timer;
+
+    if (!g || g->publish_timer_pending || !g->mounted ||
+        !g->current_volume || g->current_volume->listed)
+        return;
+
+    if (!init_volume_publish_timer(g)) {
+        ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                  "volume publication retry timer unavailable");
+        return;
+    }
+
+    timer = (odfs_timer_request_t *)g->publish_timer_req;
+    ODFS_TIMER_IO(timer)->io_Command = TR_ADDREQUEST;
+    ODFS_TIMER_SECONDS(timer) = 0;
+    ODFS_TIMER_MICROS(timer) = VOLUME_PUBLISH_RETRY_MICROS;
+    SendIO(g->publish_timer_req);
+    g->publish_timer_pending = 1;
+}
+
+static void cancel_volume_publish_retry(handler_global_t *g)
+{
+    if (!g || !g->publish_timer_pending)
+        return;
+
+    if (!CheckIO(g->publish_timer_req))
+        AbortIO(g->publish_timer_req);
+    WaitIO(g->publish_timer_req);
+    g->publish_timer_pending = 0;
+}
+
+static void handle_volume_publish_retry(handler_global_t *g)
+{
+    if (!g || !g->publish_timer_pending ||
+        !CheckIO(g->publish_timer_req))
+        return;
+
+    WaitIO(g->publish_timer_req);
+    g->publish_timer_pending = 0;
+
+    if (!g->mounted || !g->current_volume ||
+        g->current_volume->listed)
+        return;
+
+    g->publish_retry_count++;
+
+    if (publish_volume_node(g)) {
+#if ODFS_SERIAL_DEBUG
+        ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                  "volume published after %lu retries: %s "
+                  "node=%08lx task=%08lx",
+                  (unsigned long)g->publish_retry_count,
+                  g->volname,
+                  (unsigned long)MKBADDR(g->current_volume->volnode),
+                  (unsigned long)g->current_volume->volnode->dl_Task);
+#endif
+        destroy_volume_publish_timer(g);
+        notify_workbench_disk_change(TRUE);
+    } else {
+        schedule_volume_publish_retry(g);
+    }
+}
+
+static void destroy_volume_publish_timer(handler_global_t *g)
+{
+    if (!g)
+        return;
+
+    cancel_volume_publish_retry(g);
+    if (g->publish_timer_req) {
+        if (g->publish_timer_open)
+            CloseDevice(g->publish_timer_req);
+        odfs_amiga_delete_io_request(g->publish_timer_req);
+        g->publish_timer_req = NULL;
+    }
+    if (g->publish_timer_port) {
+        odfs_amiga_delete_msg_port(g->publish_timer_port);
+        g->publish_timer_port = NULL;
+    }
+    g->publish_timer_open = 0;
+}
+
 static int detach_volume_node(odfs_volume_t *volume)
 {
     struct DeviceList *volnode;
@@ -5140,12 +5323,23 @@ static void mount_volume(handler_global_t *g)
             g->mounted = 0;
             return;
         }
-        if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
-            if (AddDosEntry((struct DosList *)g->volnode))
-                g->current_volume->listed = 1;
-            UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+        g->publish_retry_count = 0;
+        if (publish_volume_node(g)) {
+#if ODFS_SERIAL_DEBUG
+            ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                      "volume published: %s node=%08lx task=%08lx",
+                      g->volname,
+                      (unsigned long)MKBADDR(g->volnode),
+                      (unsigned long)g->volnode->dl_Task);
+#endif
+            notify_workbench_disk_change(TRUE);
+        } else {
+#if ODFS_SERIAL_DEBUG
+            ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
+                      "volume publication deferred");
+#endif
+            schedule_volume_publish_retry(g);
         }
-        notify_workbench_disk_change(TRUE);
     }
 
 }
@@ -5157,6 +5351,7 @@ static void unmount_volume(handler_global_t *g)
     if (!g->mounted)
         return;
 
+    cancel_volume_publish_retry(g);
     volume = g->current_volume;
 
     odfs_unmount(&g->mount);
@@ -5405,7 +5600,7 @@ void handler_main_startup(struct Message *startup_msg)
     struct DosPacket *shutdown_pkt = NULL;
     struct FileSysStartupMsg *fssm;
     struct DosEnvec *de;
-    ULONG dossig, chgsig, waitmask;
+    ULONG dossig, chgsig, pubsig, waitmask, sigs;
     int running = 1;
     int keep_device;
 
@@ -5728,10 +5923,12 @@ void handler_main_startup(struct Message *startup_msg)
     /* ---- main packet loop ---- */
     dossig = 1UL << g->dosport->mp_SigBit;
     chgsig = (g->chgsigbit >= 0) ? (1UL << g->chgsigbit) : 0;
-    waitmask = dossig | chgsig;
 
     while (running) {
-        ULONG sigs = Wait(waitmask);
+        pubsig = g->publish_timer_port ?
+            (1UL << g->publish_timer_port->mp_SigBit) : 0;
+        waitmask = dossig | chgsig | pubsig;
+        sigs = Wait(waitmask);
 
         /* media change */
         if ((sigs & chgsig) && !g->inhibited) {
@@ -5795,6 +5992,12 @@ void handler_main_startup(struct Message *startup_msg)
                 ODFS_FS_UNLOCK(g);
             }
         }
+
+        if (sigs & pubsig) {
+            ODFS_FS_LOCK(g);
+            handle_volume_publish_retry(g);
+            ODFS_FS_UNLOCK(g);
+        }
     }
 
     /*
@@ -5839,6 +6042,7 @@ void handler_main_startup(struct Message *startup_msg)
     }
 
 shutdown:
+    destroy_volume_publish_timer(g);
 #if ODFS_AMIGA_OS4
     release_vector_io_request(g);
 #endif

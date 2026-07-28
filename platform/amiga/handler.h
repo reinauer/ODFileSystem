@@ -141,6 +141,13 @@ typedef struct handler_global {
     int                  change_count_valid; /* change_count initialized? */
     int                  geo_pending;   /* re-probe geometry once media shows up */
 
+    /* deferred DOS volume-list publication */
+    struct MsgPort      *publish_timer_port;
+    struct IORequest    *publish_timer_req;
+    ULONG                publish_retry_count;
+    int                  publish_timer_open;
+    int                  publish_timer_pending;
+
     /* volume info */
     char                 volname[128];  /* volume name */
 
