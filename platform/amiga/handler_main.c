@@ -5118,6 +5118,17 @@ static int load_cdda_disk_icon_path(cdda_context_t *ctx, const char *path)
     if (!fh)
         return 0;
 
+#if ODFS_AMIGA_OS4
+    {
+        int64 file_size = GetFileSize(fh);
+
+        if (file_size <= 0 || file_size > 65536) {
+            Close(fh);
+            return 0;
+        }
+        size = (LONG)file_size;
+    }
+#else
     if (Seek(fh, 0, OFFSET_END) == -1) {
         Close(fh);
         return 0;
@@ -5127,6 +5138,7 @@ static int load_cdda_disk_icon_path(cdda_context_t *ctx, const char *path)
         Close(fh);
         return 0;
     }
+#endif
 
     data = odfs_malloc((size_t)size);
     if (!data) {
