@@ -256,21 +256,35 @@ static void cdda_generate_cddb(cdda_context_t *ctx)
     ctx->cddb_size = used;
 }
 
-static int cdda_fill_cddb_node(const cdda_context_t *ctx, odfs_node_t *node)
+static int cdda_fill_virtual_node(const void *data, size_t size,
+                                  uint32_t id, uint32_t lba,
+                                  const char *name, size_t name_size,
+                                  odfs_node_t *node)
 {
-    if (!ctx->cddb_text || ctx->cddb_size == 0)
+    if (!data || size == 0)
+        return 0;
+
+    if (name_size > sizeof(node->name))
         return 0;
 
     memset(node, 0, sizeof(*node));
-    node->id = CDDA_CDDB_NODE_ID;
+    node->id = id;
     node->parent_id = 0;
     node->backend = ODFS_BACKEND_CDDA;
     node->kind = ODFS_NODE_VIRTUAL;
-    node->size = ctx->cddb_size;
-    node->extent.lba = CDDA_CDDB_LBA;
-    node->extent.length = (uint32_t)ctx->cddb_size;
-    memcpy(node->name, CDDA_CDDB_NAME, sizeof(CDDA_CDDB_NAME));
+    node->size = size;
+    node->extent.lba = lba;
+    node->extent.length = (uint32_t)size;
+    memcpy(node->name, name, name_size);
     return 1;
+}
+
+static int cdda_fill_cddb_node(const cdda_context_t *ctx, odfs_node_t *node)
+{
+    return cdda_fill_virtual_node(ctx->cddb_text, ctx->cddb_size,
+                                  CDDA_CDDB_NODE_ID, CDDA_CDDB_LBA,
+                                  CDDA_CDDB_NAME, sizeof(CDDA_CDDB_NAME),
+                                  node);
 }
 
 static const char *cdda_cdtext_type_name(uint8_t type, uint8_t track)
@@ -693,19 +707,10 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
 
 static int cdda_fill_cdtext_node(const cdda_context_t *ctx, odfs_node_t *node)
 {
-    if (!ctx->cdtext_text || ctx->cdtext_size == 0)
-        return 0;
-
-    memset(node, 0, sizeof(*node));
-    node->id = CDDA_CDTEXT_NODE_ID;
-    node->parent_id = 0;
-    node->backend = ODFS_BACKEND_CDDA;
-    node->kind = ODFS_NODE_VIRTUAL;
-    node->size = ctx->cdtext_size;
-    node->extent.lba = CDDA_CDTEXT_LBA;
-    node->extent.length = (uint32_t)ctx->cdtext_size;
-    memcpy(node->name, CDDA_CDTEXT_NAME, sizeof(CDDA_CDTEXT_NAME));
-    return 1;
+    return cdda_fill_virtual_node(ctx->cdtext_text, ctx->cdtext_size,
+                                  CDDA_CDTEXT_NODE_ID, CDDA_CDTEXT_LBA,
+                                  CDDA_CDTEXT_NAME,
+                                  sizeof(CDDA_CDTEXT_NAME), node);
 }
 
 static int cdda_fill_disk_icon_node(const cdda_context_t *ctx,
@@ -714,16 +719,11 @@ static int cdda_fill_disk_icon_node(const cdda_context_t *ctx,
     if (ctx->is_mixed_mode || !ctx->disk_icon || ctx->disk_icon_size == 0)
         return 0;
 
-    memset(node, 0, sizeof(*node));
-    node->id = CDDA_DISK_ICON_NODE_ID;
-    node->parent_id = 0;
-    node->backend = ODFS_BACKEND_CDDA;
-    node->kind = ODFS_NODE_VIRTUAL;
-    node->size = ctx->disk_icon_size;
-    node->extent.lba = CDDA_DISK_ICON_LBA;
-    node->extent.length = (uint32_t)ctx->disk_icon_size;
-    memcpy(node->name, CDDA_DISK_ICON_NAME, sizeof(CDDA_DISK_ICON_NAME));
-    return 1;
+    return cdda_fill_virtual_node(ctx->disk_icon, ctx->disk_icon_size,
+                                  CDDA_DISK_ICON_NODE_ID,
+                                  CDDA_DISK_ICON_LBA,
+                                  CDDA_DISK_ICON_NAME,
+                                  sizeof(CDDA_DISK_ICON_NAME), node);
 }
 
 static int cdda_metadata_count(const cdda_context_t *ctx)
