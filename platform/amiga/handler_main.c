@@ -114,6 +114,7 @@ static void notify_workbench_disk_change(BOOL inserted);
 #if ODFS_FEATURE_CDDA
 static int toc_has_data_track(const odfs_toc_t *toc);
 static void copy_pure_audio_volume_name(handler_global_t *g);
+static void load_cdda_disk_icon(handler_global_t *g);
 #endif
 static int scsi_is_unsupported_command(const uint8_t *sense);
 
@@ -5158,6 +5159,59 @@ static int toc_has_data_track(const odfs_toc_t *toc)
     return 0;
 }
 
+static int load_cdda_disk_icon_path(cdda_context_t *ctx, const char *path)
+{
+    BPTR fh;
+    LONG size;
+    LONG actual;
+    uint8_t *data;
+
+    fh = Open((CONST_STRPTR)path, MODE_OLDFILE);
+    if (!fh)
+        return 0;
+
+    if (Seek(fh, 0, OFFSET_END) == -1) {
+        Close(fh);
+        return 0;
+    }
+    size = Seek(fh, 0, OFFSET_BEGINNING);
+    if (size <= 0 || size > 65536) {
+        Close(fh);
+        return 0;
+    }
+
+    data = odfs_malloc((size_t)size);
+    if (!data) {
+        Close(fh);
+        return 0;
+    }
+
+    actual = Read(fh, data, size);
+    Close(fh);
+    if (actual != size) {
+        odfs_free(data);
+        return 0;
+    }
+
+    ctx->disk_icon = data;
+    ctx->disk_icon_size = (size_t)size;
+    return 1;
+}
+
+static void load_cdda_disk_icon(handler_global_t *g)
+{
+    cdda_context_t *ctx = (cdda_context_t *)g->cdda_ctx;
+
+    if (!ctx || ctx->is_mixed_mode)
+        return;
+
+    if (load_cdda_disk_icon_path(ctx, "ENV:Sys/def_cdda.info") ||
+        load_cdda_disk_icon_path(ctx, "ENVARC:Sys/def_cdda.info")) {
+        ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
+                  "using def_cdda.info as audio CD Disk.info");
+    }
+}
+
 static void copy_pure_audio_volume_name(handler_global_t *g)
 {
     const cdda_context_t *ctx = (const cdda_context_t *)g->cdda_ctx;
@@ -5243,6 +5297,7 @@ static void mount_volume(handler_global_t *g)
             odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                         &cdda_backend_ops, g->cdda_ctx,
                                         &g->cdda_root);
+            load_cdda_disk_icon(g);
             copy_pure_audio_volume_name(g);
             ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                       "mounted pure audio CD via CDDA backend");
@@ -5274,6 +5329,7 @@ static void mount_volume(handler_global_t *g)
                 odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                             &cdda_backend_ops, g->cdda_ctx,
                                             &g->cdda_root);
+                load_cdda_disk_icon(g);
                 copy_pure_audio_volume_name(g);
                 ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                           "mounted pure audio CD via CDDA backend");

@@ -53,6 +53,8 @@ typedef struct cdda_context {
     size_t             cddb_size;
     char               *cdtext_text;
     size_t             cdtext_size;
+    uint8_t            *disk_icon;
+    size_t             disk_icon_size;
     odfs_media_t       *media;          /* for read_audio calls */
     uint8_t            *audio_cache;    /* read-ahead audio frames */
     uint32_t            audio_cache_lba;

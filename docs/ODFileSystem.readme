@@ -39,6 +39,9 @@ Archive Contents
 - ODFileSystem-rom-test
   Test build of the ROM profile with serial debug output enabled.
 
+- Env-Archive/Sys/def_cdda.info
+  Default Workbench disk icon for pure audio CDs.
+
 - README.md
   This file.
 
@@ -93,6 +96,17 @@ Mount the device from Workbench by double-clicking the DOSDriver icon,
 or from Shell with:
 
        Mount CD0:
+
+To use the supplied audio-CD icon, copy it to both the persistent and
+current default-icon directories:
+
+       Copy Env-Archive/Sys/def_cdda.info ENVARC:Sys/
+       Copy Env-Archive/Sys/def_cdda.info ENV:Sys/
+
+For pure audio CDs, ODFileSystem presents this default icon as the
+volume's Disk.info. If it is unavailable, Workbench falls back to its
+normal default CD icon. Data and mixed-mode discs continue to use
+their normal disk icons.
 
 
 Mount Options

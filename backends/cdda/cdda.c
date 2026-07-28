@@ -33,6 +33,9 @@
 #define CDDA_CDTEXT_NAME "CD-TEXT.txt"
 #define CDDA_CDTEXT_NODE_ID 0x43445458u
 #define CDDA_CDTEXT_LBA 0xfffffffdu
+#define CDDA_DISK_ICON_NAME "Disk.info"
+#define CDDA_DISK_ICON_NODE_ID 0x44494e46u
+#define CDDA_DISK_ICON_LBA 0xfffffffcu
 
 /* ------------------------------------------------------------------ */
 /* Header generation                                                   */
@@ -705,10 +708,31 @@ static int cdda_fill_cdtext_node(const cdda_context_t *ctx, odfs_node_t *node)
     return 1;
 }
 
+static int cdda_fill_disk_icon_node(const cdda_context_t *ctx,
+                                    odfs_node_t *node)
+{
+    if (ctx->is_mixed_mode || !ctx->disk_icon || ctx->disk_icon_size == 0)
+        return 0;
+
+    memset(node, 0, sizeof(*node));
+    node->id = CDDA_DISK_ICON_NODE_ID;
+    node->parent_id = 0;
+    node->backend = ODFS_BACKEND_CDDA;
+    node->kind = ODFS_NODE_VIRTUAL;
+    node->size = ctx->disk_icon_size;
+    node->extent.lba = CDDA_DISK_ICON_LBA;
+    node->extent.length = (uint32_t)ctx->disk_icon_size;
+    memcpy(node->name, CDDA_DISK_ICON_NAME, sizeof(CDDA_DISK_ICON_NAME));
+    return 1;
+}
+
 static int cdda_metadata_count(const cdda_context_t *ctx)
 {
     int count = 0;
 
+    if (!ctx->is_mixed_mode && ctx->disk_icon &&
+        ctx->disk_icon_size != 0)
+        count++;
     if (ctx->cddb_text && ctx->cddb_size != 0)
         count++;
     if (ctx->cdtext_text && ctx->cdtext_size != 0)
@@ -719,6 +743,12 @@ static int cdda_metadata_count(const cdda_context_t *ctx)
 static int cdda_fill_metadata_node(const cdda_context_t *ctx, int index,
                                    odfs_node_t *node)
 {
+    if (!ctx->is_mixed_mode && ctx->disk_icon &&
+        ctx->disk_icon_size != 0) {
+        if (index == 0)
+            return cdda_fill_disk_icon_node(ctx, node);
+        index--;
+    }
     if (ctx->cddb_text && ctx->cddb_size != 0) {
         if (index == 0)
             return cdda_fill_cddb_node(ctx, node);
@@ -1017,6 +1047,7 @@ static void cdda_unmount(void *backend_ctx)
         odfs_free(ctx->audio_cache);
         odfs_free(ctx->cddb_text);
         odfs_free(ctx->cdtext_text);
+        odfs_free(ctx->disk_icon);
         odfs_free(ctx);
     }
 }
@@ -1140,6 +1171,21 @@ static odfs_err_t cdda_read(void *backend_ctx,
             want = ctx->cdtext_size - (size_t)offset;
 
         memcpy(buf, ctx->cdtext_text + (size_t)offset, want);
+        *len = want;
+        return ODFS_OK;
+    }
+
+    if (file->id == CDDA_DISK_ICON_NODE_ID) {
+        size_t want = *len;
+
+        if (!ctx->disk_icon || offset >= ctx->disk_icon_size) {
+            *len = 0;
+            return ODFS_OK;
+        }
+        if (offset + want > ctx->disk_icon_size)
+            want = ctx->disk_icon_size - (size_t)offset;
+
+        memcpy(buf, ctx->disk_icon + (size_t)offset, want);
         *len = want;
         return ODFS_OK;
     }
@@ -1283,6 +1329,12 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
 
     if (odfs_strcasecmp(name, CDDA_CDTEXT_NAME) == 0) {
         if (cdda_fill_cdtext_node(ctx, out))
+            return ODFS_OK;
+        return ODFS_ERR_NOT_FOUND;
+    }
+
+    if (odfs_strcasecmp(name, CDDA_DISK_ICON_NAME) == 0) {
+        if (cdda_fill_disk_icon_node(ctx, out))
             return ODFS_OK;
         return ODFS_ERR_NOT_FOUND;
     }

@@ -298,6 +298,7 @@ AMIGAOS3_PACKAGE_NAME ?= ODFileSystem
 AMIGAOS3_PACKAGE     = $(AMIGA_BUILD)/$(AMIGAOS3_PACKAGE_NAME).lha
 AMIGAOS3_PACKAGE_DIR = $(AMIGA_BUILD)/$(AMIGAOS3_PACKAGE_NAME)-lha
 AMIGAOS3_README      = docs/ODFileSystem.readme
+AMIGA_DEFAULT_ICON   = platform/amiga/env-archive/def_cdda.info
 AMIGAOS4_PACKAGE_NAME ?= ODFileSystem-amigaos4
 AMIGAOS4_PACKAGE     = $(AMIGA_BUILD)/$(AMIGAOS4_PACKAGE_NAME).lha
 AMIGAOS4_PACKAGE_DIR = $(AMIGA_BUILD)/$(AMIGAOS4_PACKAGE_NAME)-lha
@@ -363,7 +364,7 @@ adf: amiga-test amiga-020 $(AMIGA_TEST_TOOL) $(ADF_DOSDRIVER) $(ADF_DOSDRIVER_IC
 		write $(ADF_DOSDRIVER_ICON)
 	@echo "  ADF image ready: $(ADF)"
 
-amigaos3-lha:
+amigaos3-lha: $(AMIGA_DEFAULT_ICON)
 	@if [ "$(AMIGA_TARGET)" != "os3" ]; then \
 		echo "  ERROR: amigaos3-lha requires CC=m68k-amigaos-gcc"; \
 		exit 1; \
@@ -386,14 +387,18 @@ amigaos3-lha:
 	@cp "$(ROM_TEST_BUILD)/ODFileSystem" \
 		"$(AMIGAOS3_PACKAGE_DIR)/ODFileSystem-rom-test"
 	@cp "$(AMIGAOS3_README)" "$(AMIGAOS3_PACKAGE_DIR)/README.md"
+	@mkdir -p "$(AMIGAOS3_PACKAGE_DIR)/Env-Archive/Sys"
+	@cp "$(AMIGA_DEFAULT_ICON)" \
+		"$(AMIGAOS3_PACKAGE_DIR)/Env-Archive/Sys/def_cdda.info"
 	@echo "  LHA   $(AMIGAOS3_PACKAGE)"
 	@(cd "$(AMIGAOS3_PACKAGE_DIR)" && \
 		$(LHA) -aq "$(CURDIR)/$(AMIGAOS3_PACKAGE)" \
 		ODFileSystem ODFileSystem020 ODFileSystem-test \
-		ODFileSystem-rom ODFileSystem-rom-test README.md)
+		ODFileSystem-rom ODFileSystem-rom-test README.md \
+		Env-Archive/Sys/def_cdda.info)
 	@echo "  LHA archive ready: $(AMIGAOS3_PACKAGE)"
 
-amigaos4-lha:
+amigaos4-lha: $(AMIGA_DEFAULT_ICON)
 	@if [ "$(AMIGA_TARGET)" != "os4" ]; then \
 		echo "  ERROR: amigaos4-lha requires CC=ppc-amigaos-gcc"; \
 		exit 1; \
@@ -410,11 +415,15 @@ amigaos4-lha:
 	@cp "$(AMIGA_TEST_BUILD)/CDFileSystem" \
 		"$(AMIGAOS4_PACKAGE_DIR)/CDFileSystem-test"
 	@cp "$(AMIGAOS4_README)" "$(AMIGAOS4_PACKAGE_DIR)/README.md"
+	@mkdir -p "$(AMIGAOS4_PACKAGE_DIR)/Env-Archive/Sys"
+	@cp "$(AMIGA_DEFAULT_ICON)" \
+		"$(AMIGAOS4_PACKAGE_DIR)/Env-Archive/Sys/def_cdda.info"
 	@echo "  LHA   $(AMIGAOS4_PACKAGE)"
 	@(cd "$(AMIGAOS4_PACKAGE_DIR)" && \
 		$(LHA) -aq "$(CURDIR)/$(AMIGAOS4_PACKAGE)" \
 		ODFileSystem-amigaos4 CDFileSystem \
-		ODFileSystem-amigaos4-test CDFileSystem-test README.md)
+		ODFileSystem-amigaos4-test CDFileSystem-test README.md \
+		Env-Archive/Sys/def_cdda.info)
 	@echo "  LHA archive ready: $(AMIGAOS4_PACKAGE)"
 
 # ROM profile: minimal build for burning into ROM

@@ -164,6 +164,48 @@ TEST(cdda_pure_audio_uses_leadout_for_last_track)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_pure_audio_exports_configured_disk_icon)
+{
+    static const uint8_t icon_data[] = { 0xe3, 0x10, 0x00, 0x01 };
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t icon;
+    void *backend_ctx = NULL;
+    cdda_context_t *cdda_ctx;
+    collect_ctx_t collect;
+    uint8_t buf[sizeof(icon_data)];
+    size_t len = sizeof(buf);
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.leadout_lba = 100;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].start_lba = 0;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root,
+                                  &backend_ctx));
+    cdda_ctx = backend_ctx;
+    cdda_ctx->disk_icon = odfs_malloc(sizeof(icon_data));
+    ASSERT(cdda_ctx->disk_icon != NULL);
+    memcpy(cdda_ctx->disk_icon, icon_data, sizeof(icon_data));
+    cdda_ctx->disk_icon_size = sizeof(icon_data);
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
+                                       collect_entry, &collect, NULL));
+    ASSERT_EQ(collect.count, 3);
+    ASSERT_STR_EQ(collect.entries[0].name, "Disk.info");
+
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "disk.info", &icon));
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &icon, 0,
+                                    buf, &len));
+    ASSERT_EQ(len, sizeof(icon_data));
+    ASSERT(memcmp(buf, icon_data, sizeof(icon_data)) == 0);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST(cdda_cddb_file_exposes_disc_id_and_query)
 {
     odfs_toc_t toc;
