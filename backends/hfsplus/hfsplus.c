@@ -18,6 +18,7 @@
 #include "odfs/log.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
+#include "odfs/timestamp.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -25,41 +26,6 @@
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-/* Mac epoch offset: seconds from 1904-01-01 to 1970-01-01 */
-#define HFSP_MAC_EPOCH  2082844800UL
-
-static void hfsp_parse_date(uint32_t mac_secs, odfs_timestamp_t *ts)
-{
-    memset(ts, 0, sizeof(*ts));
-    if (mac_secs < HFSP_MAC_EPOCH)
-        return;
-    uint32_t unix_secs = mac_secs - HFSP_MAC_EPOCH;
-    uint32_t days = unix_secs / 86400;
-    uint32_t rem = unix_secs % 86400;
-    ts->hour = rem / 3600;
-    ts->minute = (rem % 3600) / 60;
-    ts->second = rem % 60;
-
-    int y = 1970;
-    while (1) {
-        int yd = 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
-        if (days < (uint32_t)yd) break;
-        days -= yd;
-        y++;
-    }
-    ts->year = y;
-    static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    int leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
-    int m;
-    for (m = 0; m < 12; m++) {
-        int md = mdays[m] + (m == 1 ? leap : 0);
-        if (days < (uint32_t)md) break;
-        days -= md;
-    }
-    ts->month = m + 1;
-    ts->day = days + 1;
-}
 
 /* parse fork data from 80 bytes on disc */
 static void hfsp_parse_fork(const uint8_t *p, hfsp_fork_t *f)
@@ -382,7 +348,8 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     root_out->extent.lba = HFSPLUS_CNID_ROOT;
     root_out->extent.length = 0;
 
-    hfsp_parse_date(hfsp_be32(&vh[20]), &root_out->mtime);
+    odfs_timestamp_from_mac_time(hfsp_be32(&vh[20]),
+                                 &root_out->mtime);
     root_out->ctime = root_out->mtime;
     ctx->root = *root_out;
 
@@ -613,7 +580,8 @@ static odfs_err_t hfsp_readdir_record_cb(const uint8_t *key, size_t key_len,
             return ODFS_OK;
         fnode.kind = ODFS_NODE_DIR;
         fnode.extent.lba = hfsp_be32(&data[8]);
-        hfsp_parse_date(hfsp_be32(&data[16]), &fnode.mtime);
+        odfs_timestamp_from_mac_time(hfsp_be32(&data[16]),
+                                     &fnode.mtime);
     } else {
         if (data_len < 88)
             return ODFS_OK;
@@ -625,7 +593,8 @@ static odfs_err_t hfsp_readdir_record_cb(const uint8_t *key, size_t key_len,
             fnode.extent.lba = dfork.extents[0].start_block;
             fnode.extent.length = (uint32_t)dfork.logical_size;
         }
-        hfsp_parse_date(hfsp_be32(&data[16]), &fnode.mtime);
+        odfs_timestamp_from_mac_time(hfsp_be32(&data[16]),
+                                     &fnode.mtime);
     }
     fnode.ctime = fnode.mtime;
 

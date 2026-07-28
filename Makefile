@@ -198,6 +198,7 @@ CORE_SRCS = \
     core/error.c \
     core/log.c \
     core/node.c \
+    core/timestamp.c \
     core/namefix.c \
     core/cache_block.c \
     core/cache_meta.c \

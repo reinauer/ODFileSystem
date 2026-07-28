@@ -18,6 +18,7 @@
 #include "odfs/namefix.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
+#include "odfs/timestamp.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -25,47 +26,6 @@
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-/* Mac epoch: 1904-01-01. Difference to Unix epoch in seconds. */
-#define HFS_MAC_EPOCH_DIFF  2082844800UL
-
-static void hfs_parse_mac_date(uint32_t mac_secs, odfs_timestamp_t *ts)
-{
-    /* rough conversion: subtract Mac epoch offset, then break into y/m/d */
-    memset(ts, 0, sizeof(*ts));
-    if (mac_secs < HFS_MAC_EPOCH_DIFF)
-        return;
-
-    uint32_t unix_secs = mac_secs - HFS_MAC_EPOCH_DIFF;
-    /* Amiga epoch is 1978, but we store in our timestamp struct which
-       has a year field. Use a simple days-from-epoch conversion. */
-    uint32_t days = unix_secs / 86400;
-    uint32_t rem = unix_secs % 86400;
-    ts->hour = rem / 3600;
-    ts->minute = (rem % 3600) / 60;
-    ts->second = rem % 60;
-
-    /* year/month/day from days since 1970-01-01 */
-    int y = 1970;
-    while (1) {
-        int yd = 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
-        if (days < (uint32_t)yd) break;
-        days -= yd;
-        y++;
-    }
-    ts->year = y;
-
-    static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    int leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
-    int m;
-    for (m = 0; m < 12; m++) {
-        int md = mdays[m] + (m == 1 ? leap : 0);
-        if (days < (uint32_t)md) break;
-        days -= md;
-    }
-    ts->month = m + 1;
-    ts->day = days + 1;
-}
 
 /* convert allocation block number to physical byte offset */
 static uint64_t hfs_ab_to_byte(const hfs_context_t *ctx, uint16_t ab)
@@ -324,7 +284,8 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     root_out->extent.length = 0;
 
     /* parse MDB modification date for root timestamp */
-    hfs_parse_mac_date(hfs_be32(&mdb[HFS_MDB_LSMOD]), &root_out->mtime);
+    odfs_timestamp_from_mac_time(hfs_be32(&mdb[HFS_MDB_LSMOD]),
+                                 &root_out->mtime);
     root_out->ctime = root_out->mtime;
     ctx->root = *root_out;
 
@@ -532,7 +493,7 @@ static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
         node.kind = ODFS_NODE_DIR;
         uint32_t dir_id = hfs_be32(&data[6]);
         node.extent.lba = dir_id; /* store CNID for readdir */
-        hfs_parse_mac_date(hfs_be32(&data[14]), &node.mtime);
+        odfs_timestamp_from_mac_time(hfs_be32(&data[14]), &node.mtime);
     } else if (rec_type == HFS_CAT_FILE && data_len >= 52) {
         node.kind = ODFS_NODE_FILE;
         node.size = hfs_be32(&data[26]); /* data fork logical length */
@@ -541,7 +502,7 @@ static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
             node.extent.lba = hfs_be16(&data[74]);    /* first extent start AB */
             node.extent.length = (uint32_t)node.size;
         }
-        hfs_parse_mac_date(hfs_be32(&data[48]), &node.mtime);
+        odfs_timestamp_from_mac_time(hfs_be32(&data[48]), &node.mtime);
     }
     node.ctime = node.mtime;
 
