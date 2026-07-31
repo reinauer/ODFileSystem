@@ -13,13 +13,13 @@
 void odfs_timestamp_from_mac_time(uint32_t mac_secs,
                                   odfs_timestamp_t *timestamp)
 {
-    static const int mdays[] = {
+    static const uint8_t mdays[] = {
         31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
     };
     uint32_t unix_secs;
     uint32_t days;
     uint32_t rem;
-    int leap;
+    uint32_t leap;
     int year;
     int month;
 
@@ -30,17 +30,17 @@ void odfs_timestamp_from_mac_time(uint32_t mac_secs,
     unix_secs = mac_secs - ODFS_MAC_EPOCH;
     days = unix_secs / 86400;
     rem = unix_secs % 86400;
-    timestamp->hour = rem / 3600;
-    timestamp->minute = (rem % 3600) / 60;
-    timestamp->second = rem % 60;
+    timestamp->hour = (uint8_t)(rem / 3600U);
+    timestamp->minute = (uint8_t)((rem % 3600U) / 60U);
+    timestamp->second = (uint8_t)(rem % 60U);
 
     year = 1970;
     while (1) {
-        int year_days =
-            365 + ((year % 4 == 0 &&
-                    (year % 100 != 0 || year % 400 == 0)) ? 1 : 0);
+        uint32_t year_days =
+            365U + ((year % 4 == 0 &&
+                     (year % 100 != 0 || year % 400 == 0)) ? 1U : 0U);
 
-        if (days < (uint32_t)year_days)
+        if (days < year_days)
             break;
         days -= year_days;
         year++;
@@ -48,14 +48,14 @@ void odfs_timestamp_from_mac_time(uint32_t mac_secs,
     timestamp->year = year;
 
     leap = (year % 4 == 0 &&
-            (year % 100 != 0 || year % 400 == 0)) ? 1 : 0;
+            (year % 100 != 0 || year % 400 == 0)) ? 1U : 0U;
     for (month = 0; month < 12; month++) {
-        int month_days = mdays[month] + (month == 1 ? leap : 0);
+        uint32_t month_days = mdays[month] + (month == 1 ? leap : 0U);
 
-        if (days < (uint32_t)month_days)
+        if (days < month_days)
             break;
         days -= month_days;
     }
-    timestamp->month = month + 1;
-    timestamp->day = days + 1;
+    timestamp->month = (uint8_t)(month + 1);
+    timestamp->day = (uint8_t)(days + 1U);
 }

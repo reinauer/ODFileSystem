@@ -100,7 +100,7 @@ void odfs_log(odfs_log_state_t *state,
 
     va_start(ap, fmt);
     if ((size_t)hdr < sizeof(buf))
-        odfs_vsnprintf(buf + hdr, sizeof(buf) - hdr, fmt, ap);
+        odfs_vsnprintf(buf + hdr, sizeof(buf) - (size_t)hdr, fmt, ap);
     va_end(ap);
 
     state->sink.write(level, subsys, buf, state->sink.ctx);

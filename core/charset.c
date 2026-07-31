@@ -55,7 +55,7 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
         return ODFS_ERR_INVAL;
 
     for (si = 0; si + 1 < src_len; si += 2) {
-        uint16_t cp = ((uint16_t)src[si] << 8) | src[si + 1];
+        uint16_t cp = (uint16_t)(((uint16_t)src[si] << 8) | src[si + 1]);
 
         if (cp == 0)
             break; /* NUL terminator */
@@ -142,7 +142,7 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
             break;
 
         if (lowercase && c >= 'A' && c <= 'Z')
-            c = c - 'A' + 'a';
+            c = (char)(c - 'A' + 'a');
 
         dst[di++] = c;
     }
