@@ -171,7 +171,8 @@ HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 endif
 
 CFLAGS = $(AMIGA_OPT) $(AMIGA_CPUFLAGS) $(AMIGA_SYSFLAGS) -nostartfiles \
-         -Wall -Wextra -Werror \
+         -Wall -Wextra -Wshadow -Wcast-align \
+         -Wconversion -Werror \
          $(AMIGA_WARNFLAGS) \
          -Wstrict-prototypes -Wmissing-prototypes \
          -Wno-array-bounds \
