@@ -128,13 +128,13 @@ void odfs_amiga_delete_io_request(struct IORequest *req)
 
 LONG odfs_amiga_alloc_signal(LONG num)
 {
-    return AllocSignal(num);
+    return AllocSignal((BYTE)num);
 }
 
 void odfs_amiga_free_signal(LONG num)
 {
     if (num != -1)
-        FreeSignal(num);
+        FreeSignal((BYTE)num);
 }
 
 void *odfs_amiga_create_dos_entry(const char *name, LONG type)

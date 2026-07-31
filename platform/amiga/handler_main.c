@@ -961,7 +961,8 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     }
 
     /* parse TOC response */
-    uint16_t toc_len = ((uint16_t)buf[0] << 8) | buf[1];
+    uint16_t toc_len =
+        (uint16_t)(((uint16_t)buf[0] << 8) | buf[1]);
     uint8_t first_track = buf[2];
     uint8_t last_track = buf[3];
     (void)first_track;
@@ -1097,7 +1098,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
         return ODFS_ERR_UNSUPPORTED;
     }
 
-    data_len = ((uint16_t)hdr[0] << 8) | hdr[1];
+    data_len = (uint16_t)(((uint16_t)hdr[0] << 8) | hdr[1]);
     total_len = (size_t)data_len + 2u;
     if (total_len <= sizeof(hdr))
         return ODFS_ERR_BAD_FORMAT;
@@ -1174,13 +1175,16 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
 {
     uint8_t cmd[6];
-    uint8_t mode_data[12];
+    union {
+        UWORD words[6];
+        uint8_t bytes[12];
+    } mode_data;
     struct SCSICmd scsi;
     BYTE io_err;
     LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
-    memset(mode_data, 0, sizeof(mode_data));
+    memset(&mode_data, 0, sizeof(mode_data));
     memset(&scsi, 0, sizeof(scsi));
 
     /* MODE SELECT(6) CDB */
@@ -1189,14 +1193,14 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     cmd[4] = 12;    /* parameter list length */
 
     /* Mode parameter header + block descriptor */
-    mode_data[3] = 8;  /* block descriptor length */
-    /* mode_data[4] = 0; density code (default) */
+    mode_data.bytes[3] = 8;  /* block descriptor length */
+    /* mode_data.bytes[4] = 0; density code (default) */
     /* block length in bytes 9-11 (big-endian) */
-    mode_data[9]  = (uint8_t)(block_length >> 16);
-    mode_data[10] = (uint8_t)(block_length >> 8);
-    mode_data[11] = (uint8_t)(block_length);
+    mode_data.bytes[9]  = (uint8_t)(block_length >> 16);
+    mode_data.bytes[10] = (uint8_t)(block_length >> 8);
+    mode_data.bytes[11] = (uint8_t)(block_length);
 
-    scsi.scsi_Data      = (UWORD *)mode_data;
+    scsi.scsi_Data      = mode_data.words;
     scsi.scsi_Length     = sizeof(mode_data);
     scsi.scsi_CmdLength  = 6;
     scsi.scsi_Command    = cmd;
@@ -1983,7 +1987,7 @@ static odfs_lock_t *lock_from_entry(handler_global_t *g,
 
     lock = ODFS_LOCK_DOS(ol);
     lock->fl_Link   = 0;
-    lock->fl_Key    = ol->key;
+    lock->fl_Key    = (LONG)ol->key;
     lock->fl_Access = access;
     lock->fl_Task   = g->dosport;
     lock->fl_Volume = MKBADDR(volume_node_ptr(entry->volume));
@@ -2215,8 +2219,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
         const char *end = p;
         while (*end && *end != '/')
             end++;
-        int len = (int)(end - p);
-        if (len >= (int)sizeof(comp))
+        size_t len = (size_t)(end - p);
+        if (len >= sizeof(comp))
             return ODFS_ERR_NAME_TOO_LONG;
 
         memcpy(comp, p, len);
@@ -2294,10 +2298,11 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
                      const odfs_node_t *fnode)
 {
+    typedef __typeof__(fib->fib_Size) fib_compat_t;
     odfs_handler_node_info_t info;
-    int name_len;
-    int comment_len;
-    int max_name_len;
+    size_t name_len;
+    size_t comment_len;
+    size_t max_name_len;
 
     memset(fib, 0, sizeof(*fib));
     odfs_handler_fill_node_info(g, fnode, &info);
@@ -2306,29 +2311,29 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
     name_len = strlen(info.name);
     if (name_len > max_name_len)
         name_len = max_name_len;
-    fib->fib_FileName[0] = name_len;
+    fib->fib_FileName[0] = (TEXT)name_len;
     memcpy(&fib->fib_FileName[1], info.name, name_len);
 
     fib->fib_DirEntryType = info.fib_type;
 #if !ODFS_AMIGA_OS4
     fib->fib_EntryType = fib->fib_DirEntryType;
 #endif
-    /* fib_Size is a signed LONG; a >=2 GiB DVD file would wrap negative
-     * and make copy tools misbehave. Saturate like other filesystems. */
-    fib->fib_Size = (info.size > 0x7FFFFFFFull) ? 0x7FFFFFFFl
-                                                : (LONG)info.size;
-    fib->fib_NumBlocks = (LONG)((info.size + 511) / 512);
-    fib->fib_Protection = info.protection;
+    /* OS3 exposes fib_Size as a signed LONG; cap at its positive range
+     * on both ABIs so classic copy tools never see a wrapped size. */
+    fib->fib_Size = (fib_compat_t)
+        ((info.size > 0x7FFFFFFFull) ? 0x7FFFFFFFull : info.size);
+    fib->fib_NumBlocks = (fib_compat_t)((info.size + 511U) / 512U);
+    fib->fib_Protection = (fib_compat_t)info.protection;
     fib->fib_Date = info.date;
 
     comment_len = strlen(info.comment);
-    if (comment_len > (int)sizeof(fib->fib_Comment) - 1)
-        comment_len = (int)sizeof(fib->fib_Comment) - 1;
-    fib->fib_Comment[0] = comment_len;
+    if (comment_len > sizeof(fib->fib_Comment) - 1U)
+        comment_len = sizeof(fib->fib_Comment) - 1U;
+    fib->fib_Comment[0] = (TEXT)comment_len;
     if (comment_len > 0)
         memcpy(&fib->fib_Comment[1], info.comment, comment_len);
 
-    fib->fib_DiskKey = (LONG)info.key;
+    fib->fib_DiskKey = (fib_compat_t)info.key;
 }
 
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode)
@@ -3116,6 +3121,8 @@ LONG odfs_handler_fill_info(handler_global_t *g,
                             odfs_lock_t *ol,
                             struct InfoData *info)
 {
+    typedef __typeof__(info->id_NumBlocks) info_block_t;
+
     if (!g || !info)
         return ERROR_REQUIRED_ARG_MISSING;
 
@@ -3132,11 +3139,12 @@ LONG odfs_handler_fill_info(handler_global_t *g,
 
     memset(info, 0, sizeof(*info));
     info->id_NumSoftErrors = 0;
-    info->id_UnitNumber    = g->devunit;
+    info->id_UnitNumber    = (LONG)g->devunit;
     info->id_DiskState     = ID_WRITE_PROTECTED;
-    info->id_NumBlocks     = g->mounted ? g->mount.total_blocks : 0;
+    info->id_NumBlocks = (info_block_t)
+        (g->mounted ? g->mount.total_blocks : 0U);
     info->id_NumBlocksUsed = info->id_NumBlocks;
-    info->id_BytesPerBlock = g->sector_size;
+    info->id_BytesPerBlock = (info_block_t)g->sector_size;
     info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
     info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
@@ -3902,6 +3910,12 @@ static size_t exall_align_size(size_t size)
     return (size + 1u) & ~1u;
 }
 
+static inline struct ExAllData *exall_next_entry(struct ExAllData *entry,
+                                                  size_t size)
+{
+    return (struct ExAllData *)(uintptr_t)(((UBYTE *)entry) + size);
+}
+
 static size_t exall_fixed_size(LONG data)
 {
     static const size_t sizes[] = {
@@ -3972,7 +3986,7 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
             ed->ed_Size = (entry->size > 0xFFFFFFFFull)
                               ? 0xFFFFFFFFul : (ULONG)entry->size;
 
-        ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
+        ed->ed_Next = exall_next_entry(ed, need);
         *cursor = ed->ed_Next;
         *remaining -= (LONG)need;
         return 1;
@@ -4020,7 +4034,7 @@ static int exall_fill_entry(handler_global_t *g, struct ExAllData **cursor,
         ed->ed_OwnerGID = 0;
     }
 
-    ed->ed_Next = (struct ExAllData *)(((UBYTE *)ed) + need);
+    ed->ed_Next = exall_next_entry(ed, need);
     *cursor = ed->ed_Next;
     *remaining -= (LONG)need;
     return 1;
@@ -4364,7 +4378,7 @@ static void action_current_volume(handler_global_t *g,
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
 
     pkt->dp_Res1 = MKBADDR(volume_node_ptr(fh ? fh_volume(fh) : g->current_volume));
-    pkt->dp_Res2 = g->devunit;
+    pkt->dp_Res2 = (LONG)g->devunit;
 }
 
 static void action_inhibit(handler_global_t *g, struct DosPacket *pkt)
@@ -4728,7 +4742,7 @@ static LONG activate_vector_port(handler_global_t *g)
     vp->MP.mp_SigTask = FindTask(NULL);
 
     if (GetFileSystemVectorPort(&vp->MP, FS_VECTORPORT_VERSION) != vp) {
-        FreeSignal(sigbit);
+        FreeSignal((BYTE)sigbit);
         odfs_os4_free_vector_port(vp);
         return ERROR_OBJECT_WRONG_TYPE;
     }
@@ -5021,7 +5035,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
         len = AROS_BSTR_strlen(de->de_Control);
         if (len <= 0 || (size_t)len >= sizeof(buf) - 1)
             return;
-        memcpy(buf, AROS_BSTR_ADDR(de->de_Control), len);
+        memcpy(buf, AROS_BSTR_ADDR(de->de_Control), (size_t)len);
         buf[len] = '\n'; /* ReadArgs needs newline terminator */
         buf[len + 1] = '\0';
     }
@@ -5079,11 +5093,16 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
             opts->prefer_udf = 1;
         if (args[CTRL_AIFF])
             opts->prefer_aiff = 1;
-        if (args[CTRL_FILEBUFFERS])
-            opts->cache_blocks = *(LONG *)args[CTRL_FILEBUFFERS];
-        if (args[CTRL_METACACHE]) {
-            LONG kib = *(LONG *)args[CTRL_METACACHE];
+        if (args[CTRL_FILEBUFFERS]) {
+            LONG blocks;
 
+            memcpy(&blocks, args[CTRL_FILEBUFFERS], sizeof(blocks));
+            opts->cache_blocks = (uint32_t)blocks;
+        }
+        if (args[CTRL_METACACHE]) {
+            LONG kib;
+
+            memcpy(&kib, args[CTRL_METACACHE], sizeof(kib));
             opts->meta_cache_kib = (kib > 0) ? (uint32_t)kib : 0;
         }
 
@@ -5601,6 +5620,13 @@ static void handle_media_change(handler_global_t *g)
 /* handler main entry point                                            */
 /* ------------------------------------------------------------------ */
 
+static struct DosPacket *packet_from_message(const struct Message *msg)
+{
+    if (!msg)
+        return NULL;
+    return (struct DosPacket *)(uintptr_t)msg->mn_Node.ln_Name;
+}
+
 void handler_main_startup(struct Message *startup_msg)
 {
     handler_global_t *g;
@@ -5625,7 +5651,7 @@ void handler_main_startup(struct Message *startup_msg)
          * packet is replied.
          */
         if (startup_msg && startup_msg->mn_Node.ln_Name) {
-            pkt = (struct DosPacket *)startup_msg->mn_Node.ln_Name;
+            pkt = packet_from_message(startup_msg);
             if (pkt->dp_Port) {
                 pkt->dp_Res1 = DOSFALSE;
                 pkt->dp_Res2 = ERROR_NO_FREE_STORE;
@@ -5674,7 +5700,9 @@ void handler_main_startup(struct Message *startup_msg)
         WaitPort(g->dosport);
         msg = GetMsg(g->dosport);
     }
-    pkt = (struct DosPacket *)msg->mn_Node.ln_Name;
+    pkt = packet_from_message(msg);
+    if (!pkt)
+        goto shutdown;
 
     g->devnode = (struct DeviceNode *)BADDR(pkt->dp_Arg3);
     fssm = (struct FileSysStartupMsg *)BADDR(pkt->dp_Arg2);
@@ -5730,7 +5758,8 @@ void handler_main_startup(struct Message *startup_msg)
         int len = AROS_BSTR_strlen(fssm->fssm_Device);
         if (len >= (int)sizeof(g->devname))
             len = sizeof(g->devname) - 1;
-        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device), len);
+        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device),
+               (size_t)len);
         g->devname[len] = '\0';
     }
     if (g->devname[0] == '\0') {
@@ -5951,7 +5980,7 @@ void handler_main_startup(struct Message *startup_msg)
         /* DOS packets */
         if (sigs & dossig) {
             while ((msg = GetMsg(g->dosport)) != NULL) {
-                pkt = (struct DosPacket *)msg->mn_Node.ln_Name;
+                pkt = packet_from_message(msg);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
                 trace_pkt(g, "dequeue", pkt);
 #endif

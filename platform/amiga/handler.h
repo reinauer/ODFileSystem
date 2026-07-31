@@ -15,6 +15,7 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
+#include <stdint.h>
 
 #include "amiga_target_compat.h"
 #include "aros_compat.h"
@@ -254,7 +255,7 @@ struct odfs_fh {
 
 /* Convert BPTR lock to our odfs_lock_t */
 #define LOCK_FROM_BPTR(bptr) \
-    ((bptr) ? (odfs_lock_t *)((UBYTE *)BADDR(bptr) - \
+    ((bptr) ? (odfs_lock_t *)(uintptr_t)((UBYTE *)BADDR(bptr) - \
      offsetof(odfs_lock_t, lock)) : NULL)
 
 /* Convert odfs_lock_t to BPTR for DOS */
@@ -263,7 +264,7 @@ struct odfs_fh {
 
 /* Convert a direct DOS lock pointer to our odfs_lock_t */
 #define LOCK_FROM_PTR(ptr) \
-    ((ptr) ? (odfs_lock_t *)((UBYTE *)(ptr) - \
+    ((ptr) ? (odfs_lock_t *)(uintptr_t)((UBYTE *)(ptr) - \
      offsetof(odfs_lock_t, lock)) : NULL)
 
 /* Convert odfs_lock_t to a direct DOS lock pointer */
