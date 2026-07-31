@@ -18,7 +18,7 @@
 
 static inline uint16_t rr_sig(const uint8_t *p)
 {
-    return (uint16_t)(p[0] << 8) | p[1];
+    return (uint16_t)((p[0] << 8) | p[1]);
 }
 
 static inline uint32_t rr_read_le32(const uint8_t *p)
@@ -86,7 +86,7 @@ static void rr_parse_ts7(const uint8_t *d, odfs_timestamp_t *ts)
     ts->hour      = d[3];
     ts->minute    = d[4];
     ts->second    = d[5];
-    ts->tz_offset = (int16_t)((int8_t)d[6]) * 15;
+    ts->tz_offset = (int16_t)((int8_t)d[6] * 15);
 }
 
 /*
@@ -99,12 +99,12 @@ static void rr_parse_ts17(const uint8_t *d, odfs_timestamp_t *ts)
     for (i = 0; i < 4; i++)
         year = year * 10 + (d[i] - '0');
     ts->year   = year;
-    ts->month  = (d[4] - '0') * 10 + (d[5] - '0');
-    ts->day    = (d[6] - '0') * 10 + (d[7] - '0');
-    ts->hour   = (d[8] - '0') * 10 + (d[9] - '0');
-    ts->minute = (d[10] - '0') * 10 + (d[11] - '0');
-    ts->second = (d[12] - '0') * 10 + (d[13] - '0');
-    ts->tz_offset = (int16_t)((int8_t)d[16]) * 15;
+    ts->month  = (uint8_t)((d[4] - '0') * 10 + (d[5] - '0'));
+    ts->day    = (uint8_t)((d[6] - '0') * 10 + (d[7] - '0'));
+    ts->hour   = (uint8_t)((d[8] - '0') * 10 + (d[9] - '0'));
+    ts->minute = (uint8_t)((d[10] - '0') * 10 + (d[11] - '0'));
+    ts->second = (uint8_t)((d[12] - '0') * 10 + (d[13] - '0'));
+    ts->tz_offset = (int16_t)((int8_t)d[16] * 15);
 }
 
 /* ------------------------------------------------------------------ */

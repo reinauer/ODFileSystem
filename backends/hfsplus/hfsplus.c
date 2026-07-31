@@ -103,7 +103,7 @@ static odfs_err_t hfsp_read_node(const hfsplus_context_t *ctx,
 static uint16_t hfsp_rec_offset(const uint8_t *node, uint32_t node_size,
                                  int rec_idx)
 {
-    uint32_t pos = node_size - 2 * (rec_idx + 1);
+    uint32_t pos = node_size - 2U * ((uint32_t)rec_idx + 1U);
     return hfsp_be16(&node[pos]);
 }
 
@@ -169,11 +169,11 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
     for (uint32_t lba = session_start; lba < session_start + 128; lba++) {
         if (odfs_cache_read(cache, lba, &sector) != ODFS_OK)
             continue;
-        for (int off = 0; off <= 2048 - 2; off += 512) {
+        for (uint32_t off = 0; off <= 2048U - 2U; off += 512U) {
             uint16_t sig = hfsp_be16(&sector[off]);
             if (sig == HFSPLUS_SIG || sig == HFSX_SIG) {
                 /* VH is at this offset; volume start is 1024 before it */
-                uint64_t vh_byte = (uint64_t)lba * 2048 + off;
+                uint64_t vh_byte = (uint64_t)lba * 2048U + off;
                 *vh_offset_out = vh_byte;
                 return ODFS_OK;
             }

@@ -31,7 +31,7 @@
 /* BE helpers */
 static inline uint16_t hfsp_be16(const uint8_t *p)
 {
-    return ((uint16_t)p[0] << 8) | p[1];
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
 }
 
 static inline uint32_t hfsp_be32(const uint8_t *p)

@@ -39,7 +39,7 @@ static inline uint32_t iso_read_le32(const uint8_t *p)
 /* read little-endian 16 from a both-byte-order 4-byte field */
 static inline uint16_t iso_read_le16(const uint8_t *p)
 {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
 /* copy a fixed-length string field, trimming trailing spaces and NUL */

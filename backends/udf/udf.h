@@ -68,7 +68,7 @@
 
 static inline uint16_t udf_le16(const uint8_t *p)
 {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
 static inline uint32_t udf_le32(const uint8_t *p)

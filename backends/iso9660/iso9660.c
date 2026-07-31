@@ -41,7 +41,7 @@ static void iso_parse_dir_date(const uint8_t *d, int high_sierra,
     if (high_sierra)
         ts->tz_offset = 0;
     else
-        ts->tz_offset = (int16_t)((int8_t)d[6]) * 15; /* 15 min intervals */
+        ts->tz_offset = (int16_t)((int8_t)d[6] * 15); /* 15 min intervals */
 }
 
 #if ODFS_FEATURE_ROCK_RIDGE
@@ -126,7 +126,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
         return 0; /* malformed */
 
     name_len = data[ISO_DR_NAME_LEN];
-    if (33 + name_len > rec_len)
+    if (33U + (size_t)name_len > rec_len)
         return 0; /* malformed */
 
     /* Initialize the fields a record may leave untouched instead of
@@ -178,7 +178,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     /* System Use Area starts after filename, padded to even offset.
      * ECMA-119: if name_len is even, a pad byte follows the name.
      * High Sierra predates SUSP, so no System Use Area is reported. */
-    name_end = 33 + name_len;
+    name_end = 33U + (size_t)name_len;
     if ((name_len & 1) == 0)
         name_end++; /* pad byte after even-length filename */
     if (!high_sierra && name_end < rec_len && sua_out && sua_len_out) {

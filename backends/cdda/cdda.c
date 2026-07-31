@@ -896,8 +896,8 @@ static void cdda_track_name(int track_num,
     buf[len++] = 'a';
     buf[len++] = 'c';
     buf[len++] = 'k';
-    buf[len++] = '0' + (track_num / 10);
-    buf[len++] = '0' + (track_num % 10);
+    buf[len++] = (char)('0' + (track_num / 10));
+    buf[len++] = (char)('0' + (track_num % 10));
     buf[len++] = '.';
     while (*ext)
         buf[len++] = *ext++;

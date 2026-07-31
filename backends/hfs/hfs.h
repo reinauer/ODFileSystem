@@ -63,7 +63,7 @@
 
 static inline uint16_t hfs_be16(const uint8_t *p)
 {
-    return ((uint16_t)p[0] << 8) | p[1];
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
 }
 
 static inline uint32_t hfs_be32(const uint8_t *p)

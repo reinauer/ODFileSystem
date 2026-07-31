@@ -34,12 +34,12 @@ static int udf_read_tag(const uint8_t *data, udf_tag_t *tag)
     tag->location   = udf_le32(&data[12]);
 
     /* verify tag checksum (sum of bytes 0-3,5-15 mod 256) */
-    uint8_t sum = 0;
+    uint32_t sum = 0;
     for (int i = 0; i < 16; i++) {
         if (i != 4)
             sum += data[i];
     }
-    return (sum == tag->checksum) ? 1 : 0;
+    return ((uint8_t)sum == tag->checksum) ? 1 : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -55,7 +55,7 @@ static void udf_decode_dstring(const uint8_t *src, size_t field_len,
     }
 
     /* last byte of d-string is the used length */
-    uint8_t used = src[field_len - 1];
+    size_t used = src[field_len - 1];
     if (used == 0 || used > field_len - 1) {
         dst[0] = '\0';
         return;

@@ -83,7 +83,7 @@ static uint16_t hfs_rec_offset(const uint8_t *node, uint32_t node_size,
                                 int rec_idx)
 {
     /* offset table is at end of node, growing backward: 2 bytes per entry */
-    uint32_t pos = node_size - 2 * (rec_idx + 1);
+    uint32_t pos = node_size - 2U * ((uint32_t)rec_idx + 1U);
     return hfs_be16(&node[pos]);
 }
 
@@ -406,12 +406,13 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
             found_start = 1;
 
             /* record data follows the key (padded to even boundary) */
-            uint16_t data_off = off + 1 + klen;
+            uint32_t data_off = off + 1U + klen;
             if (data_off & 1) data_off++; /* word-align */
-            uint16_t data_len = (next_off > data_off) ? next_off - data_off : 0;
+            uint32_t data_len =
+                (next_off > data_off) ? next_off - data_off : 0U;
 
             if (data_off < ctx->cat_node_size && data_len > 0) {
-                err = callback(&node_buf[off], klen + 1,
+                err = callback(&node_buf[off], (size_t)klen + 1U,
                                &node_buf[data_off], data_len, cb_ctx);
                 if (err != ODFS_OK) {
                     odfs_free(node_buf);
