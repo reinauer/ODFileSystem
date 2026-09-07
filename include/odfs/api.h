@@ -101,10 +101,12 @@ odfs_err_t odfs_readlink(odfs_mount_t *mnt,
                            char *buf,
                            size_t buf_size);
 
-/* resolve full path from root */
+#if !defined(AMIGA)
+/* Host path resolver; Amiga frontends resolve paths through DOS locks. */
 odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
                                const char *path,
                                odfs_node_t *out);
+#endif
 
 /* multisession: find last session start LBA */
 odfs_err_t odfs_find_last_session(odfs_media_t *media,

@@ -54,11 +54,13 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
                                        char *dst, size_t dst_size,
                                        int lowercase);
 
+#if !defined(AMIGA)
 /*
- * Fallback substitution: replace non-printable / non-Amiga-safe
+ * Host-only fallback: replace non-printable / non-Amiga-safe
  * characters in a UTF-8 string with a replacement char.
  */
 void odfs_sanitize_name(char *name, size_t len, char replacement);
+#endif
 
 /*
  * Convert a POSIX-style symlink target to AmigaDOS path syntax.

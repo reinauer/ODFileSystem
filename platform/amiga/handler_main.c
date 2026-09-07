@@ -24,6 +24,12 @@
 #define ODFS_FS_UNLOCK(g) ((void)0)
 #endif
 
+#if ODFS_AMIGA_OS4
+#define ODFS_VECTOR_LINKAGE
+#else
+#define ODFS_VECTOR_LINKAGE static
+#endif
+
 #if ODFS_FEATURE_CDDA
 #include "cdda/cdda.h"
 #endif
@@ -1781,9 +1787,10 @@ static void node_date(const odfs_node_t *node, struct DateStamp *ds)
     ds->ds_Tick   = node->mtime.second * TICKS_PER_SECOND;
 }
 
-void odfs_handler_fill_node_info(handler_global_t *g,
-                                 const odfs_node_t *node,
-                                 odfs_handler_node_info_t *info)
+ODFS_VECTOR_LINKAGE void
+odfs_handler_fill_node_info(handler_global_t *g,
+                            const odfs_node_t *node,
+                            odfs_handler_node_info_t *info)
 {
     if (!info)
         return;
@@ -2523,11 +2530,12 @@ static LONG resolve_object_into_entry(handler_global_t *g,
     return 0;
 }
 
-LONG odfs_handler_lock_object(handler_global_t *g,
-                              odfs_lock_t *parent_lock,
-                              const char *path,
-                              LONG access,
-                              odfs_lock_t **out)
+ODFS_VECTOR_LINKAGE LONG
+odfs_handler_lock_object(handler_global_t *g,
+                         odfs_lock_t *parent_lock,
+                         const char *path,
+                         LONG access,
+                         odfs_lock_t **out)
 {
     odfs_entry_t *entry;
     LONG err_dos;
@@ -2561,7 +2569,8 @@ LONG odfs_handler_lock_object(handler_global_t *g,
     return 0;
 }
 
-LONG odfs_handler_free_lock_object(handler_global_t *g, odfs_lock_t *ol)
+ODFS_VECTOR_LINKAGE LONG
+odfs_handler_free_lock_object(handler_global_t *g, odfs_lock_t *ol)
 {
     if (!ol)
         return 0;
@@ -2832,6 +2841,7 @@ LONG odfs_handler_same_lock_object(handler_global_t *g,
     return 0;
 }
 
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_same_file_object(handler_global_t *g,
                                    odfs_fh_t *fh1,
                                    odfs_fh_t *fh2,
@@ -2860,12 +2870,14 @@ LONG odfs_handler_same_file_object(handler_global_t *g,
         *same_result = LOCK_SAME;
     return 0;
 }
+#endif
 
-LONG odfs_handler_open_object(handler_global_t *g,
-                              odfs_lock_t *dirlock,
-                              const char *path,
-                              LONG mode,
-                              odfs_fh_t **out)
+ODFS_VECTOR_LINKAGE LONG
+odfs_handler_open_object(handler_global_t *g,
+                         odfs_lock_t *dirlock,
+                         const char *path,
+                         LONG mode,
+                         odfs_fh_t **out)
 {
     LONG err_dos;
     odfs_entry_t *entry;
@@ -3032,6 +3044,7 @@ LONG odfs_handler_seek_object(handler_global_t *g,
     return 0;
 }
 
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_get_file_position(handler_global_t *g,
                                     odfs_fh_t *fh,
                                     int64_t *pos_out)
@@ -3116,6 +3129,7 @@ LONG odfs_handler_get_file_size(handler_global_t *g,
     *size_out = (int64_t)fh_node(fh)->size;
     return 0;
 }
+#endif
 
 LONG odfs_handler_fill_info(handler_global_t *g,
                             odfs_lock_t *ol,
@@ -3153,6 +3167,7 @@ LONG odfs_handler_fill_info(handler_global_t *g,
     return 0;
 }
 
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_get_lock_node(handler_global_t *g,
                                 odfs_lock_t *ol,
                                 const odfs_node_t **node_out)
@@ -3202,8 +3217,10 @@ LONG odfs_handler_get_fh_node(handler_global_t *g,
     *node_out = fh_node(fh);
     return 0;
 }
+#endif
 
-LONG odfs_handler_inhibit(handler_global_t *g, LONG state)
+ODFS_VECTOR_LINKAGE LONG
+odfs_handler_inhibit(handler_global_t *g, LONG state)
 {
     if (!g)
         return ERROR_REQUIRED_ARG_MISSING;
@@ -3623,6 +3640,7 @@ static void exnext_cursor_update(odfs_exnext_cursor_t *cursor,
 }
 #endif
 
+#if ODFS_AMIGA_OS4
 typedef struct dir_next_ctx {
     ULONG previous_key;
     int   first;
@@ -3730,6 +3748,7 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
         *resume_io = resume;
     return 0;
 }
+#endif
 
 static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
 {

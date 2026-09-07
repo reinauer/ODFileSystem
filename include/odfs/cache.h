@@ -75,10 +75,13 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
                                   void *buf,
                                   size_t *len);
 
+#if !defined(AMIGA)
+/* Host tools/tests only; Amiga mounts own the cache lifetime. */
 /* invalidate all entries */
 void odfs_cache_flush(odfs_cache_t *cache);
 
 /* get current stats */
 const odfs_cache_stats_t *odfs_cache_get_stats(const odfs_cache_t *cache);
+#endif
 
 #endif /* ODFS_CACHE_H */
