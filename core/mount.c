@@ -266,6 +266,7 @@ static int mount_backend_for_type(const odfs_mount_t *mnt,
     return 0;
 }
 
+#if !defined(AMIGA)
 static int mount_virtual_root_by_name(const odfs_mount_t *mnt,
                                       const odfs_node_t *dir,
                                       const char *name,
@@ -287,6 +288,7 @@ static int mount_virtual_root_by_name(const odfs_mount_t *mnt,
 
     return 0;
 }
+#endif
 
 void odfs_mount_opts_default(odfs_mount_opts_t *opts)
 {
@@ -629,9 +631,10 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
     return odfs_resolve_parent_search(mnt, node, parent_out, grandparent_out);
 }
 
+#if !defined(AMIGA)
 odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
-                               const char *path,
-                               odfs_node_t *out)
+                             const char *path,
+                             odfs_node_t *out)
 {
     odfs_node_t current;
     char component[ODFS_NAME_MAX];
@@ -689,3 +692,4 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
     *out = current;
     return ODFS_OK;
 }
+#endif

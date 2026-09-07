@@ -186,10 +186,6 @@ odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
                                        uint32_t *parent_lba_out,
                                        uint32_t *parent_size_out);
 
-/* synthesize the minimal directory node needed to enumerate an extent */
-odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
-                              uint32_t lba, uint32_t size);
-
 /*
  * Merge the continuation records of a multi-extent file (ISO 9660 Level 3,
  * ECMA-119 6.5.1). Called after parsing a directory record whose

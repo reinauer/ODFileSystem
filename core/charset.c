@@ -151,6 +151,7 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
     return ODFS_OK;
 }
 
+#if !defined(AMIGA)
 void odfs_sanitize_name(char *name, size_t len, char replacement)
 {
     for (size_t i = 0; i < len && name[i] != '\0'; i++) {
@@ -160,6 +161,7 @@ void odfs_sanitize_name(char *name, size_t len, char replacement)
             name[i] = replacement;
     }
 }
+#endif
 
 #define ODFS_PATH_MAX_COMPONENTS 32
 

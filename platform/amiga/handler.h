@@ -332,9 +332,11 @@ typedef struct odfs_handler_node_info {
 } odfs_handler_node_info_t;
 
 /* shared operations used by packet and OS4 vector frontends */
+#if ODFS_AMIGA_OS4
 void odfs_handler_fill_node_info(handler_global_t *g,
                                  const odfs_node_t *node,
                                  odfs_handler_node_info_t *info);
+#endif
 
 /*
  * Resolve the soft link that `path` (relative to parent_lock, or the
@@ -357,13 +359,13 @@ LONG odfs_handler_resolve_object_node(handler_global_t *g,
                                       const char *path,
                                       odfs_node_t *node_out,
                                       odfs_node_t *parent_out);
-#endif
 LONG odfs_handler_lock_object(handler_global_t *g,
                               odfs_lock_t *parent_lock,
                               const char *path,
                               LONG access,
                               odfs_lock_t **out);
 LONG odfs_handler_free_lock_object(handler_global_t *g, odfs_lock_t *ol);
+#endif
 LONG odfs_handler_dup_lock_object(handler_global_t *g,
                                   odfs_lock_t *src,
                                   odfs_lock_t **out);
@@ -380,6 +382,7 @@ LONG odfs_handler_same_lock_object(handler_global_t *g,
                                    odfs_lock_t *l1,
                                    odfs_lock_t *l2,
                                    LONG *same_result);
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_same_file_object(handler_global_t *g,
                                    odfs_fh_t *fh1,
                                    odfs_fh_t *fh2,
@@ -389,6 +392,7 @@ LONG odfs_handler_open_object(handler_global_t *g,
                               const char *path,
                               LONG mode,
                               odfs_fh_t **out);
+#endif
 LONG odfs_handler_open_from_lock_object(handler_global_t *g,
                                         odfs_lock_t *ol,
                                         odfs_fh_t **out);
@@ -403,6 +407,7 @@ LONG odfs_handler_seek_object(handler_global_t *g,
                               int64_t offset,
                               LONG mode,
                               int64_t *oldpos_out);
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_change_lock_mode(handler_global_t *g,
                                    odfs_lock_t *ol,
                                    LONG mode);
@@ -415,9 +420,11 @@ LONG odfs_handler_get_file_position(handler_global_t *g,
 LONG odfs_handler_get_file_size(handler_global_t *g,
                                 odfs_fh_t *fh,
                                 int64_t *size_out);
+#endif
 LONG odfs_handler_fill_info(handler_global_t *g,
                             odfs_lock_t *ol,
                             struct InfoData *info);
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_get_lock_node(handler_global_t *g,
                                 odfs_lock_t *ol,
                                 const odfs_node_t **node_out);
@@ -431,6 +438,7 @@ LONG odfs_handler_next_dir_entry(handler_global_t *g,
                                  odfs_node_t *entry_out,
                                  ULONG *key_out);
 LONG odfs_handler_inhibit(handler_global_t *g, LONG state);
+#endif
 
 /* handler entry point (called from startup.S) */
 void handler_main(void);

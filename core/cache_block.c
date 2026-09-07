@@ -283,6 +283,7 @@ void odfs_cache_destroy(odfs_cache_t *cache)
     memset(cache, 0, sizeof(*cache));
 }
 
+#if !defined(AMIGA)
 void odfs_cache_flush(odfs_cache_t *cache)
 {
     if (!cache || !cache->entries)
@@ -293,6 +294,7 @@ void odfs_cache_flush(odfs_cache_t *cache)
     cache->valid_count = 0;
     cache_reset_indices(cache);
 }
+#endif
 
 static int32_t cache_reserve(const odfs_cache_t *cache)
 {
@@ -568,7 +570,9 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
     return ODFS_OK;
 }
 
+#if !defined(AMIGA)
 const odfs_cache_stats_t *odfs_cache_get_stats(const odfs_cache_t *cache)
 {
     return &cache->stats;
 }
+#endif

@@ -942,8 +942,8 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
 }
 
 /* synthesize the minimal node needed to enumerate a directory extent */
-odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
-                              uint32_t lba, uint32_t size)
+static odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
+                                     uint32_t lba, uint32_t size)
 {
     odfs_node_t n;
     memset(&n, 0, sizeof(n));
