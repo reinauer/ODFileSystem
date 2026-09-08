@@ -58,7 +58,9 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
                                              uint32_t *starts,
                                              size_t max_starts)
 {
+#if ODFS_FEATURE_MULTISESSION
     odfs_toc_t toc;
+#endif
     size_t count = 0;
 
     if (!mnt || !starts || max_starts == 0)
