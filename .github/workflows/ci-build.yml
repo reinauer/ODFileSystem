@@ -22,6 +22,11 @@ jobs:
       - name: Build and run host unit tests
         run: make check
 
+      - name: Build host library without multisession support
+        run: >-
+          make lib HOST_BUILD=build/host-no-multisession
+          CPPFLAGS=-DODFS_FEATURE_MULTISESSION=0
+
       - name: Run golden image tests
         run: make golden-check
 
