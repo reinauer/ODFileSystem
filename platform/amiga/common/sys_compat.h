@@ -24,15 +24,15 @@ struct Hook;
 
 typedef LONG (*odfs_amiga_interrupt_fn)(APTR data);
 
-extern struct ExecBase *SysBase;
-extern struct DosLibrary *DOSBase;
+/*
+ * The library bases one handler instance owns. 
+ */
+typedef struct odfs_amiga_libs {
+    struct DosLibrary *dos;
+} odfs_amiga_libs_t;
 
-void odfs_amiga_init_sysbase(void);
-struct ExecBase *odfs_amiga_sysbase(void);
-struct DosLibrary *odfs_amiga_dosbase(void);
-
-int odfs_amiga_open_libraries(void);
-void odfs_amiga_close_libraries(void);
+int odfs_amiga_open_libraries(odfs_amiga_libs_t *libs);
+void odfs_amiga_close_libraries(odfs_amiga_libs_t *libs);
 
 void *odfs_amiga_alloc_mem(ULONG size, ULONG flags);
 void odfs_amiga_free_mem(void *ptr, ULONG size);
@@ -55,7 +55,18 @@ void odfs_amiga_free_signal(LONG num);
 void *odfs_amiga_create_dos_entry(const char *name, LONG type);
 void odfs_amiga_delete_dos_entry(void *node);
 
-void odfs_amiga_init_interrupt(struct Interrupt *intr,
+/*
+ * An exec Interrupt plus the callback it dispatches to. The trampoline finds
+ * the function through is_Data, so nothing about the binding is held at file
+ * scope and every instance can install its own.
+ */
+typedef struct odfs_amiga_interrupt {
+    struct Interrupt         intr;
+    odfs_amiga_interrupt_fn  fn;
+    APTR                     data;
+} odfs_amiga_interrupt_t;
+
+void odfs_amiga_init_interrupt(odfs_amiga_interrupt_t *ai,
                                const char *name,
                                APTR data,
                                odfs_amiga_interrupt_fn code);

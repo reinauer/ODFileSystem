@@ -4,92 +4,40 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "amiga_target_compat.h"
 #include "sys_compat.h"
 
+#include <clib/alib_protos.h>
 #include <proto/exec.h>
-#include <proto/dos.h>
-#include <proto/utility.h>
 
 #include <string.h>
 
-struct ExecBase *SysBase;
-struct DosLibrary *DOSBase;
-struct Library *UtilityBase;
-
-static odfs_amiga_interrupt_fn interrupt_code;
-
-/*
- * Handler instances started from one seglist (FileSysResource or a
- * resident L:ODFileSystem) share this data segment, so the library
- * bases above are shared as well. Reference-count the openers under
- * Forbid() and close only when the last instance exits; otherwise the
- * first shutdown — including a declined second mount of the same
- * device — NULLs the bases out from under every surviving instance.
- */
-static LONG lib_users;
 
 static LONG odfs_amiga_interrupt_entry(APTR data asm("a1"))
 {
-    return interrupt_code ? interrupt_code(data) : 0;
+    odfs_amiga_interrupt_t *ai = data;
+
+    return (ai && ai->fn) ? ai->fn(ai->data) : 0;
 }
 
-void odfs_amiga_init_sysbase(void)
+int odfs_amiga_open_libraries(odfs_amiga_libs_t *libs)
 {
-    SysBase = *((struct ExecBase **)4L);
+    /*
+     * V37 (Kickstart 2.04) is the real floor: the ExAll path calls
+     * MatchPatternNoCase() and startup.S may call StackSwap(), both
+     * V37. Requiring V37 here turns a latent crash on the
+     * short-lived 2.00 ROMs into a clean load failure.
+     */
+    libs->dos = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library", 37);
+    return libs->dos != NULL;
 }
 
-struct ExecBase *odfs_amiga_sysbase(void)
+void odfs_amiga_close_libraries(odfs_amiga_libs_t *libs)
 {
-    return SysBase;
-}
-
-struct DosLibrary *odfs_amiga_dosbase(void)
-{
-    return DOSBase;
-}
-
-int odfs_amiga_open_libraries(void)
-{
-    int ok = 1;
-
-    /* dos and utility are ROM-resident on V37+, so OpenLibrary cannot
-     * Wait() here and the Forbid() holds across the opens. */
-    Forbid();
-    if (lib_users == 0) {
-        /*
-         * V37 (Kickstart 2.04) is the real floor: the ExAll path calls
-         * MatchPatternNoCase() and startup.S may call StackSwap(), both
-         * V37. Requiring V37 here turns a latent crash on the
-         * short-lived 2.00 ROMs into a clean load failure.
-         */
-        DOSBase = (struct DosLibrary *)
-            OpenLibrary((CONST_STRPTR)"dos.library", 37);
-        if (DOSBase)
-            UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 36);
-        else
-            ok = 0;
+    if (libs->dos) {
+        CloseLibrary((struct Library *)libs->dos);
+        libs->dos = NULL;
     }
-    if (ok)
-        lib_users++;
-    Permit();
-
-    return ok;
-}
-
-void odfs_amiga_close_libraries(void)
-{
-    Forbid();
-    if (lib_users > 0 && --lib_users == 0) {
-        if (UtilityBase) {
-            CloseLibrary(UtilityBase);
-            UtilityBase = NULL;
-        }
-        if (DOSBase) {
-            CloseLibrary((struct Library *)DOSBase);
-            DOSBase = NULL;
-        }
-    }
-    Permit();
 }
 
 void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)
@@ -174,23 +122,21 @@ void odfs_amiga_delete_dos_entry(void *node)
         FreeMem(node, sizeof(struct DosList) + 32u);
 }
 
-void odfs_amiga_init_interrupt(struct Interrupt *intr,
+void odfs_amiga_init_interrupt(odfs_amiga_interrupt_t *ai,
                                const char *name,
                                APTR data,
                                odfs_amiga_interrupt_fn code)
 {
-    interrupt_code = code;
-    intr->is_Node.ln_Type = NT_INTERRUPT;
-    intr->is_Node.ln_Pri = 0;
-    intr->is_Node.ln_Name = (char *)name;
-    intr->is_Data = data;
-    intr->is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
+    ai->fn   = code;
+    ai->data = data;
+    ai->intr.is_Node.ln_Type = NT_INTERRUPT;
+    ai->intr.is_Node.ln_Pri = 0;
+    ai->intr.is_Node.ln_Name = (char *)name;
+    ai->intr.is_Data = ai;
+    ai->intr.is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
 }
 
 ULONG odfs_amiga_call_hook_pkt(struct Hook *hook, APTR object, APTR message)
 {
-    if (!UtilityBase)
-        return 1;
-
-    return CallHookPkt(hook, object, message);
+    return CallHookA(hook, (Object *)object, message);
 }
