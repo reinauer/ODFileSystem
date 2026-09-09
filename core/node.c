@@ -6,7 +6,7 @@
 
 #include "odfs/node.h"
 
-static const char *backend_names[] = {
+static const char *const backend_names[] = {
     [ODFS_BACKEND_NONE]       = "none",
     [ODFS_BACKEND_ISO9660]    = "iso9660",
     [ODFS_BACKEND_ROCK_RIDGE] = "rock_ridge",
@@ -17,7 +17,7 @@ static const char *backend_names[] = {
     [ODFS_BACKEND_CDDA]       = "cdda",
 };
 
-static const char *kind_names[] = {
+static const char *const kind_names[] = {
     [ODFS_NODE_FILE]    = "file",
     [ODFS_NODE_DIR]     = "dir",
     [ODFS_NODE_SYMLINK] = "symlink",

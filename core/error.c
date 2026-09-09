@@ -6,7 +6,7 @@
 
 #include "odfs/error.h"
 
-static const char *error_strings[] = {
+static const char *const error_strings[] = {
     [ODFS_OK]                = "OK",
     [ODFS_ERR_NOMEM]         = "out of memory",
     [ODFS_ERR_IO]            = "I/O error",
