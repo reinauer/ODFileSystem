@@ -137,5 +137,6 @@ ls "$MOUNTPOINT" >/dev/null
 
 python3 tests/integration/check_assign_prefix.py "$IMAGE" "$ODFS_HANDLER"
 python3 tests/integration/check_fh_packets.py "$IMAGE" "$ODFS_HANDLER"
+python3 tests/integration/check_cdda_toc.py "$ODFS_HANDLER"
 
 echo "AmiFUSE integration test passed"

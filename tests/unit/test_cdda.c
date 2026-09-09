@@ -206,6 +206,34 @@ TEST(cdda_pure_audio_exports_configured_disk_icon)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_accepts_red_book_maximum_track_count)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    cdda_context_t *cdda_ctx;
+    int i;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = CDDA_MAX_TRACKS;
+    toc.leadout_lba = CDDA_MAX_TRACKS * 75u;
+    for (i = 0; i < CDDA_MAX_TRACKS; i++) {
+        toc.sessions[i].number = (uint8_t)(i + 1);
+        toc.sessions[i].start_lba = (uint32_t)i * 75u;
+        toc.sessions[i].length = 75u;
+    }
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root,
+                                  &backend_ctx));
+    cdda_ctx = backend_ctx;
+    ASSERT_EQ(cdda_ctx->track_count, CDDA_MAX_TRACKS);
+    ASSERT_EQ(cdda_ctx->tracks[CDDA_MAX_TRACKS - 1].number,
+              CDDA_MAX_TRACKS);
+    ASSERT_EQ(cdda_ctx->tracks[CDDA_MAX_TRACKS - 1].length_frames, 75);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST(cdda_cddb_file_exposes_disc_id_and_query)
 {
     odfs_toc_t toc;

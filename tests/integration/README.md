@@ -67,6 +67,18 @@ If you want a fully self-contained smoke test with no external image, just run:
 make integration-check
 ```
 
+The CDDA regressions also run without a FUSE mount:
+
+```sh
+python3 tests/integration/check_cdda_toc.py build/amiga/ODFileSystem
+```
+
+The raw-TOC regression injects an 804-byte SCSI response containing 99 audio
+tracks and a lead-out descriptor through the actual Amiga handler. It checks
+the requested allocation and WAV headers for tracks 98 and 99, including the
+last track's distinct length derived from lead-out. This covers the transport
+buffer and descriptor loop, unlike the host unit test's already-parsed TOC.
+
 This target builds and uses `build/amiga-test/ODFileSystem`, so serial logging
 remains enabled during local handler testing.
 

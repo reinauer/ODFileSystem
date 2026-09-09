@@ -917,29 +917,45 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
     uint8_t cmd[10];
-    uint8_t buf[256];
+    uint8_t *buf;
     uint8_t sense[32];
     struct SCSICmd scsi;
+    size_t buf_size;
     BYTE io_err;
     LONG io_rc;
 
     memset(toc, 0, sizeof(*toc));
     memset(cmd, 0, sizeof(cmd));
-    memset(buf, 0, sizeof(buf));
     memset(sense, 0, sizeof(sense));
 
     if (g->toc_passthrough == 0)
         return ODFS_ERR_UNSUPPORTED;
+
+    /*
+     * A standard TOC contains a four-byte header, up to 99 eight-byte
+     * track descriptors, and one eight-byte lead-out descriptor.  The
+     * old 256-byte buffer only held 30 tracks plus lead-out; larger audio
+     * CDs reported their real response length and were rejected as an
+     * overflow.  Use the existing DMA-safe handler buffer for the complete
+     * 804-byte response so SCSI/USB adapters also get suitably accessible
+     * memory rather than a large stack buffer.
+     */
+    buf_size = 4u +
+        (sizeof(toc->sessions) / sizeof(toc->sessions[0]) + 1u) * 8u;
+    if (!g->dma_buf || g->dma_buf_size < buf_size)
+        return ODFS_ERR_NOMEM;
+    buf = g->dma_buf;
+    memset(buf, 0, buf_size);
 
     /* SCSI Read TOC, format 0x00 (TOC) */
     cmd[0] = 0x43;              /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;              /* MSF=0 (LBA format) */
     cmd[2] = 0x00;              /* format: TOC */
     cmd[6] = 0x01;              /* starting track */
-    cmd[7] = (sizeof(buf) >> 8) & 0xFF;
-    cmd[8] = sizeof(buf) & 0xFF;
+    cmd[7] = (uint8_t)(buf_size >> 8);
+    cmd[8] = (uint8_t)buf_size;
 
-    scsi_init_read(&scsi, buf, sizeof(buf), cmd, sizeof(cmd),
+    scsi_init_read(&scsi, buf, (ULONG)buf_size, cmd, sizeof(cmd),
                    sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
@@ -979,10 +995,18 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
                   (unsigned int)toc_len);
         return ODFS_ERR_BAD_FORMAT;
     }
-    if ((size_t)toc_len + 2 > sizeof(buf)) {
+    if ((size_t)toc_len + 2u > buf_size) {
         ODFS_WARN(&g->log, ODFS_SUB_CDDA,
                   "READ TOC length overflow len=%u buf=%u",
-                  (unsigned int)toc_len, (unsigned int)sizeof(buf));
+                  (unsigned int)toc_len, (unsigned int)buf_size);
+        return ODFS_ERR_BAD_FORMAT;
+    }
+    if (scsi.scsi_Actual != 0 &&
+        scsi.scsi_Actual < (ULONG)((size_t)toc_len + 2u)) {
+        ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                  "READ TOC short response len=%u actual=%lu",
+                  (unsigned int)toc_len,
+                  (unsigned long)scsi.scsi_Actual);
         return ODFS_ERR_BAD_FORMAT;
     }
 
@@ -990,7 +1014,8 @@ static odfs_err_t amiga_read_toc(void *ctx, odfs_toc_t *toc)
     int ndesc = (int)(((size_t)toc_len + 2 - 4) / 8);
     uint8_t session_count = 0;
 
-    for (int i = 0; i < ndesc && i < 99; i++) {
+    /* Include the descriptor after track 99: it carries lead-out (0xaa). */
+    for (int i = 0; i < ndesc; i++) {
         const uint8_t *desc = &buf[4 + i * 8];
         uint8_t adr_ctrl = desc[1];
         uint8_t track = desc[2];
