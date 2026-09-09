@@ -5884,6 +5884,29 @@ void handler_main_startup(struct Message *startup_msg)
     }
     ODFS_INFO(&g->log, ODFS_SUB_IO, "device open");
 
+#if !ODFS_AMIGA_OS4
+    /*
+     * Reserve pr_MsgPort for synchronous dos.library replies (notably
+     * Open/Read of ENV:Sys/def_cdda.info). If filesystem requests share
+     * that port, DOS can consume an incoming request instead of its
+     * expected reply and raise AN_AsyncPkt. Receive startup on the
+     * process port, then advertise a separate request port through
+     * dn_Task and return_packet() before accepting any client work.
+     * OS4 already provides this separation with its vector port.
+     */
+    {
+        struct MsgPort *port = odfs_amiga_create_msg_port();
+
+        if (!port) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+            return_packet(g, pkt);
+            goto shutdown;
+        }
+        g->dosport = port;
+    }
+#endif
+
     g->devnode->dn_Startup = MKBADDR(fssm);
     g->devnode->dn_Task = g->dosport;
 
@@ -6150,6 +6173,9 @@ shutdown:
 
 #if ODFS_AMIGA_OS4
     deactivate_vector_port(g);
+#else
+    if (g->dosport != g->process_port)
+        odfs_amiga_delete_msg_port(g->dosport);
 #endif
 
     odfs_amiga_close_libraries();

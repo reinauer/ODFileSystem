@@ -71,6 +71,9 @@ The CDDA regressions also run without a FUSE mount:
 
 ```sh
 python3 tests/integration/check_cdda_toc.py build/amiga/ODFileSystem
+python3 tests/integration/check_cdda_icon.py build/amiga/ODFileSystem ENV
+python3 tests/integration/check_cdda_icon.py build/amiga/ODFileSystem ENVARC
+python3 tests/integration/check_cdda_icon.py build/amiga/ODFileSystem missing
 ```
 
 The raw-TOC regression injects an 804-byte SCSI response containing 99 audio
@@ -78,6 +81,14 @@ tracks and a lead-out descriptor through the actual Amiga handler. It checks
 the requested allocation and WAV headers for tracks 98 and 99, including the
 last track's distinct length derived from lead-out. This covers the transport
 buffer and descriptor loop, unlike the host unit test's already-parsed TOC.
+
+The icon regression supplies a synthetic audio TOC, queues filesystem requests
+during default icon lookup, and checks that DOS's process reply port remains
+clear. It also checks the exported icon bytes, missing-icon fallback, an
+inhibit/uninhibit remount, and request-port cleanup at shutdown. AmiFUSE does not
+emulate DOS's unexpected-packet alert; the test checks the queue condition that
+causes it. Use a normal CDDA-enabled OS3 build. Real AmigaOS testing is still
+needed to verify Workbench rendering and insertion timing.
 
 This target builds and uses `build/amiga-test/ODFileSystem`, so serial logging
 remains enabled during local handler testing.

@@ -138,5 +138,8 @@ ls "$MOUNTPOINT" >/dev/null
 python3 tests/integration/check_assign_prefix.py "$IMAGE" "$ODFS_HANDLER"
 python3 tests/integration/check_fh_packets.py "$IMAGE" "$ODFS_HANDLER"
 python3 tests/integration/check_cdda_toc.py "$ODFS_HANDLER"
+for icon_source in ENV ENVARC missing; do
+    python3 tests/integration/check_cdda_icon.py "$ODFS_HANDLER" "$icon_source"
+done
 
 echo "AmiFUSE integration test passed"
