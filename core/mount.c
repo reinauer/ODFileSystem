@@ -34,7 +34,7 @@ extern const odfs_backend_ops_t hfsplus_backend_ops;
  * UDF and HFS probed independently for standalone media.
  * For hybrid discs, ISO-family wins unless overridden.
  */
-static const odfs_backend_ops_t *backend_table[] = {
+static const odfs_backend_ops_t *const backend_table[] = {
 #if ODFS_FEATURE_ISO9660
     &iso9660_backend_ops,
 #endif

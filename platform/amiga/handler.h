@@ -19,6 +19,7 @@
 
 #include "amiga_target_compat.h"
 #include "aros_compat.h"
+#include "sys_compat.h"
 #include "odfs/api.h"
 
 typedef struct odfs_volume odfs_volume_t;
@@ -88,8 +89,7 @@ typedef struct handler_global {
     odfs_volume_t       *current_volume;/* current mounted volume state */
 
     /* libraries */
-    struct ExecBase     *sysbase;
-    struct DosLibrary   *dosbase;
+    odfs_amiga_libs_t    libs;
 
     /* device I/O */
     struct MsgPort      *devport;       /* device I/O port */
@@ -134,7 +134,7 @@ typedef struct handler_global {
     /* media change */
     struct MsgPort      *chgport;       /* media change signal port */
     struct IOStdReq     *chgreq;        /* media change I/O request */
-    struct Interrupt     changeint;     /* TD_ADDCHANGEINT callback */
+    odfs_amiga_interrupt_t changeint;   /* TD_ADDCHANGEINT callback + binding */
     odfs_changeint_data_t changeint_data; /* callback payload */
     LONG                 chgsigbit;     /* signal bit for media change */
     int                  chg_installed; /* TD_CHANGEINT installed? */

@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *level_names[] = {
+static const char *const level_names[] = {
     [ODFS_LOG_FATAL] = "FATAL",
     [ODFS_LOG_ERROR] = "ERROR",
     [ODFS_LOG_WARN]  = "WARN",
@@ -18,7 +18,7 @@ static const char *level_names[] = {
     [ODFS_LOG_TRACE] = "TRACE",
 };
 
-static const char *subsys_names[] = {
+static const char *const subsys_names[] = {
     [ODFS_SUB_NONE]         = "",
     [ODFS_SUB_CORE]         = "core",
     [ODFS_SUB_DOS]          = "dos",

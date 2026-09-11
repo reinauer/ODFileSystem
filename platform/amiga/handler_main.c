@@ -48,6 +48,10 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 
+#if !ODFS_AMIGA_OS4
+#define DOSBase (g->libs.dos)
+#endif
+
 #include <string.h>
 
 #include "odfs/error.h"
@@ -105,7 +109,7 @@ static void unmount_volume(handler_global_t *g);
 static void free_volume(odfs_volume_t *volume);
 static void destroy_device_node(struct DeviceNode *devnode);
 static void destroy_volume_node(struct DeviceList *volnode);
-static int detach_volume_node(odfs_volume_t *volume);
+static int detach_volume_node(handler_global_t *g, odfs_volume_t *volume);
 static int publish_volume_node(handler_global_t *g);
 static void schedule_volume_publish_retry(handler_global_t *g);
 static void cancel_volume_publish_retry(handler_global_t *g);
@@ -1632,7 +1636,7 @@ static int destroy_stale_volume(handler_global_t *g, odfs_volume_t *volume)
         return 1;
 
     if (volume->volnode) {
-        if (!detach_volume_node(volume))
+        if (!detach_volume_node(g, volume))
             return 0;
         destroy_volume_node(volume->volnode);
     }
@@ -4099,6 +4103,8 @@ typedef struct exall_ctx {
 static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
 {
     exall_ctx_t *ec = ctx;
+    /* named g so the proto/dos.h inlines below find this instance's base */
+    handler_global_t *g = ec->g;
     ULONG key = amiga_node_key(entry);
     struct ExAllData *slot;
     struct ExAllData *cursor_before;
@@ -4118,8 +4124,7 @@ static odfs_err_t exall_cb(const odfs_node_t *entry, void *ctx)
     cursor_before = ec->cursor;
     remaining_before = ec->remaining;
     slot = ec->cursor;
-    if (!exall_fill_entry(ec->g, &ec->cursor, &ec->remaining, ec->data,
-                          entry)) {
+    if (!exall_fill_entry(g, &ec->cursor, &ec->remaining, ec->data, entry)) {
         ec->full = 1;
         return ODFS_ERR_EOF;
     }
@@ -5007,10 +5012,12 @@ static void destroy_volume_publish_timer(handler_global_t *g)
     g->publish_timer_open = 0;
 }
 
-static int detach_volume_node(odfs_volume_t *volume)
+static int detach_volume_node(handler_global_t *g, odfs_volume_t *volume)
 {
     struct DeviceList *volnode;
     int removed;
+
+    (void)g;    /* OS4 reaches DOS via IDOS, not the instance's base */
 
     if (!volume || !volume->volnode || !volume->listed)
         return 1;
@@ -5170,8 +5177,9 @@ static int toc_has_data_track(const odfs_toc_t *toc)
     return 0;
 }
 
-static int load_cdda_disk_icon_path(cdda_context_t *ctx, const char *path)
+static int load_cdda_disk_icon_path(handler_global_t *g, const char *path)
 {
+    cdda_context_t *ctx = (cdda_context_t *)g->cdda_ctx;
     BPTR fh;
     LONG size;
     LONG actual;
@@ -5228,8 +5236,8 @@ static void load_cdda_disk_icon(handler_global_t *g)
     if (!ctx || ctx->is_mixed_mode)
         return;
 
-    if (load_cdda_disk_icon_path(ctx, "ENV:Sys/def_cdda.info") ||
-        load_cdda_disk_icon_path(ctx, "ENVARC:Sys/def_cdda.info")) {
+    if (load_cdda_disk_icon_path(g, "ENV:Sys/def_cdda.info") ||
+        load_cdda_disk_icon_path(g, "ENVARC:Sys/def_cdda.info")) {
         ODFS_INFO(&g->log, ODFS_SUB_MOUNT,
                   "using def_cdda.info as audio CD Disk.info");
     }
@@ -5495,8 +5503,9 @@ static void install_media_change(handler_global_t *g)
     g->changeint_data.sigmask    = 1UL << g->chgsigbit;
     odfs_amiga_init_interrupt(&g->changeint, "odfs-mediachange",
                               &g->changeint_data, changeint_signal);
-    g->chgreq->io_Data    = (APTR)&g->changeint;
-    g->chgreq->io_Length  = sizeof(g->changeint);
+    /* the device is handed the embedded Interrupt, not our wrapper */
+    g->chgreq->io_Data    = (APTR)&g->changeint.intr;
+    g->chgreq->io_Length  = sizeof(g->changeint.intr);
     g->chgreq->io_Flags   = 0;
 
     SendIO((struct IORequest *)g->chgreq);
@@ -5685,8 +5694,6 @@ void handler_main_startup(struct Message *startup_msg)
 
     (void)version_string; /* ensure $VER is not optimized out */
 
-    odfs_amiga_init_sysbase();
-
     g = odfs_amiga_alloc_mem(sizeof(*g), MEMF_PUBLIC | MEMF_CLEAR);
     if (!g) {
         /*
@@ -5707,7 +5714,6 @@ void handler_main_startup(struct Message *startup_msg)
         return;
     }
 
-    g->sysbase = odfs_amiga_sysbase();
     g->locklist.mlh_Head     = (struct MinNode *)&g->locklist.mlh_Tail;
     g->locklist.mlh_Tail     = NULL;
     g->locklist.mlh_TailPred = (struct MinNode *)&g->locklist.mlh_Head;
@@ -5767,7 +5773,7 @@ void handler_main_startup(struct Message *startup_msg)
               "ODFileSystem " ODFS_GIT_VERSION
               " (" ODFS_AMIGA_DATE ") starting...");
 
-    if (!odfs_amiga_open_libraries()) {
+    if (!odfs_amiga_open_libraries(&g->libs)) {
         ODFS_ERROR(&g->log, ODFS_SUB_CORE,
                    "open dos.library failed");
         pkt->dp_Res1 = DOSFALSE;
@@ -5776,7 +5782,6 @@ void handler_main_startup(struct Message *startup_msg)
         odfs_amiga_free_mem(g, sizeof(*g));
         return;
     }
-    g->dosbase = odfs_amiga_dosbase();
 
     /*
      * Validate the FileSysStartupMsg before trusting any of its fields.
@@ -6178,7 +6183,7 @@ shutdown:
         odfs_amiga_delete_msg_port(g->dosport);
 #endif
 
-    odfs_amiga_close_libraries();
+    odfs_amiga_close_libraries(&g->libs);
     odfs_amiga_free_mem(g, sizeof(*g));
 }
 

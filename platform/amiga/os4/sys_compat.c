@@ -35,8 +35,6 @@ static struct UtilityIFace *utility_iface;
  */
 static LONG lib_users;
 
-static odfs_amiga_interrupt_fn interrupt_code;
-
 /*
  * V50+ interrupt entry. Soft interrupts fired through Cause() receive
  * (0, SysBase, is_Data); interrupt servers receive (context, SysBase,
@@ -46,33 +44,13 @@ static void odfs_amiga_interrupt_entry(int32 unused,
                                        struct ExecBase *sysbase,
                                        APTR data)
 {
+    odfs_amiga_interrupt_t *ai = data;
+
     (void)unused;
     (void)sysbase;
 
-    if (interrupt_code)
-        interrupt_code(data);
-}
-
-void odfs_amiga_init_sysbase(void)
-{
-    /*
-     * _start establishes SysBase before any other handler code runs.
-     * As a fallback (e.g. if the entry path ever changes), recover it
-     * from the classic ExecBase pointer at absolute address 4, which
-     * the kickstart environment maintains.
-     */
-    if (!SysBase)
-        SysBase = *((struct ExecBase **)4L);
-}
-
-struct ExecBase *odfs_amiga_sysbase(void)
-{
-    return SysBase;
-}
-
-struct DosLibrary *odfs_amiga_dosbase(void)
-{
-    return DOSBase;
+    if (ai && ai->fn)
+        ai->fn(ai->data);
 }
 
 static int open_libraries_first(void)
@@ -106,7 +84,7 @@ static int open_libraries_first(void)
     return 1;
 }
 
-int odfs_amiga_open_libraries(void)
+int odfs_amiga_open_libraries(odfs_amiga_libs_t *libs)
 {
     int ok = 1;
 
@@ -119,11 +97,15 @@ int odfs_amiga_open_libraries(void)
         lib_users++;
     Permit();
 
+    libs->dos = ok ? DOSBase : NULL;
     return ok;
 }
 
-void odfs_amiga_close_libraries(void)
+void odfs_amiga_close_libraries(odfs_amiga_libs_t *libs)
 {
+    /* the instance drops its copy; the bases themselves are refcounted here */
+    libs->dos = NULL;
+
     Forbid();
     if (lib_users > 0 && --lib_users == 0) {
         if (utility_iface) {
@@ -241,17 +223,20 @@ void odfs_amiga_delete_dos_entry(void *node)
         FreeDosObject(DOS_DOSLIST, node);
 }
 
-void odfs_amiga_init_interrupt(struct Interrupt *intr,
+void odfs_amiga_init_interrupt(odfs_amiga_interrupt_t *ai,
                                const char *name,
                                APTR data,
                                odfs_amiga_interrupt_fn code)
 {
-    interrupt_code = code;
-    intr->is_Node.ln_Type = NT_INTERRUPT;
-    intr->is_Node.ln_Pri = 0;
-    intr->is_Node.ln_Name = (char *)name;
-    intr->is_Data = data;
-    intr->is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
+    ai->fn   = code;
+    ai->data = data;
+    ai->intr.is_Node.ln_Type = NT_INTERRUPT;
+    ai->intr.is_Node.ln_Pri = 0;
+    ai->intr.is_Node.ln_Name = (char *)name;
+    /* is_Data is the wrapper, so the trampoline reaches this instance's
+       callback without a global to look it up in */
+    ai->intr.is_Data = ai;
+    ai->intr.is_Code = (void (*)(void))(APTR)odfs_amiga_interrupt_entry;
 }
 
 ULONG odfs_amiga_call_hook_pkt(struct Hook *hook, APTR object, APTR message)

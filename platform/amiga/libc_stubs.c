@@ -8,11 +8,8 @@
  */
 
 #include <exec/types.h>
+#include "amiga_target_compat.h"
 #include <proto/exec.h>
-
-extern struct ExecBase *SysBase;
-
-int __errno = 0;
 
 void _exit(int status);
 void _exit(int status)
