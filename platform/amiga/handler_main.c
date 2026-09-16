@@ -1898,6 +1898,12 @@ static void unmount_volume(handler_global_t *g);
 static int query_media_present(handler_global_t *g, ULONG *status);
 static LONG probe_drive_geometry(handler_global_t *g);
 
+static int objects_outstanding(handler_global_t *g)
+{
+    return g->locklist.mlh_TailPred != (struct MinNode *)&g->locklist.mlh_Head ||
+           g->fhlist.mlh_TailPred != (struct MinNode *)&g->fhlist.mlh_Head;
+}
+
 static void drain_all_objects(handler_global_t *g)
 {
     struct Node *node;
@@ -6064,6 +6070,14 @@ void handler_main_startup(struct Message *startup_msg)
 
                 if (pkt->dp_Type == ACTION_DIE ||
                     pkt->dp_Type == ACTION_SHUTDOWN) {
+                    if (objects_outstanding(g)) {
+                        ODFS_INFO(&g->log, ODFS_SUB_DOS,
+                                  "shutdown refused: locks or files still open");
+                        pkt->dp_Res1 = DOSFALSE;
+                        pkt->dp_Res2 = ERROR_OBJECT_IN_USE;
+                        return_packet(g, pkt);
+                        continue;
+                    }
                     shutdown_pkt = pkt;
                     running = 0;
                     break;
