@@ -73,9 +73,14 @@
 #define DMDF_REMOVEDEVICE (1L << 1)
 #endif
 
+#define ODFS_STR_(x) #x
+#define ODFS_STR(x) ODFS_STR_(x)
+
+/* Version reads the token after the name as <version>.<revision> */
 const char version_string[] __attribute__((used)) =
-    "$VER: ODFileSystem " ODFS_GIT_VERSION
-    " (" ODFS_AMIGA_DATE ")";
+    "$VER: ODFileSystem "
+    ODFS_STR(ODFS_VERSION_MAJOR) "." ODFS_STR(ODFS_VERSION_MINOR)
+    " (" ODFS_AMIGA_DATE ") " ODFS_GIT_VERSION;
 
 #define VOLUME_PUBLISH_RETRY_MICROS 100000UL
 
