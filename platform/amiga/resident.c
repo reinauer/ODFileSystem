@@ -34,8 +34,8 @@
 
 extern const char version_string[];
 static const char name_string[] = "ODFileSystem";
-static const char creator_string[] =
-    "ODFileSystem " ODFS_GIT_VERSION " (" ODFS_AMIGA_DATE ")";
+/* the cookie without its "$VER: " prefix */
+#define ODFS_ID_STRING (&version_string[sizeof("$VER: ") - 1])
 
 void entrypoint(void);
 static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6"));
@@ -49,7 +49,7 @@ static const struct Resident __attribute__((used,no_reorder)) romtag = {
     .rt_Type      = NT_UNKNOWN,
     .rt_Pri       = 10,
     .rt_Name      = (APTR)&name_string,
-    .rt_IdString  = (APTR)&version_string,
+    .rt_IdString  = (APTR)ODFS_ID_STRING,
     .rt_Init      = (APTR)rt_init
 };
 
@@ -81,7 +81,7 @@ static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6")) {
                 if (seglist == NULL) {
                     seglist = MKBADDR((UBYTE *)entrypoint - 4);
                 }
-                fse->fse_Node.ln_Name = (char *)creator_string;
+                fse->fse_Node.ln_Name = (char *)ODFS_ID_STRING;
                 fse->fse_DosType      = DOSTYPE;
                 fse->fse_GlobalVec    = -1;
                 fse->fse_PatchFlags   = 0x190;
