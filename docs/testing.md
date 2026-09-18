@@ -57,3 +57,20 @@ test_handler CD0:CDDA/Track01.wav FILE=CD0:CDDA/Track01.wav
 
 ## CI Requirements
 Per push: build, unit tests, golden image tests, malformed-image tests, parser fuzz smoke tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
+
+CI and release packaging reject nonempty writable allocated sections in the
+m68k 68000, 68020, and ROM-profile release handlers. The checker uses
+`m68k-amigaos-objdump` (override with `OBJDUMP`) and rejects missing or invalid
+binaries too. Amiga code hunks lack a `READONLY` flag, so `CODE` sections are
+accepted; writable data and BSS are rejected. Debug handlers and OS4 binaries
+are outside this check.
+
+After building the release handlers, run the check locally with:
+
+```
+sh tests/amiga/test_rom_sections.sh
+sh tools/check_rom_sections.sh \
+    build/amiga/ODFileSystem \
+    build/amiga-020/ODFileSystem \
+    build/amiga-rom/ODFileSystem
+```

@@ -51,6 +51,14 @@ jobs:
       - name: Build AmigaOS 3 archive
         run: make amigaos3-lha
 
+      - name: Check m68k release binaries for writable sections
+        run: |
+          sh tests/amiga/test_rom_sections.sh
+          sh tools/check_rom_sections.sh \
+            build/amiga/ODFileSystem \
+            build/amiga-020/ODFileSystem \
+            build/amiga-rom/ODFileSystem
+
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
         with:

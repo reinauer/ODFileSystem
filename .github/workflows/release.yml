@@ -51,6 +51,13 @@ jobs:
           make amigaos3-lha
           make adf
 
+      - name: Check m68k release binaries for writable sections
+        run: |
+          sh tools/check_rom_sections.sh \
+            build/amiga/ODFileSystem \
+            build/amiga-020/ODFileSystem \
+            build/amiga-rom/ODFileSystem
+
       - name: Collect release files
         run: |
           set -eu
