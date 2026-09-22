@@ -7,6 +7,7 @@
 #include "vector_port.h"
 
 #include "handler.h"
+#include "vector_guard.h"
 
 #include <dos/dos.h>
 #include <dos/dostags.h>
@@ -27,21 +28,33 @@
 #define ODFS_OS4_FS_VERSION_NUMBER ((53UL << 16) | 4UL)
 #define ODFS_OS4_MAX_FILE_SIZE     0x7fffffffffffffffULL
 
-static handler_global_t *vp_global(struct FSVP *vp);
-
 static void set_dos_error(int32 *res2, LONG err)
 {
     if (res2)
         *res2 = err;
 }
 
-static handler_global_t *vp_require_global(struct FSVP *vp, int32 *res2)
+/* Keep the admission sequence shared by the many vector callbacks. */
+static __attribute__((noinline)) handler_global_t *vp_require_global(
+    struct FSVP *vp, int32 *res2)
 {
-    handler_global_t *g = vp_global(vp);
+    handler_global_t *g = odfs_os4_acquire_handler(vp);
 
+    /*
+     * Pair the lookup with semaphore acquisition before shutdown can
+     * detach FSPrivate. A waiter keeps the semaphore busy, so shutdown
+     * must use AttemptSemaphore() and refuse instead of waiting for it.
+     * Every successful lookup must be paired with fs_unlock(), after
+     * the callback's last access to handler state (including logging).
+     */
     if (!g)
         set_dos_error(res2, ERROR_OBJECT_WRONG_TYPE);
     return g;
+}
+
+static void fs_unlock(handler_global_t *g)
+{
+    ReleaseSemaphore(&g->fs_sem);
 }
 
 static void set_unsupported(struct FSVP *vp, int32 *res2)
@@ -53,6 +66,7 @@ static void set_unsupported(struct FSVP *vp, int32 *res2)
 
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "unsupported vector hit -> ACTION_NOT_KNOWN");
+    fs_unlock(g);
     set_dos_error(res2, ERROR_ACTION_NOT_KNOWN);
 }
 
@@ -64,29 +78,8 @@ static void set_write_protected(struct FSVP *vp, int32 *res2)
         return;
 
     ODFS_TRACE(&g->log, ODFS_SUB_DOS, "write-protected vector hit");
+    fs_unlock(g);
     set_dos_error(res2, ERROR_DISK_WRITE_PROTECTED);
-}
-
-static handler_global_t *vp_global(struct FSVP *vp)
-{
-    return vp ? (handler_global_t *)vp->FSV.FSPrivate : NULL;
-}
-
-/*
- * Vector callbacks run in the calling process context, so every
- * callback that touches handler state must hold the filesystem
- * semaphore around the shared-operation call.
- */
-static void fs_lock(handler_global_t *g)
-{
-    if (g)
-        ObtainSemaphore(&g->fs_sem);
-}
-
-static void fs_unlock(handler_global_t *g)
-{
-    if (g)
-        ReleaseSemaphore(&g->fs_sem);
 }
 
 static int32 return_dos_status(int32 *res2, LONG err)
@@ -286,14 +279,13 @@ static struct Lock *vp_lock(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_lock_object(g, lock_from_vector(rel_lock),
                                    obj ? obj : "", mode, &ol);
-    fs_unlock(g);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "FSLock rel=%p obj='%s' mode=%ld -> ol=%p err=%ld",
                rel_lock, obj ? (const char *)obj : "", (long)mode, ol,
                (long)err);
+    fs_unlock(g);
     set_dos_error(res2, err);
     return (struct Lock *)LOCK_TO_PTR(ol);
 }
@@ -306,7 +298,6 @@ static int32 vp_unlock(struct FSVP *vp, int32 *res2, struct Lock *lock)
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_free_lock_object(g, lock_from_vector(lock));
     fs_unlock(g);
     return return_dos_status(res2, err);
@@ -323,11 +314,10 @@ static struct Lock *vp_dup_lock(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_dup_lock_object(g, lock_from_vector(lock), &ol);
-    fs_unlock(g);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "FSDupLock lock=%p -> ol=%p err=%ld", lock, ol, (long)err);
+    fs_unlock(g);
     set_dos_error(res2, err);
     return (struct Lock *)LOCK_TO_PTR(ol);
 }
@@ -354,7 +344,6 @@ static struct Lock *vp_parent_dir(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_parent_lock_object(g, lock_from_vector(dirlock),
                                           &parent);
     fs_unlock(g);
@@ -373,7 +362,6 @@ static struct Lock *vp_dup_lock_from_fh(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_dup_lock_from_fh(g, fh_from_vector(filehandle), &ol);
     fs_unlock(g);
     set_dos_error(res2, err);
@@ -392,7 +380,6 @@ static int32 vp_open_from_lock(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_open_from_lock_object(g, lock_from_vector(lock),
                                              &odfs_fh);
     fs_unlock(g);
@@ -414,7 +401,6 @@ static struct Lock *vp_parent_of_fh(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_parent_fh_object(g, fh_from_vector(file), &parent);
     fs_unlock(g);
     set_dos_error(res2, err);
@@ -435,14 +421,13 @@ static int32 vp_open(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_open_object(g, lock_from_vector(rel_dir),
                                    obj ? obj : "", mode, &odfs_fh);
-    fs_unlock(g);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "FSOpen rel=%p obj='%s' mode=%ld -> err=%ld",
                rel_dir, obj ? (const char *)obj : "", (long)mode,
                (long)err);
+    fs_unlock(g);
     if (err == 0 && fh) {
         fh->fh_Arg1 = (BPTR)odfs_fh;
         fh->fh_Arg2 = odfs_fh;
@@ -458,7 +443,6 @@ static int32 vp_close(struct FSVP *vp, int32 *res2, struct FileHandle *file)
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_close_object(g, fh_from_vector(file));
     fs_unlock(g);
     if (err == 0 && file) {
@@ -492,7 +476,6 @@ static int32 vp_read(struct FSVP *vp,
     if (!g)
         return -1;
 
-    fs_lock(g);
     err = odfs_handler_read_object(g, fh_from_vector(file),
                                    buffer, numbytes, &actual);
     fs_unlock(g);
@@ -520,6 +503,7 @@ static int32 vp_flush(struct FSVP *vp, int32 *res2)
     if (!g)
         return DOSFALSE;
 
+    fs_unlock(g);
     set_dos_error(res2, 0);
     return DOSTRUE;
 }
@@ -537,7 +521,6 @@ static int32 vp_change_file_position(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_seek_object(g, fh_from_vector(file),
                                    position, mode, &oldpos);
     fs_unlock(g);
@@ -568,7 +551,6 @@ static int64 vp_get_file_position(struct FSVP *vp,
     if (!g)
         return -1;
 
-    fs_lock(g);
     err = odfs_handler_get_file_position(g, fh_from_vector(file), &pos);
     fs_unlock(g);
     set_dos_error(res2, err);
@@ -586,7 +568,6 @@ static int64 vp_get_file_size(struct FSVP *vp,
     if (!g)
         return -1;
 
-    fs_lock(g);
     err = odfs_handler_get_file_size(g, fh_from_vector(file), &size);
     fs_unlock(g);
     set_dos_error(res2, err);
@@ -604,7 +585,6 @@ static int32 vp_change_lock_mode(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_change_lock_mode(g, lock_from_vector(lock),
                                         new_lock_mode);
     fs_unlock(g);
@@ -622,7 +602,6 @@ static int32 vp_change_file_mode(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_change_file_mode(g, fh_from_vector(fh),
                                         new_lock_mode);
     fs_unlock(g);
@@ -756,7 +735,6 @@ static int32 vp_read_soft_link(struct FSVP *vp,
      * context route through a per-task IO request; hold the filesystem
      * semaphore around it like every other vector callback.
      */
-    fs_lock(g);
     len = odfs_handler_read_soft_link(g, lock_from_vector(rel_dir),
                                       (const char *)linkname,
                                       (char *)buf, (LONG)bufsize, &err);
@@ -778,7 +756,6 @@ static int32 vp_same_lock(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_same_lock_object(g,
                                         lock_from_vector(lock1),
                                         lock_from_vector(lock2),
@@ -800,7 +777,6 @@ static int32 vp_same_file(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_same_file_object(g,
                                         fh_from_vector(fh1),
                                         fh_from_vector(fh2),
@@ -824,6 +800,8 @@ static int32 vp_filesystem_attr(struct FSVP *vp,
 
     ODFS_TRACE(&g->log, ODFS_SUB_DOS, "FSFileSystemAttr taglist=%p",
                taglist);
+    /* The remaining attributes are constants and do not access g. */
+    fs_unlock(g);
 
     version_buf_size = filesystem_attr_version_buf_size(taglist);
 
@@ -906,7 +884,6 @@ static int32 vp_volume_info_data(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_fill_info(g, NULL, info);
     fs_unlock(g);
     return return_dos_status(res2, err);
@@ -922,7 +899,6 @@ static int32 vp_device_info_data(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_fill_info(g, NULL, info);
     fs_unlock(g);
     return return_dos_status(res2, err);
@@ -942,7 +918,6 @@ static struct ExamineData *vp_examine_obj(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_resolve_object_node(g, lock_from_vector(lock),
                                            object ? object : "", &node,
                                            &parent);
@@ -973,7 +948,6 @@ static struct ExamineData *vp_examine_lock(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_get_lock_node(g, lock_from_vector(lock), &node);
     ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                "FSExamineLock lock=%p -> err=%ld name='%s'",
@@ -1002,7 +976,6 @@ static struct ExamineData *vp_examine_file(struct FSVP *vp,
     if (!g)
         return NULL;
 
-    fs_lock(g);
     err = odfs_handler_get_fh_node(g, fh_from_vector(file), &node);
     if (err != 0) {
         fs_unlock(g);
@@ -1030,11 +1003,12 @@ static int32 vp_examine_dir(struct FSVP *vp,
     if (!g)
         return DOSFALSE;
 
-    if (!ctx)
+    if (!ctx) {
+        fs_unlock(g);
         return return_dos_status(res2, ERROR_REQUIRED_ARG_MISSING);
+    }
 
     resume = (uint32_t)ctx->FSPrivate[1];
-    fs_lock(g);
     err = odfs_handler_next_dir_entry(g, lock_from_vector(ctx->ReferenceLock),
                                       ctx->FSPrivate[0], &resume, &entry,
                                       &key);
@@ -1071,7 +1045,6 @@ static int32 vp_inhibit(struct FSVP *vp, int32 *res2, int32 inhibit_state)
     if (!g)
         return DOSFALSE;
 
-    fs_lock(g);
     err = odfs_handler_inhibit(g, inhibit_state);
     fs_unlock(g);
     return return_dos_status(res2, err);
@@ -1108,6 +1081,7 @@ static int32 vp_serialize(struct FSVP *vp, int32 *res2)
     if (!g)
         return DOSFALSE;
 
+    fs_unlock(g);
     set_dos_error(res2, 0);
     return DOSTRUE;
 }
@@ -1248,10 +1222,4 @@ void odfs_os4_free_vector_port(struct FileSystemVectorPort *vp)
 {
     if (vp)
         FreeDosObject(DOS_FSVECTORPORT, vp);
-}
-
-void odfs_os4_invalidate_vector_port(struct FileSystemVectorPort *vp)
-{
-    if (vp)
-        vp->FSV.Version = 0;
 }

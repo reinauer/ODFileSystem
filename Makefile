@@ -502,6 +502,14 @@ $(HOST_BUILD)/%.o: %.c
 
 tests: $(TEST_BINS)
 
+$(HOST_BUILD)/tests/test_os4_shutdown: tests/unit/test_os4_shutdown.c \
+        platform/amiga/os4/vector_guard.h \
+        tests/amiga/os4_stubs/handler.h tests/amiga/os4_stubs/proto/exec.h
+	@mkdir -p $(@D)
+	@echo "  HOSTCC $<"
+	@$(HOSTCC) $(CPPFLAGS) -I tests/amiga/os4_stubs -I tests/unit \
+		$(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS)
+
 $(HOST_BUILD)/tests/test_%: tests/unit/test_%.c $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"

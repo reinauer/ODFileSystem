@@ -13,6 +13,7 @@
 
 #if ODFS_AMIGA_OS4
 #include "vector_port.h"
+#include "vector_guard.h"
 /*
  * OS4 vector callbacks run in the calling process context; the handler
  * process must hold the same semaphore while it touches handler state.
@@ -1902,10 +1903,14 @@ static void unmount_volume(handler_global_t *g);
 static int query_media_present(handler_global_t *g, ULONG *status);
 static LONG probe_drive_geometry(handler_global_t *g);
 
-static int objects_outstanding(handler_global_t *g)
+static int begin_shutdown(handler_global_t *g)
 {
-    return g->locklist.mlh_TailPred != (struct MinNode *)&g->locklist.mlh_Head ||
-           g->fhlist.mlh_TailPred != (struct MinNode *)&g->fhlist.mlh_Head;
+#if ODFS_AMIGA_OS4
+    return odfs_os4_begin_shutdown(g);
+#else
+    return g->locklist.mlh_TailPred == (struct MinNode *)&g->locklist.mlh_Head &&
+           g->fhlist.mlh_TailPred == (struct MinNode *)&g->fhlist.mlh_Head;
+#endif
 }
 
 static void drain_all_objects(handler_global_t *g)
@@ -6075,9 +6080,9 @@ void handler_main_startup(struct Message *startup_msg)
 
                 if (pkt->dp_Type == ACTION_DIE ||
                     pkt->dp_Type == ACTION_SHUTDOWN) {
-                    if (objects_outstanding(g)) {
+                    if (!begin_shutdown(g)) {
                         ODFS_INFO(&g->log, ODFS_SUB_DOS,
-                                  "shutdown refused: locks or files still open");
+                                  "shutdown refused: handler still in use");
                         pkt->dp_Res1 = DOSFALSE;
                         pkt->dp_Res2 = ERROR_OBJECT_IN_USE;
                         return_packet(g, pkt);
@@ -6144,15 +6149,11 @@ void handler_main_startup(struct Message *startup_msg)
 #endif
 
     /*
-     * Invalidate the vector port first so dos.library stops vectoring new
-     * callers, then tear down DOS-visible state while holding the
-     * filesystem semaphore so in-flight vector calls finish first. The
-     * shutdown packet is replied only after the teardown is done.
+     * begin_shutdown() has closed vector entry with no callbacks or
+     * objects outstanding. Tear down DOS-visible state before replying
+     * to the shutdown packet.
      */
     ODFS_FS_LOCK(g);
-#if ODFS_AMIGA_OS4
-    odfs_os4_invalidate_vector_port(g->vector_port);
-#endif
     remove_media_change(g);
     unmount_volume(g);
     drain_all_objects(g);
