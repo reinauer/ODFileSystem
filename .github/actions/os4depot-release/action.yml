@@ -1,0 +1,32 @@
+name: Release to OS4Depot
+description: Upload an archive and its metadata to the OS4Depot approval queue
+
+inputs:
+  archive:
+    description: Path to the existing release archive
+    required: true
+  filename:
+    description: OS4Depot archive filename, without a directory or version
+    required: true
+  readme:
+    description: OS4Depot readme template with [VERSION] and [PASSPHRASE]
+    required: true
+  version:
+    description: Release version, optionally prefixed with v
+    required: true
+  passphrase:
+    description: Passphrase protecting the existing OS4Depot entry
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Submit archive and readme
+      shell: bash
+      env:
+        OS4DEPOT_ARCHIVE: ${{ inputs.archive }}
+        OS4DEPOT_FILENAME: ${{ inputs.filename }}
+        OS4DEPOT_README: ${{ inputs.readme }}
+        OS4DEPOT_VERSION: ${{ inputs.version }}
+        OS4DEPOT_PASSPHRASE: ${{ inputs.passphrase }}
+      run: python3 "$GITHUB_ACTION_PATH/upload.py"

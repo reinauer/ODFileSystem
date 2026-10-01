@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v* tag to build and release
+        description: Existing v* tag to build, release, and submit to OS4Depot
         required: true
         type: string
 
@@ -144,6 +144,38 @@ jobs:
             dist/CDFileSystem-test
             dist/ODFileSystem-amigaos4.lha
           if-no-files-found: error
+
+  publish-os4depot:
+    name: Upload to OS4Depot
+    needs: build-amigaos4
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: os4depot-release
+      cancel-in-progress: false
+
+    steps:
+      # Use the workflow revision for the action and metadata, including
+      # when manually publishing an older tag that predates this action.
+      - name: Checkout publishing tools
+        uses: actions/checkout@v4
+
+      - name: Download AmigaOS 4 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: amigaos4-release-artifacts
+          path: artifacts/amigaos4
+
+      - name: Submit AmigaOS 4 package
+        uses: ./.github/actions/os4depot-release
+        with:
+          archive: artifacts/amigaos4/ODFileSystem-amigaos4.lha
+          filename: odfilesystem.lha
+          readme: docs/ODFileSystem_OS4.os4depot
+          version: ${{ env.RELEASE_TAG }}
+          passphrase: ${{ secrets.OS4DEPOT_PASSPHRASE }}
 
   release:
     name: Create GitHub draft release

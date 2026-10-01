@@ -1,0 +1,26 @@
+name: ODFileSystem
+description: Modern optical-disc filesystem for OS4
+version: [VERSION]
+author: Stefan Reinauer
+submitter: Stefan Reinauer
+email: stefan.reinauer@coreboot.org
+url: https://github.com/reinauer/ODFileSystem
+category: driver/filesystem
+replaces: driver/filesystem/odfilesystem.lha
+requirements: AmigaOS 4.1 Final Edition
+license: BSD
+minosversion: 4.1
+distribute: yes
+passphrase: [PASSPHRASE]
+hend:
+ODFileSystem is a read-only optical-disc filesystem for AmigaOS 4.
+It supports ISO 9660, Rock Ridge, Joliet, UDF, HFS, HFS+, multisession
+discs, and CDDA tracks exposed as virtual WAV or AIFF files.
+
+This archive contains the native PowerPC disk-loadable handler,
+the CDFileSystem Kickstart module, debug variants, and an audio-CD
+Workbench icon. See README.md inside the archive for installation
+instructions and mount options.
+
+Source code and release notes:
+https://github.com/reinauer/ODFileSystem/releases
