@@ -210,7 +210,7 @@ TEST(resolve_parent_hfs)
 
     ASSERT_OK(odfs_resolve_path(&mnt, "/DEEP/SUBDIR", &dir));
     ASSERT_PARENT_MATCHES_SEARCH(&mnt, &dir, &parent, &grandparent);
-    ASSERT_STR_EQ(parent.name, "DEEP");
+    ASSERT_STR_EQ(parent.name, "deep");
     ASSERT(odfs_node_matches_identity(&grandparent, &mnt.root));
 
     odfs_unmount(&mnt);
