@@ -139,16 +139,32 @@ assert_eq "udf-forced: nested read" "Deep file" "$CONTENT"
 # ---- HFS (hybrid ISO/HFS disc) ----
 ROOT=$("$TOOLS/imgls" -h "$IMAGES/test_hfs.iso" 2>/dev/null)
 assert_contains "hfs: dir listing" "SHORT.TXT" "$ROOT"
-assert_contains "hfs: has subdir" "DEEP" "$ROOT"
+assert_contains "hfs: has subdir" "deep" "$ROOT"
 
 CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /SHORT.TXT 2>/dev/null)
 assert_eq "hfs: file content" "Short" "$CONTENT"
 
-DEEP=$("$TOOLS/imgls" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR 2>/dev/null)
-assert_contains "hfs: nested file" "NESTED.TXT" "$DEEP"
+DEEP=$("$TOOLS/imgls" -h "$IMAGES/test_hfs.iso" /deep/subdir 2>/dev/null)
+assert_contains "hfs: nested file" "nested.txt" "$DEEP"
 
-CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR/NESTED.TXT 2>/dev/null)
+CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /deep/subdir/nested.txt 2>/dev/null)
 assert_eq "hfs: nested read" "Deep file" "$CONTENT"
+
+# ---- HFS without an ISO 9660 side ----
+HFS_ONLY=$(mktemp)
+cp "$IMAGES/test_hfs.iso" "$HFS_ONLY"
+dd if=/dev/zero of="$HFS_ONLY" bs=2048 seek=16 count=2 conv=notrunc 2>/dev/null
+
+INFO=$("$TOOLS/imginfo" "$HFS_ONLY" 2>/dev/null)
+ROOT=$("$TOOLS/imgls" "$HFS_ONLY" 2>/dev/null)
+assert_contains "hfs-only: backend" "hfs" "$INFO"
+assert_contains "hfs-only: first leaf" "deep" "$ROOT"
+assert_contains "hfs-only: middle leaf" "long filename with spaces.txt" "$ROOT"
+assert_contains "hfs-only: last leaf" "twentychars.dat" "$ROOT"
+
+CONTENT=$("$TOOLS/imgcat" "$HFS_ONLY" /deep/subdir/nested.txt 2>/dev/null)
+assert_eq "hfs-only: nested read" "Deep file" "$CONTENT"
+rm -f "$HFS_ONLY"
 
 # ---- HFS+ ----
 if [ -f "$IMAGES/test_hfsplus_large.iso" ]; then

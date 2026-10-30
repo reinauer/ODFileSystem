@@ -250,6 +250,9 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     /* read catalog B-tree header node */
     {
         uint8_t hdr_buf[512];
+
+        /* the real node size is stored in this header */
+        ctx->cat_node_size = sizeof(hdr_buf);
         err = hfs_read_node(ctx, cache, 0, hdr_buf);
         if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
