@@ -14,10 +14,21 @@ Test small deterministic components: endian helpers, path parsing, timestamps, d
 ### Golden Image Tests (`tests/golden/`)
 For each image, define expected: detected backend(s), volume name, root listing, file metadata, file hashes, timestamps.
 
-The golden suite also includes an optional real-world Amiga `AS` check. It
-downloads the small `Arabian Nights` archive from Archive.org on demand,
-verifies its MD5, extracts the data track, and skips cleanly if the network or
-required extraction tools are unavailable.
+#### Real-world Amiga Rock Ridge metadata
+
+The golden suite includes an optional check for Amiga protection bits and
+comments stored in Rock Ridge `AS` entries. Reference images:
+
+- [Arabian Nights (1993)(Buzz)(M4)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BBIN%5D/Arabian%20Nights%20%281993%29%28Buzz%29%28M4%29.7z)
+- [Benefactor (1994)(Psygnosis)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BIMG%5D/Benefactor%20%281994%29%28Psygnosis%29.7z)
+
+The automated real-image golden test downloads only the smaller
+`Arabian Nights` archive on demand, verifies the Archive.org MD5 before reuse,
+extracts track 1 to a plain 2048-byte data image, and skips cleanly if download
+or extraction tooling is unavailable. If a prepared data-track image already
+exists locally, set `ODFS_REAL_AS_IMAGE=/path/to/arabian_nights.iso` to reuse it
+without redownloading. The larger `Benefactor` image is kept as a manual
+reference input.
 
 ### Malformed Image Tests (`tests/malformed/`)
 Intentionally broken images to ensure: no crash, no infinite loop, graceful error paths, bounded resource usage.

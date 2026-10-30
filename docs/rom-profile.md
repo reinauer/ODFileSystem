@@ -38,7 +38,7 @@ serial output disabled.
 These targets do not reuse or clobber the normal Amiga build in `build/amiga/`.
 
 ## Size Budget
-`make rom` enforces a default release size limit of `40960` bytes.
+`make rom` enforces a default release size limit of `32768` bytes.
 
 If intentional growth needs a higher ceiling, override it with:
 
@@ -46,4 +46,4 @@ If intentional growth needs a higher ceiling, override it with:
 make rom ROM_SIZE_LIMIT=<bytes>
 ```
 
-The normal release handler similarly enforces `AMIGA_SIZE_LIMIT=60000`.
+The normal release handler similarly enforces `AMIGA_SIZE_LIMIT=98304`.

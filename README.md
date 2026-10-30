@@ -2,325 +2,59 @@
 
 [![Coverity](https://img.shields.io/coverity/scan/33023.svg)](https://scan.coverity.com/projects/33023)
 
-ODFileSystem is a read-only optical-disc filesystem driver for Amiga systems. It is implemented as an AmigaDOS handler frontend with clean backend plugins for the various optical-disc formats it supports, allowing it to mount and browse CD-ROM, DVD, Blu-ray, and image-based media.
+ODFileSystem is a read-only optical-disc filesystem for AmigaOS 3 and AmigaOS 4.
+It lets Amiga applications browse and read CD-ROM, DVD, Blu-ray, and image-based
+media, and access audio-CD tracks as WAV or AIFF files.
 
-The project also includes host-side tools and tests so most parser and cache logic can be developed and validated outside an Amiga environment.
+## Installation
 
-## Purpose
+Download the [release archive](https://github.com/reinauer/ODFileSystem/releases)
+for your AmigaOS version.
 
-ODFileSystem is the most modern and complete optical-disc filesystem for the Amiga. The handler deals with AmigaDOS packets, locks, and file handles, while the core library and backend parsers detect media formats, choose the appropriate view of hybrid discs, enumerate directories, and read file data.
+### Choose the handler
 
-ODFileSystem can:
+- **AmigaOS 3:** copy `ODFileSystem` from the OS3 archive to `L:ODFileSystem`.
+  On a 68020 or later CPU, you can use `ODFileSystem020` instead; copy it as
+  `L:ODFileSystem` to use the same mount configuration.
+- **AmigaOS 4:** copy `ODFileSystem-amigaos4` from the OS4 archive as
+  `L:ODFileSystem`.
 
-- mount optical media through a standard AmigaDOS handler
-- support common CD/DVD filesystem formats and hybrid discs
-- present a consistent read-only file and directory model to Amiga software
-- allow most logic to be tested on a host machine using image files
+If you built from source, use `build/amiga/ODFileSystem`, or the `ODFileSystem`
+file in your chosen build directory.
 
-## Supported Filesystems And Features
+### Set up a DOSDriver
 
-### Filesystems
+Copy the sample [CD0](platform/amiga/dosdrivers/CD0) and
+[CD0.info](platform/amiga/dosdrivers/CD0.info) from this repository to
+`DEVS:DOSDrivers/`.
+Edit `FileSystem` in CD0 to read `L:ODFileSystem`, then set the `Device` and
+`Unit` tooltypes on the CD0 icon to match your controller and drive.
 
-ODFileSystem currently includes backends for:
-
-- ISO 9660
-- High Sierra
-- Rock Ridge
-- Joliet
-- UDF
-- HFS
-- HFS+
-- CDDA virtual audio tracks
-
-### Features
-
-- Read-only AmigaDOS handler for optical media
-- Multisession support, with the last session selected by default
-- Hybrid-disc precedence rules
-- Deterministic duplicate-name handling after normalization or charset conversion
-- Rock Ridge, Joliet, UDF, HFS, and HFS+ probing
-- Rock Ridge and UDF symlinks exposed as Amiga soft links
-  (`ST_SOFTLINK` / `ACTION_READ_LINK`)
-- Path lookup, directory enumeration, and file reads
-- Block-cache based media access
-- Host-side tools for inspecting image files
-
-### Feature Matrix
-
-| Filesystem | Status | Notes |
-| --- | --- | --- |
-| ISO 9660 | Supported | Plain ISO 9660 names and directory traversal |
-| High Sierra | Supported | Pre-ISO 9660 (1986) variant, detected automatically; not in the ROM profile |
-| Rock Ridge | Supported | Preferred over plain ISO when present |
-| Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
-| UDF | Supported | Bridge discs default to ISO-family content unless forced |
-| HFS | Supported with limitations | Data fork only |
-| HFS+ | Supported with limitations | Data fork only; resource forks are not exposed |
-| CDDA | Supported | Exposed as virtual WAV files |
-
-### Format Selection Rules
-
-For ISO-family hybrids, the default precedence is:
-
-1. Rock Ridge
-2. Joliet
-3. Plain ISO 9660
-
-For bridge and hybrid discs:
-
-- ISO-family content is preferred over UDF by default
-- ISO-family content is preferred over HFS by default
-- UDF can be preferred explicitly
-- HFS can be preferred explicitly
-- A specific session or backend can be forced by mount options
-
-UDF and ISO on the same disc are usually a bridge layout, where the ISO-family
-side exists for older systems and the UDF side exists for newer ones. On Amiga,
-the ISO-family view is the safer default because:
-
-- Rock Ridge and Joliet map more naturally to the naming and metadata path the
-  handler already exposes
-- hybrid optical discs historically expected older systems to use the ISO side
-- plain ISO-family trees are generally the least surprising fallback
-- UDF support is newer and more likely to hit edge cases on odd media
-
-So the default is essentially:
-
-- prefer the more traditional, compatibility-oriented view
-- let the user opt into UDF when they actually want that view
-
-That is why the handler has an explicit `UDF` override instead of making UDF
-the default on bridge discs.
-
-To prefer UDF for a bridge disc from the Mountlist, add:
-
-```text
-Control = "UDF"
-```
-
-You can combine that with other control flags, for example:
-
-```text
-Control = "UDF LOWERCASE"
-```
-
-### Name Collision Policy
-
-If multiple on-disc names normalize to the same visible AmigaDOS name, the first
-entry keeps the unsuffixed name and later entries are renamed deterministically
-in on-disc order using `~2`, `~3`, and so on.
-
-### HFS And HFS+ Limitations
-
-- Only data forks are exposed. Resource forks and Finder metadata are not
-  presented as separate files or alternate streams.
-- Because of those limits, some classic Mac software distributions may be
-  incomplete when viewed through ODFileSystem even though their main data files
-  remain readable.
-
-### CDDA
-
-Audio tracks are exposed as virtual WAV files. On mixed-mode discs they appear in a `CDDA/` directory, and on pure audio discs they appear at the root. When the drive returns CD-Text, the disc and track metadata is exposed as a `CD-TEXT.txt` file and each track's title becomes the AmigaDOS file comment on its virtual audio file.
-
-### Amiga Rock Ridge AS
-
-ODFileSystem now parses the Amiga-specific Rock Ridge `AS` SUSP entry on top of normal RRIP handling.
-
-Current behavior:
-
-- preserve the raw 4-byte Amiga protection field when present
-- expose Amiga comments through the Amiga handler metadata path
-- continue to use standard RRIP for names, timestamps, symlinks, and directory structure
-
-Real-world `AS` source images used during development:
-
-- [Arabian Nights (1993)(Buzz)(M4)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BBIN%5D/Arabian%20Nights%20%281993%29%28Buzz%29%28M4%29.7z)
-- [Benefactor (1994)(Psygnosis)](https://archive.org/download/noaen-tosec-iso-commodore-amiga-cd32/Commodore/Amiga%20CD32/Games/%5BIMG%5D/Benefactor%20%281994%29%28Psygnosis%29.7z)
-
-The automated real-image golden test downloads only the smaller `Arabian Nights` archive on demand, verifies the Archive.org MD5 before reuse, extracts track 1 to a plain 2048-byte data image, and skips cleanly if download or extraction tooling is unavailable. If a prepared data-track image already exists locally, set `ODFS_REAL_AS_IMAGE=/path/to/arabian_nights.iso` to reuse it without redownloading. The larger `Benefactor` image is kept as a manual reference input.
-
-## Building for AmigaOS
-
-The Amiga handler is built with the `amiga` make target. The Makefile selects
-the Amiga frontend from the compiler target:
-
-- `m68k-amigaos-gcc` builds the AmigaOS 3/classic handler
-- `ppc-amigaos-gcc` builds the native AmigaOS 4 handler
-
-### AmigaOS 3
-
-With an m68k AmigaOS cross-compiler in `PATH`, run:
-
-```sh
-make amiga
-```
-
-This uses `m68k-amigaos-gcc` by default and writes:
-
-```text
-build/amiga/ODFileSystem
-```
-
-If the compiler is not in `PATH`, pass it explicitly:
-
-```sh
-make amiga CC=/path/to/m68k-amigaos-gcc
-```
-
-If the matching `ar`, `size`, and `strip` tools are also outside `PATH`, pass
-those too:
-
-```sh
-make amiga \
-  CC=/path/to/m68k-amigaos-gcc \
-  AMIGA_AR=/path/to/m68k-amigaos-ar \
-  AMIGA_SIZE=/path/to/m68k-amigaos-size \
-  STRIP=/path/to/m68k-amigaos-strip
-```
-
-To build the OS3 release archive, use:
-
-```sh
-make amigaos3-lha
-```
-
-This creates `build/amiga/ODFileSystem.lha` containing `ODFileSystem`,
-`ODFileSystem-test`, `ODFileSystem-rom`, `ODFileSystem-rom-test`, and
-`README.md`.  The test ADF is built and released separately.
-
-### AmigaOS 4
-
-With the AmigaOS 4 PPC toolchain in `PATH`, run:
-
-```sh
-make amiga CC=ppc-amigaos-gcc
-```
-
-This selects `AMIGA_TARGET=os4` automatically and builds the native OS4
-filesystem handler. To keep OS3 and OS4 outputs side by side, use a separate
-build directory:
-
-```sh
-make amiga \
-  CC=ppc-amigaos-gcc \
-  AMIGA_BUILD=build/amiga-os4
-```
-
-The handler is then written to:
-
-```text
-build/amiga-os4/ODFileSystem
-```
-
-For OS4 builds the Makefile also writes a Kickstart-module form:
-
-```text
-build/amiga-os4/CDFileSystem
-```
-
-These two files are intentionally different:
-
-- `ODFileSystem` is the normal disk-loadable filesystem handler. Copy it to
-  `L:ODFileSystem` and use it with a DOSDriver or mountlist.
-- `CDFileSystem` is a relocatable Kickstart resident module. Use it when
-  replacing `Kickstart/CDFileSystem` in an OS4 Kickstart directory or
-  `Kickstart.zip`; the Kicklayout entry remains `MODULE Kickstart/CDFileSystem`.
-
-If the OS4 toolchain is installed outside `PATH`, pass the full tool paths:
-
-```sh
-make amiga \
-  CC=/opt/amiga-ppc/bin/ppc-amigaos-gcc \
-  AMIGA_AR=/opt/amiga-ppc/bin/ppc-amigaos-ar \
-  AMIGA_OBJCOPY=/opt/amiga-ppc/bin/ppc-amigaos-objcopy \
-  AMIGA_SIZE=/opt/amiga-ppc/bin/ppc-amigaos-size \
-  STRIP=/opt/amiga-ppc/bin/ppc-amigaos-strip \
-  AMIGA_BUILD=build/amiga-os4
-```
-
-The Makefile normally derives the NDK include path from the selected compiler.
-If your SDK is elsewhere, add `NDK_PATH=/path/to/include_h`.
-
-### Debug and Size Limits
-
-Release builds have serial logging disabled. For a test build with serial
-output enabled, use `make amiga-test` with the same toolchain selection:
-
-```sh
-make amiga-test
-make amiga-test CC=ppc-amigaos-gcc AMIGA_TEST_BUILD=build/amiga-os4-test
-```
-
-The OS4 test build likewise produces both `ODFileSystem` and `CDFileSystem`
-under the selected test build directory.
-
-To build the OS4 release archive, use:
-
-```sh
-make amigaos4-lha \
-  CC=ppc-amigaos-gcc \
-  AMIGA_BUILD=build/amiga-os4 \
-  AMIGA_TEST_BUILD=build/amiga-os4-test
-```
-
-This creates `build/amiga-os4/ODFileSystem-amigaos4.lha` containing
-`ODFileSystem-amigaos4`, `CDFileSystem`, `ODFileSystem-amigaos4-test`,
-`CDFileSystem-test`, and `README.md`.
-
-Release builds enforce a default size limit of `98304` bytes for OS3 and
-`155648` bytes for OS4. If intentional growth needs a higher ceiling, override
-it with `AMIGA_SIZE_LIMIT=<bytes>`. During local bring-up, the limit can be
-disabled with `ENFORCE_SIZE_LIMITS=0`.
-
-## Release publishing
-
-Pushing a `v*` tag runs the GitHub draft-release workflow and the separate
-Aminet publishing workflow. The draft-release workflow also submits its
-existing OS4 archive to OS4Depot, without rebuilding it. OS4Depot receives
-`odfilesystem.lha` and `odfilesystem_lha.readme`, replacing the existing
-`driver/filesystem/odfilesystem.lha` entry.
-
-Configure the repository Actions secret `OS4DEPOT_PASSPHRASE` with the
-passphrase for that existing OS4Depot entry (1-40 characters on one line).
-An absent or invalid secret fails the OS4Depot job before any upload;
-the GitHub release and Aminet jobs can still complete independently.
-The passphrase is added only to a temporary upload readme, never to the
-archive or GitHub artifacts.
-
-The upload metadata lives in `docs/ODFileSystem_OS4.os4depot`. The local
-composite action in `.github/actions/os4depot-release` accepts archive,
-destination filename, readme template, version, and passphrase inputs.
-It follows the [OS4Depot FTP protocol](https://os4depot.net/index.php?function=ftpinfo),
-sending the archive first and the readme last. Successful transfer means
-submission to OS4Depot; site validation and moderator approval still follow.
-
-To publish an existing tag, run **ODFileSystem Draft Release** manually
-from the updated branch and supply that tag. To retry only a failed
-OS4Depot upload, rerun its failed job rather than the entire workflow.
-
-## Sample Mountlist
-
-For the mountlist examples below, copy the built handler to
-`L:ODFileSystem`. With the default build directory that is
-`build/amiga/ODFileSystem`; if you set `AMIGA_BUILD`, use the corresponding
-`ODFileSystem` output from that directory.
-
-For Workbench-style installation, copy:
-
-- `platform/amiga/dosdrivers/CD0` to `DEVS:DOSDrivers/CD0`
-- `platform/amiga/dosdrivers/CD0.info` to `DEVS:DOSDrivers/CD0.info`
-
-Change `FileSystem` in CD0 to L:ODFileSystem.
-
-Then edit the `Device` and `Unit` tooltypes on the `CD0` icon to match your
-hardware.
+The sample CD0 entry uses `Control = "AIFF UDF"`, selecting AIFF audio tracks
+and preferring UDF on bridge discs. Edit or remove this line to choose the
+[format defaults](#format-selection).
 
 Only one active DOSDriver may use a given device name. If another CD
-filesystem is already mounted as `CD0:`, either replace or disable that
-entry before mounting ODFileSystem as `CD0:`, or rename the ODFileSystem
-DOSDriver to another name such as `OD0:`.
+filesystem is already mounted as `CD0:`, replace or disable that entry before
+mounting ODFileSystem, or rename the ODFileSystem DOSDriver to `OD0:`.
+Double-click the DOSDriver to mount it, or restart to mount it from
+`DEVS:DOSDrivers/`.
 
-If you want a plain Mountlist entry instead, add one such as:
+For a default audio-CD disk icon, copy `Env-Archive/Sys/def_cdda.info` from the
+release archive to `ENVARC:Sys/def_cdda.info` and `ENV:Sys/def_cdda.info`.
+The source copy is [def_cdda.info](platform/amiga/env-archive/def_cdda.info).
+
+### AmigaOS 4 Kickstart installation
+
+The OS4 archive also includes `CDFileSystem` for replacing
+`Kickstart/CDFileSystem` in an OS4 Kickstart directory or `Kickstart.zip`.
+Keep the Kicklayout entry as `MODULE Kickstart/CDFileSystem`.
+Use the `ODFileSystem-amigaos4` file for a DOSDriver installation.
+
+## Mount Configuration
+
+As an alternative to a DOSDriver, add this entry to your Mountlist and adjust
+`Device` and `Unit` for your hardware:
 
 ```text
 CD0:
@@ -351,7 +85,7 @@ filesystem for DosType 'CD01' in FileSystem.resource (the A4091 does):
 without it, Mount silently uses that ROM filesystem instead of
 `L:ODFileSystem` and overrides the mountlist StackSize.
 
-Optional handler control flags can be supplied through the mount entry control string, for example:
+Use the mount entry's `Control` string to select formats and adjust caching:
 
 ```text
 Control = "LOWERCASE UDF"
@@ -364,30 +98,97 @@ Supported control flags:
 - `NOJOLIET` or `NOJ` to disable Joliet
 - `HFSFIRST` or `HF` to prefer HFS on hybrid discs
 - `UDF` to prefer UDF on bridge discs
+- `AIFF` to expose audio tracks as AIFF instead of WAV
 - `FILEBUFFERS=n` or `FB=n` to set the block-cache size in sectors
   (default 128 on AmigaOS 3, 1024 on AmigaOS 4)
 - `METACACHE=n` or `MC=n` to set the parsed-directory cache size in KiB
   (default 96 on AmigaOS 3, 1024 on AmigaOS 4; 0 turns it off)
 
-See [mountlist.example](/Users/stepan/git/ODFileSystem/docs/mountlist.example)
+See [mountlist.example](docs/mountlist.example)
 for a fuller example with hardware notes, and
-[CD0](/Users/stepan/git/ODFileSystem/platform/amiga/dosdrivers/CD0) for the
-packaged DOSDriver entry used with Workbench.
+[CD0](platform/amiga/dosdrivers/CD0) for the
+sample DOSDriver entry used with Workbench.
 
-## Unit Tests
+## Supported Formats
 
-Unit tests are host-side tests under `tests/unit/`. Run them with:
+| Filesystem | Status | Notes |
+| --- | --- | --- |
+| ISO 9660 | Supported | Plain ISO 9660 names and directory traversal |
+| High Sierra | Supported | Pre-ISO 9660 (1986) variant, detected automatically; not in the ROM profile |
+| Rock Ridge | Supported | Preferred over plain ISO when present |
+| Joliet | Supported | Preferred over plain ISO when Rock Ridge is absent |
+| UDF | Supported | Bridge discs default to ISO-family content unless `Control = "UDF"` is set |
+| HFS | Supported with limitations | Data fork only |
+| HFS+ | Supported with limitations | Data fork only; resource forks are not exposed |
+| CDDA | Supported | Virtual WAV files, or AIFF with `Control = "AIFF"` |
 
-```sh
-make check
+ODFileSystem selects the last session on multisession discs by default.
+Rock Ridge and UDF symbolic links appear as Amiga soft links. Amiga protection
+bits and comments stored in Rock Ridge `AS` entries are preserved alongside
+standard Rock Ridge names, timestamps, links, and directory structure.
+
+### Format selection
+
+When several directory trees are available, ODFileSystem prefers Rock Ridge,
+then Joliet, then plain ISO 9660. On bridge or hybrid discs it prefers the
+ISO-family view over UDF or HFS.
+
+To prefer UDF, set:
+
+```text
+Control = "UDF"
 ```
 
-This builds the host library and the unit-test binaries, then runs all suites. In this workspace, `make check` completes successfully.
+To prefer HFS, use `Control = "HFSFIRST"`. Options can be combined, for example
+`Control = "UDF LOWERCASE"`.
 
-The repository also contains image-based golden tests in `tests/golden/`, but the unit-test entry point is `make check`.
+### Name collisions
 
-`make golden-check` also includes an optional real-world `AS` fixture test. It uses `tests/golden/fetch_real_as_fixture.sh` to cache and verify the small `Arabian Nights` archive locally before running the metadata assertions.
+If multiple on-disc names become the same AmigaDOS name after name or character
+set conversion, the first entry keeps the original name. Later entries receive
+`~2`, `~3`, and so on, in on-disc order.
+
+### HFS and HFS+ limitations
+
+Only data forks are exposed. Resource forks and Finder metadata are not
+available as separate files. Some classic Mac software distributions may
+therefore be incomplete when viewed through ODFileSystem, even though their
+main data files remain readable.
+
+### Audio CDs
+
+Audio tracks appear as virtual WAV files by default, or AIFF files when
+`Control = "AIFF"` is set. On mixed-mode discs they appear in a `CDDA/`
+directory; on pure audio discs they appear at the root.
+
+When the drive returns CD-Text, disc and track metadata appears in
+`CD-TEXT.txt`, and each track's title becomes its AmigaDOS file comment.
+
+## Building from Source
+
+With an m68k AmigaOS cross-compiler in `PATH`:
+
+```sh
+make amiga
+```
+
+This produces `build/amiga/ODFileSystem`. For AmigaOS 4, use a PowerPC AmigaOS
+cross-compiler and a separate build directory:
+
+```sh
+make amiga CC=ppc-amigaos-gcc AMIGA_BUILD=build/amiga-os4
+```
+
+See [Building ODFileSystem](docs/building.md) for toolchain setup, debug builds,
+and release archives, and [ROM Profile](docs/rom-profile.md) for ROM builds.
+
+## Development Documentation
+
+- [Architecture](docs/architecture.md)
+- [Testing](docs/testing.md)
+- [Release publishing](docs/releasing.md)
 
 ## License
 
-ODFileSystem is licensed under the BSD 2-Clause license. See [LICENSE](/Users/stepan/git/xcdfs/LICENSE) for the full text.
+ODFileSystem is licensed under the BSD 2-Clause license. See [LICENSE](LICENSE)
+for the full text.
