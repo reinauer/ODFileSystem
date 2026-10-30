@@ -9,7 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    container: stefanreinauer/amiga-gcc:gcc-v13.4
+    container: stefanreinauer/amiga-gcc:gcc-v16.2
 
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +77,7 @@ jobs:
 
   build-amigaos4:
     runs-on: ubuntu-latest
-    container: stefanreinauer/amigappc-gcc
+    container: stefanreinauer/amiga-gcc:gcc-v16.2-ppc
 
     steps:
       - uses: actions/checkout@v4
