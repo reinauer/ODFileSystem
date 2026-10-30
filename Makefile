@@ -162,6 +162,11 @@ HANDLER_LIBS   = -nostdlib -lgcc
 else
 AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
 AMIGA_SYSFLAGS ?= -noixemul
+# Use register arguments inside the OS3 handler, including the ROM profile.
+# Keep this on both compilation and linking for LTO. OS entry points use
+# explicit registers; libc/amiga.lib declarations retain their stack ABI.
+# Standalone test programs keep the C runtime's default calling convention.
+AMIGA_ABIFLAGS ?= -mregparm=2
 AMIGA_WARNFLAGS =
 AMIGA_DEFS     = -DAMIGA
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
@@ -598,17 +603,17 @@ $(AMIGA_BUILD)/libodfs.a: $(AMIGA_LIB_OBJS)
 
 # ---- Amiga object files ----
 
-$(AMIGA_BUILD)/%.o: %.c
+$(AMIGA_BUILD)/%.o: %.c Makefile
 	@mkdir -p $(@D)
 	@echo "  CC    $<"
-	@$(CC) $(CPPFLAGS) $(AMIGA_INCLUDES) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(AMIGA_INCLUDES) $(CFLAGS) $(AMIGA_ABIFLAGS) -c -o $@ $<
 
 # ---- Amiga assembly ----
 
-$(AMIGA_BUILD)/%.o: %.S
+$(AMIGA_BUILD)/%.o: %.S Makefile
 	@mkdir -p $(@D)
 	@echo "  AS    $<"
-	@$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CPPFLAGS) $(CFLAGS) $(AMIGA_ABIFLAGS) -c -o $@ $<
 
 # ---- Amiga test tools ----
 
@@ -629,7 +634,7 @@ $(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
 $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) $(AMIGA_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  LINK  $@"
-	@$(CC) $(LDFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
+	@$(CC) $(LDFLAGS) $(AMIGA_ABIFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
 	@echo "  STRIP $@"
 	@$(STRIP) $@
 
