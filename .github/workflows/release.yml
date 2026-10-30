@@ -22,7 +22,7 @@ jobs:
   build-amigaos3:
     name: Build AmigaOS 3 release artifacts
     runs-on: ubuntu-latest
-    container: stefanreinauer/amiga-gcc:gcc-v13.4
+    container: stefanreinauer/amiga-gcc:gcc-v16.2
 
     steps:
       - name: Validate release tag
@@ -85,7 +85,7 @@ jobs:
   build-amigaos4:
     name: Build AmigaOS 4 release artifacts
     runs-on: ubuntu-latest
-    container: stefanreinauer/amigappc-gcc
+    container: stefanreinauer/amiga-gcc:gcc-v16.2-ppc
 
     steps:
       - name: Validate release tag
