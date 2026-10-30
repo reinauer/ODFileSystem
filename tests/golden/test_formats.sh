@@ -151,6 +151,14 @@ CONTENT=$("$TOOLS/imgcat" -h "$IMAGES/test_hfs.iso" /DEEP/SUBDIR/NESTED.TXT 2>/d
 assert_eq "hfs: nested read" "Deep file" "$CONTENT"
 
 # ---- HFS+ ----
+if [ -f "$IMAGES/test_hfsplus_large.iso" ]; then
+    # the catalog spans several leaf nodes
+    COUNT=$("$TOOLS/imgls" "$IMAGES/test_hfsplus_large.iso" 2>/dev/null | grep -c root_file_)
+    assert_eq "hfsplus-large: root entries" "150" "$COUNT"
+    COUNT=$("$TOOLS/imgls" "$IMAGES/test_hfsplus_large.iso" /sub 2>/dev/null | grep -c sub_file_)
+    assert_eq "hfsplus-large: subdir entries" "150" "$COUNT"
+fi
+
 if [ -f "$IMAGES/test_hfsplus.iso" ]; then
     INFO=$("$TOOLS/imginfo" "$IMAGES/test_hfsplus.iso" 2>/dev/null)
     ROOT=$("$TOOLS/imgls" "$IMAGES/test_hfsplus.iso" 2>/dev/null)

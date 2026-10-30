@@ -362,9 +362,11 @@ static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
             uint32_t key_parent = hfs_be32(&node_buf[off + 2]);
             uint32_t ptr = hfs_be32(&node_buf[off + 1 + klen]);
 
-            if (key_parent <= parent_cnid)
+            /* a directory's records can start in the child before the
+             * first key naming it */
+            if (key_parent < parent_cnid || child == 0)
                 child = ptr;
-            else
+            if (key_parent >= parent_cnid)
                 break;
         }
 
