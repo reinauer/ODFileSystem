@@ -267,8 +267,8 @@ This creates `build/amiga-os4/ODFileSystem-amigaos4.lha` containing
 `ODFileSystem-amigaos4`, `CDFileSystem`, `ODFileSystem-amigaos4-test`,
 `CDFileSystem-test`, and `README.md`.
 
-Release builds enforce a default size limit of `60000` bytes for OS3 and
-`131072` bytes for OS4. If intentional growth needs a higher ceiling, override
+Release builds enforce a default size limit of `98304` bytes for OS3 and
+`155648` bytes for OS4. If intentional growth needs a higher ceiling, override
 it with `AMIGA_SIZE_LIMIT=<bytes>`. During local bring-up, the limit can be
 disabled with `ENFORCE_SIZE_LIMITS=0`.
 
