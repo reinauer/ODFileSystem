@@ -44,6 +44,11 @@ DosType     = 0x43443031
  * from disk. (Requires Mount from OS 2.04 or newer.)
  */
 ForceLoad   = 1
+/* Start the filesystem when this entry is mounted, so that a disc in
+ * the drive gets its Workbench icon without waiting for first access.
+ * To save memory until the drive is used, remove this line.
+ */
+Activate    = 1
 Control     = "AIFF UDF"
 
 /* The Device and Unit fields are controlled by tooltypes in the CD0 
