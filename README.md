@@ -6,6 +6,37 @@ ODFileSystem is a read-only optical-disc filesystem for AmigaOS 3 and AmigaOS 4.
 It lets Amiga applications browse and read CD-ROM, DVD, Blu-ray, and image-based
 media, and access audio-CD tracks as WAV or AIFF files.
 
+## Why ODFileSystem
+
+ODFileSystem has the most complete optical-disc format support of any Amiga CD
+filesystem we tested. It is the only one that reads UDF and HFS+, so DVDs,
+Blu-ray discs, and modern Mac discs work alongside classic CD-ROMs, and the only
+one that reads every format below. It also has native AmigaOS 3 and AmigaOS 4
+builds, and it is open source and actively developed.
+
+| Feature | ODFileSystem | CDFileSystem 47.26 | AllegroCDFS 3.9 | BabelCDFS 1.2 | CacheCDFS 43.4 / 106.1 | AmiCDFS 2.40 | AsimCDFS 3.10 |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| ISO 9660 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Rock Ridge long names | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Joliet long names | ✓ | – | ✓ | – | – | – | – |
+| High Sierra | ✓ | – | – | – | – | – | ✓ |
+| UDF | ✓ | – | – | – | – | – | – |
+| HFS | ✓ | – | – | – | – | ✓ | – |
+| HFS+ | ✓ | – | – | – | – | – | – |
+| Audio tracks as files | ✓ | – | ✓ | – | – | – | ✓ |
+
+It is also fast where browsing and loading software are concerned. In
+[CDBench](https://github.com/reinauer/CDBench), which publishes its
+[results for all eight filesystems](https://github.com/reinauer/CDBench/blob/main/BENCHMARKS.md),
+the 68020 build is the fastest at whole-directory traversal (12 105 entries/s,
+28% ahead of the next best) and small-file open and read (416 µs, over 2.5 times
+faster than the next best). Its sequential read speed is second to AllegroCDFS,
+which is about 8% faster. On Discovery, the first pass over a mounted disc, it
+is level with CDFileSystem at about 7 500 entries/s, behind BabelCDFS at 9 365.
+
+See the [full comparison](docs/comparison.md) for every result, the test setup,
+and the areas where other filesystems lead.
+
 ## Installation
 
 Download the [release archive](https://github.com/reinauer/ODFileSystem/releases)
@@ -84,6 +115,16 @@ CD0:
 filesystem for DosType 'CD01' in FileSystem.resource (the A4091 does):
 without it, Mount silently uses that ROM filesystem instead of
 `L:ODFileSystem` and overrides the mountlist StackSize.
+
+`Activate = 1` starts the filesystem at mount, so a disc in the drive gets its
+Workbench icon without waiting for first access. The sample CD0 entry sets it
+too; remove the line to save memory until the drive is used. Keep it when
+running benchmarks: without it, Workbench's disc-insert work runs during the
+first pass over the disc and halves the CDBench Discovery result.
+
+If the drive is empty at mount, a disc inserted later is detected only if the
+device reports `TDERR_DiskChanged` for an empty drive. `a4091.device` 42.39 does
+not, so with that version the disc mounts on first access to `CD0:`.
 
 Use the mount entry's `Control` string to select formats and adjust caching:
 
@@ -184,6 +225,7 @@ and release archives, and [ROM Profile](docs/rom-profile.md) for ROM builds.
 
 ## Development Documentation
 
+- [Filesystem comparison](docs/comparison.md)
 - [Architecture](docs/architecture.md)
 - [Testing](docs/testing.md)
 - [Release publishing](docs/releasing.md)
