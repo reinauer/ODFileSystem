@@ -25,6 +25,8 @@
 
 /* directories this large hash the name a lookup looks for */
 #define META_LOOKUP_HASH_MIN 8u
+/* found directories this close to the LRU head are not moved */
+#define META_LRU_FRONT 8u
 
 /* ------------------------------------------------------------------ */
 /* LRU bookkeeping                                                     */
@@ -61,6 +63,26 @@ static void meta_evict(odfs_meta_cache_t *mc, odfs_meta_dir_t *d)
     mc->total -= d->bytes;
     mc->stats.evictions++;
     odfs_free(d);
+}
+
+/*
+ * Evict from the tail until the cache fits its budget. A directory
+ * used since it was last moved to the head goes back there instead,
+ * once, as it would have under strict LRU.
+ */
+static void meta_trim(odfs_meta_cache_t *mc)
+{
+    odfs_meta_dir_t *t;
+
+    while (mc->total > mc->budget && (t = mc->lru_tail) != NULL) {
+        if (t->referenced) {
+            t->referenced = 0;
+            meta_unlink(mc, t);
+            meta_push_head(mc, t);
+        } else {
+            meta_evict(mc, t);
+        }
+    }
 }
 
 void odfs_meta_cache_init(odfs_meta_cache_t *mc, uint32_t budget_bytes)
@@ -106,13 +128,19 @@ static odfs_meta_dir_t *meta_find_extent(odfs_meta_cache_t *mc,
                                          uint8_t backend)
 {
     odfs_meta_dir_t *d;
+    unsigned int pos = 0;
 
-    for (d = mc->lru_head; d; d = d->lru_next) {
+    for (d = mc->lru_head; d; d = d->lru_next, pos++) {
         if (d->dir_lba == lba && d->dir_length == length &&
             d->dir_backend == backend) {
-            if (d != mc->lru_head) {
+            /* the directories at the front stay put, which spares
+             * relinking the few a path walk keeps returning to; the
+             * flag gives them their second chance in meta_trim() */
+            if (pos >= META_LRU_FRONT) {
                 meta_unlink(mc, d);
                 meta_push_head(mc, d);
+            } else {
+                d->referenced = 1;
             }
             return d;
         }
@@ -492,10 +520,9 @@ static odfs_meta_dir_t *meta_get(odfs_meta_cache_t *mc,
         return d;
     }
 
-    meta_push_head(mc, d);
     mc->total += d->bytes;
-    while (mc->total > mc->budget && mc->lru_tail != d)
-        meta_evict(mc, mc->lru_tail);
+    meta_trim(mc);
+    meta_push_head(mc, d);
     return d;
 }
 
