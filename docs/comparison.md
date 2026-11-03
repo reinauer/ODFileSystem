@@ -4,12 +4,14 @@ This page compares ODFileSystem with the seven other AmigaOS CD filesystems
 measured by [CDBench](https://github.com/reinauer/CDBench), which publishes the
 same performance results in its
 [BENCHMARKS.md](https://github.com/reinauer/CDBench/blob/main/BENCHMARKS.md).
-All results below were collected on 2026-10-30 on one emulated system. The feature results are
+All results below were collected on one emulated system. The feature results are
 what each handler actually did with a test disc, not what its documentation
 says.
 
-ODFileSystem results are from 1.0 beta1, which is the v0.9.0-2 tree with the HFS
-and HFS+ directory fixes applied, built with GCC 13.4.
+ODFileSystem results are from 1.0 beta2, which is the v0.9.0-8 tree with the
+AmigaOS 3 memory and string functions added, built with GCC 16.2. Results for
+the other filesystems were collected on 2026-10-30, and for ODFileSystem on
+2026-11-02.
 
 ## Features
 
@@ -55,10 +57,10 @@ in a column.
 | Filesystem | Sequential read KiB/s | Discovery entries/s | ExAll traversal entries/s |
 | --- | --: | --: | --: |
 | AllegroCDFS 3.9 | **203 539** | 7 163 | 7 429 |
-| ODFileSystem 1.0 beta1 (68020) | 188 232 | 7 529 | **12 105** |
+| ODFileSystem 1.0 beta2 (68020) | 188 260 | 7 679 | **12 214** |
 | CDFileSystem 47.26 | 186 612 | 7 560 | 7 613 |
 | BabelCDFS 1.2 | 186 525 | **9 365** | 9 446 |
-| ODFileSystem 1.0 beta1 (68000) | 177 901 | 6 613 | 12 042 |
+| ODFileSystem 1.0 beta2 (68000) | 177 959 | 7 362 | 12 193 |
 | CacheCDFS 43.4 | 171 111 | 5 862 | 5 314 |
 | CacheCDFS 106.1 | 171 105 | 5 882 | 5 319 |
 | AmiCDFS 2.40 | 111 286 | 5 890 | 5 926 |
@@ -69,42 +71,47 @@ in a column.
 | Filesystem | Random same offset | Random stride | Random seeded | Deep lock | Open from lock | Small open+read |
 | --- | --: | --: | --: | --: | --: | --: |
 | AllegroCDFS 3.9 | 156 | 283 | **156** | 547 | 349 | 1 832 |
-| ODFileSystem 1.0 beta1 (68020) | 68 | 274 | 214 | 225 | **211** | **416** |
+| ODFileSystem 1.0 beta2 (68020) | 57 | **196** | 191 | 207 | **193** | **371** |
 | CDFileSystem 47.26 | **56** | 683 | 605 | **146** | 213 | 1 103 |
 | BabelCDFS 1.2 | 170 | 315 | 172 | 613 | 429 | 2 823 |
-| ODFileSystem 1.0 beta1 (68000) | 81 | 323 | 253 | 225 | 213 | 470 |
+| ODFileSystem 1.0 beta2 (68000) | 64 | 217 | 212 | 212 | 197 | 406 |
 | CacheCDFS 43.4 | 59 | 373 | 265 | 993 | 1 076 | 3 274 |
 | CacheCDFS 106.1 | 58 | 373 | 265 | 992 | 1 075 | 3 255 |
-| AmiCDFS 2.40 | 69 | **256** | 185 | 681 | 439 | 2 733 |
+| AmiCDFS 2.40 | 69 | 256 | 185 | 681 | 439 | 2 733 |
 | AsimCDFS 3.10 | 273 | 419 | 410 | 288 | 529 | 1 731 |
 
-ODFileSystem leads on whole-directory traversal and small-file access, which
-dominate browsing and loading software from a disc. AllegroCDFS is about 8%
-faster at sequential reads, BabelCDFS is fastest at Discovery, the first
-traversal of a mounted disc, and CDFileSystem has the fastest deep path lookup.
+ODFileSystem leads on whole-directory traversal, small-file access and random
+reads at changing offsets, which dominate browsing and loading software from a
+disc. AllegroCDFS is about 8% faster at sequential reads and has the fastest
+seeded random reads, BabelCDFS is fastest at Discovery, the first traversal of
+a mounted disc, and CDFileSystem has the fastest deep path lookup.
 
 AsimCDFS mounted with 2 buffers instead of the 192 in its mount entry, so its
 sequential result is unlikely to be its best.
 
 ### Changes since v0.6.0
 
-Matching builds of the v0.6.0 release and 1.0 beta1, measured the same way:
+Matching builds of the v0.6.0 release and 1.0 beta2, measured the same way:
 
-| Test | v0.6.0 (68020) | 1.0 beta1 (68020) | Change | v0.6.0 (68000) | 1.0 beta1 (68000) | Change |
+| Test | v0.6.0 (68020) | 1.0 beta2 (68020) | Change | v0.6.0 (68000) | 1.0 beta2 (68000) | Change |
 | --- | --: | --: | --: | --: | --: | --: |
-| Sequential read, KiB/s | 188 185 | 188 232 | 0.0% | 179 172 | 177 901 | −0.7% |
-| Discovery, entries/s | 7 328 | 7 529 | +2.7% | 5 688 | 6 613 | +16.3% |
-| ExAll traversal, entries/s | 11 600 | 12 105 | +4.4% | 11 585 | 12 042 | +3.9% |
-| Random same offset, µs | 68 | 68 | 0% | 81 | 81 | 0% |
-| Random stride, µs | 275 | 274 | −0.4% | 326 | 323 | −0.9% |
-| Random seeded, µs | 215 | 214 | −0.5% | 255 | 253 | −0.8% |
-| Deep lock, µs | 319 | 225 | −29.5% | 320 | 225 | −29.7% |
-| Open from lock, µs | 290 | 211 | −27.2% | 290 | 213 | −26.6% |
-| Small open+read, µs | 644 | 416 | −35.4% | 699 | 470 | −32.8% |
+| Sequential read, KiB/s | 188 185 | 188 260 | 0.0% | 179 172 | 177 959 | −0.7% |
+| Discovery, entries/s | 7 328 | 7 679 | +4.8% | 5 688 | 7 362 | +29.4% |
+| ExAll traversal, entries/s | 11 600 | 12 214 | +5.3% | 11 585 | 12 193 | +5.2% |
+| Random same offset, µs | 68 | 57 | −16.2% | 81 | 64 | −21.0% |
+| Random stride, µs | 275 | 196 | −28.7% | 326 | 217 | −33.4% |
+| Random seeded, µs | 215 | 191 | −11.2% | 255 | 212 | −16.9% |
+| Deep lock, µs | 319 | 207 | −35.1% | 320 | 212 | −33.8% |
+| Open from lock, µs | 290 | 193 | −33.4% | 290 | 197 | −32.1% |
+| Small open+read, µs | 644 | 371 | −42.4% | 699 | 406 | −41.9% |
 
 Most of the improvement in lock and open times comes from register-argument
 builds, added after v0.9.0. The v0.9.0 68020 handler measures 324 µs for deep
-lock and 501 µs for small open+read.
+lock and 501 µs for small open+read. Most of the improvement in random reads
+comes from the AmigaOS 3 handler's own memory functions, added after 1.0 beta1:
+they copy sectors with `CopyMem` and copy long words between differently
+aligned buffers on a 68020 or later. 1.0 beta1, built with GCC 13.4, measured
+274 µs for random stride reads and 416 µs for small open+read on the 68020.
 
 ## Test setup
 
@@ -115,8 +122,8 @@ lock and 501 µs for small open+read.
 - CDBench run from the Shell after Workbench had loaded, with a 16 KiB stack.
 - Each handler used its CDBench mount entry, with `Activate = 1` so that the disc
   was mounted before CDBench started. Without it, Workbench's disc-insert work
-  runs during the timed walk, and ODFileSystem's Discovery result falls from
-  7 529 to about 3 900 entries/s. ODFileSystem used `Buffers = 5` and
+  runs during the timed walk, and the Discovery result of ODFileSystem 1.0
+  beta1 fell from 7 529 to about 3 900 entries/s. ODFileSystem used `Buffers = 5` and
   `Control = "AIFF UDF"`.
 
 The format tests walked each disc and read every file, using the images in
