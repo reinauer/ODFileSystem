@@ -15,19 +15,23 @@ static inline unsigned char odfs_ascii_tolower(unsigned char ch)
 }
 
 /*
- * Hash of the name folded the way odfs_strcasecmp() folds it. Rotate
- * and xor rather than a multiplicative hash: GCC turns any multiply,
- * even one written as shifts, into a libgcc call per character on the
- * 68000. The final shifts mix the leading characters into the low bits
- * that pick a hash bucket.
+ * Hash of the name, equal for names odfs_strcasecmp() calls equal.
+ * Setting bit 5 folds 'A'-'Z' onto 'a'-'z' in one instruction; it
+ * also merges a few other byte pairs, which only costs the rare extra
+ * compare after a hash match. Rotate and xor rather than a
+ * multiplicative hash: GCC turns any multiply, even one written as
+ * shifts, into a libgcc call per character on the 68000. The final
+ * shifts mix the leading characters into the low bits that pick a
+ * hash bucket.
  */
 static inline unsigned int odfs_strcasehash(const char *s)
 {
     unsigned int hash = 0;
+    unsigned int c;
 
-    while (*s) {
+    while ((c = (unsigned char)*s++) != 0) {
         hash = (hash << 5) | (hash >> 27);
-        hash ^= odfs_ascii_tolower((unsigned char)*s++);
+        hash ^= c | 0x20u;
     }
     hash ^= hash >> 16;
     hash ^= hash >> 8;
