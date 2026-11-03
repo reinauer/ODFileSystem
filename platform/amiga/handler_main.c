@@ -2642,10 +2642,12 @@ LONG odfs_handler_resolve_object_node(handler_global_t *g,
 
 /*
  * Resolve an AmigaDOS path directly into a preallocated entry's node
- * storage. The zero- and one-component forms — which cover almost
- * every Lock() and Open() — are served with a single lookup and no
- * intermediate node copies; paths with '/' fall back to the iterative
- * walker, which still writes its results straight into the entry.
+ * storage. Paths of plain names in cached directories, which cover
+ * almost every Lock() and Open(), take one walk through the metadata
+ * cache. Otherwise the zero- and one-component forms are served with a
+ * single lookup and no intermediate node copies, and paths with '/'
+ * fall back to the iterative walker, which still writes its results
+ * straight into the entry.
  */
 static LONG resolve_object_into_entry(handler_global_t *g,
                                       odfs_lock_t *parent_lock,
@@ -2684,6 +2686,32 @@ static LONG resolve_object_into_entry(handler_global_t *g,
     colon = strchr(p, ':');
     if (colon)
         p = colon + 1;
+
+    /* names separated by single '/', all in cached directories: one
+     * walk, and only the last three nodes are filled in */
+#if ODFS_FEATURE_CDDA
+    if (*p != '\0' &&
+        (!g->has_cdda || start->extent.lba != g->mount.root.extent.lba))
+#else
+    if (*p != '\0')
+#endif
+    {
+        unsigned int depth;
+
+        err = odfs_lookup_path(&g->mount, start, p, &entry->fnode,
+                               &entry->parent_node,
+                               &entry->grandparent_node, &depth);
+        if (err == ODFS_OK) {
+            if (depth == 1)
+                goto single_parents;
+            if (depth == 2)
+                entry->grandparent_node = *start;
+            entry->has_grandparent = 1;
+            return 0;
+        }
+        if (err != ODFS_ERR_UNSUPPORTED)
+            return odfs_err_to_dos(err);
+    }
 
     if (strchr(p, '/') != NULL) {
         int has_grandparent = 0;
@@ -2740,6 +2768,7 @@ static LONG resolve_object_into_entry(handler_global_t *g,
             return odfs_err_to_dos(ODFS_ERR_IS_SYMLINK);
     }
 
+single_parents:
     entry->parent_node = *start;
     if (!parent_lock || node_is_mount_root(g, start)) {
         entry->grandparent_node = g->mount.root;
