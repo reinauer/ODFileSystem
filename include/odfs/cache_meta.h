@@ -28,7 +28,7 @@
 
 #if ODFS_FEATURE_CACHE_META
 
-#define ODFS_META_COOKIE_TAG 0x80000000UL
+#define ODFS_META_COOKIE_TAG UINT32_C(0x80000000)
 
 /* compact cached form of one directory entry */
 typedef struct odfs_meta_entry {

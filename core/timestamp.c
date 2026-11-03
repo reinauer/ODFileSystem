@@ -8,7 +8,7 @@
 
 #include <string.h>
 
-#define ODFS_MAC_EPOCH 2082844800UL
+#define ODFS_MAC_EPOCH UINT32_C(2082844800)
 
 void odfs_timestamp_from_mac_time(uint32_t mac_secs,
                                   odfs_timestamp_t *timestamp)

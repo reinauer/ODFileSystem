@@ -49,6 +49,10 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 
+#ifdef __AROS__
+#include <aros/debug.h>
+#endif
+
 #if !ODFS_AMIGA_OS4
 #define DOSBase (g->libs.dos)
 #endif
@@ -179,7 +183,8 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
  */
 static void amiga_init_max_transfer(handler_global_t *g)
 {
-    ULONG max = g->envec->de_MaxTransfer;
+    ULONG max = (g->envec->de_MaxTransfer > UINT32_MAX) ?
+        UINT32_MAX : (ULONG)g->envec->de_MaxTransfer;
 
     if (max == 0)
         max = 0xffffffffUL;
@@ -188,9 +193,9 @@ static void amiga_init_max_transfer(handler_global_t *g)
         g->max_transfer_blocks = 1;
     g->max_transfer = g->max_transfer_blocks * g->sector_size;
 
-    g->direct_buf_blocked = ~g->envec->de_Mask;
+    g->direct_buf_blocked = ~(uintptr_t)g->envec->de_Mask;
 #if !ODFS_AMIGA_OS4
-    g->direct_mem_need = g->envec->de_BufMemType &
+    g->direct_mem_need = (ULONG)g->envec->de_BufMemType &
                          (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST | MEMF_LOCAL |
                           MEMF_24BITDMA | MEMF_KICK);
 #else
@@ -205,17 +210,17 @@ static int amiga_direct_read_window_ok(handler_global_t *g,
                                        const void *buf,
                                        uint32_t len)
 {
-    ULONG start;
-    ULONG end;
-    ULONG win_start;
-    ULONG win_end;
+    uintptr_t start;
+    uintptr_t end;
+    uintptr_t win_start;
+    uintptr_t win_end;
 
     if (!g->direct_read_buf || g->direct_read_len == 0 || len == 0)
         return 0;
 
-    start = (ULONG)buf;
+    start = (uintptr_t)buf;
     end = start + len - 1;
-    win_start = (ULONG)g->direct_read_buf;
+    win_start = (uintptr_t)g->direct_read_buf;
     win_end = win_start + g->direct_read_len - 1;
     if (end < start || win_end < win_start)
         return 0;
@@ -236,8 +241,8 @@ static int amiga_direct_memtype_ok(handler_global_t *g, const void *buf,
                                    uint32_t len)
 {
     ULONG need = g->direct_mem_need;
-    ULONG start = (ULONG)buf;
-    ULONG end = start + len - 1;
+    uintptr_t start = (uintptr_t)buf;
+    uintptr_t end = start + len - 1;
     struct MemHeader *mh;
     int found = 0;
 
@@ -250,11 +255,11 @@ static int amiga_direct_memtype_ok(handler_global_t *g, const void *buf,
     for (mh = (struct MemHeader *)SysBase->MemList.lh_Head;
          mh->mh_Node.ln_Succ;
          mh = (struct MemHeader *)mh->mh_Node.ln_Succ) {
-        if (start >= (ULONG)mh->mh_Lower && start < (ULONG)mh->mh_Upper) {
-            if (end < (ULONG)mh->mh_Upper &&
+        if (start >= (uintptr_t)mh->mh_Lower && start < (uintptr_t)mh->mh_Upper) {
+            if (end < (uintptr_t)mh->mh_Upper &&
                 (mh->mh_Attributes & need) == need) {
-                g->direct_mem_lo = (ULONG)mh->mh_Lower;
-                g->direct_mem_hi = (ULONG)mh->mh_Upper;
+                g->direct_mem_lo = (uintptr_t)mh->mh_Lower;
+                g->direct_mem_hi = (uintptr_t)mh->mh_Upper;
                 found = 1;
             }
             break;
@@ -264,8 +269,8 @@ static int amiga_direct_memtype_ok(handler_global_t *g, const void *buf,
     if (found)
         return 1;
 
-    return (TypeOfMem((CONST_APTR)start) & need) == need &&
-           (TypeOfMem((CONST_APTR)end) & need) == need;
+    return (TypeOfMem((APTR)start) & need) == need &&
+           (TypeOfMem((APTR)end) & need) == need;
 }
 #endif
 
@@ -273,9 +278,9 @@ static int amiga_can_read_direct(handler_global_t *g, const void *buf,
                                  uint32_t len, uint32_t sectors)
 {
     struct DosEnvec *de;
-    ULONG start;
-    ULONG end;
-    ULONG blocked;
+    uintptr_t start;
+    uintptr_t end;
+    uintptr_t blocked;
 
     if (!g || !g->envec || !buf || len == 0)
         return 0;
@@ -292,12 +297,12 @@ static int amiga_can_read_direct(handler_global_t *g, const void *buf,
 #endif
 
     de = g->envec;
-    start = (ULONG)buf;
+    start = (uintptr_t)buf;
     end = start + len - 1;
     if (end < start)
         return 0;
 
-    blocked = ~de->de_Mask;
+    blocked = ~(uintptr_t)de->de_Mask;
     if ((start & blocked) != 0)
         return 0;
 
@@ -1456,6 +1461,9 @@ static const odfs_media_ops_t amiga_media_ops = {
 #if !ODFS_AMIGA_OS4
 static inline void raw_putchar(char c)
 {
+#ifdef __AROS__
+    bug("%c", c);
+#else
     register char _d0 __asm("d0") = c;
     register struct ExecBase *_a6 __asm("a6") = SysBase;
     __asm volatile (
@@ -1464,6 +1472,7 @@ static inline void raw_putchar(char c)
         : "r" (_a6)
         : "d1", "a0", "a1", "memory"
     );
+#endif
 }
 
 static void serial_puts(const char *s)
@@ -1892,10 +1901,10 @@ static ULONG amiga_node_key(const odfs_node_t *node)
      * object keys.  Use stable on-disc identity rather than transient ODFS
      * node ids; ISO/Joliet nodes are regenerated during directory scans.
      */
-    key = (((ULONG)node->backend & 0x7UL) << 28) |
-          ((ULONG)node->extent.lba & 0x0fffffffUL);
-    if ((key & 0x0fffffffUL) == 0)
-        key |= ((ULONG)node->id + 1UL) & 0x0fffffffUL;
+    key = (((ULONG)node->backend & 0x7U) << 28) |
+          ((ULONG)node->extent.lba & 0x0fffffffU);
+    if ((key & 0x0fffffffU) == 0)
+        key |= ((ULONG)node->id + 1U) & 0x0fffffffU;
     if (key == 0)
         key = 1;
     return key;
@@ -2210,7 +2219,7 @@ static odfs_lock_t *lock_from_entry(handler_global_t *g,
 
     lock = ODFS_LOCK_DOS(ol);
     lock->fl_Link   = 0;
-    lock->fl_Key    = (LONG)ol->key;
+    lock->fl_Key    = (__typeof__(lock->fl_Key))ol->key;
     lock->fl_Access = access;
     lock->fl_Task   = g->dosport;
     lock->fl_Volume = MKBADDR(volume_node_ptr(entry->volume));
@@ -2565,7 +2574,7 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
     if (comment_len > 0)
         memcpy(&fib->fib_Comment[1], info.comment, comment_len);
 
-    fib->fib_DiskKey = (fib_compat_t)info.key;
+    fib->fib_DiskKey = (__typeof__(fib->fib_DiskKey))info.key;
 }
 
 static int node_is_mount_root(const handler_global_t *g, const odfs_node_t *fnode)
@@ -3414,12 +3423,12 @@ static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
         want = len;
     if (((pos | want) & 2047) != 0 || want < 2 * 2048 ||
         want > g->max_transfer ||
-        ((ULONG)buf & g->direct_buf_blocked) != 0)
+        ((uintptr_t)buf & g->direct_buf_blocked) != 0)
         return 0;
 #if !ODFS_AMIGA_OS4
     if (g->direct_mem_need != 0 &&
-        ((ULONG)buf < g->direct_mem_lo ||
-         (ULONG)buf + want - 1 >= g->direct_mem_hi) &&
+        ((uintptr_t)buf < g->direct_mem_lo ||
+         (uintptr_t)buf + want - 1 >= g->direct_mem_hi) &&
         !amiga_direct_memtype_ok(g, buf, want))
         return 0;
 #endif
@@ -3533,6 +3542,7 @@ LONG odfs_handler_seek_object(handler_global_t *g,
 {
     int64_t oldpos;
     int64_t newpos;
+    int64_t base;
     uint64_t size;
 
     if (oldpos_out)
@@ -3550,15 +3560,20 @@ LONG odfs_handler_seek_object(handler_global_t *g,
 
     oldpos = (int64_t)fh->pos;
     size = fh_node(fh)->size;
+    if (size > INT64_MAX || fh->pos > size)
+        return ERROR_SEEK_ERROR;
 
     switch (mode) {
-    case OFFSET_BEGINNING: newpos = offset; break;
-    case OFFSET_CURRENT:   newpos = oldpos + offset; break;
-    case OFFSET_END:       newpos = (int64_t)size + offset; break;
+    case OFFSET_BEGINNING: base = 0; break;
+    case OFFSET_CURRENT:   base = oldpos; break;
+    case OFFSET_END:       base = (int64_t)size; break;
     default:
         return ERROR_SEEK_ERROR;
     }
 
+    if (offset > 0 && base > INT64_MAX - offset)
+        return ERROR_SEEK_ERROR;
+    newpos = base + offset;
     if (newpos < 0 || (uint64_t)newpos > size)
         return ERROR_SEEK_ERROR;
 
@@ -3686,7 +3701,7 @@ LONG odfs_handler_fill_info(handler_global_t *g,
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
     info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
                               g->current_volume->volnode->dl_LockList) ?
-                             DOSTRUE : DOSFALSE;
+                             (__typeof__(info->id_InUse))DOSTRUE : 0;
     return 0;
 }
 
@@ -3766,7 +3781,7 @@ odfs_handler_inhibit(handler_global_t *g, LONG state)
 static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *parent_lock = LOCK_FROM_BPTR(pkt->dp_Arg1);
-    LONG access = pkt->dp_Arg3;
+    LONG access = (LONG)pkt->dp_Arg3;
     char path[512];
     odfs_lock_t *ol;
     LONG err_dos;
@@ -3774,7 +3789,7 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
     trace_pkt(g, "locate-enter", pkt);
 #endif
-    bstr_to_cstr(pkt->dp_Arg2, path, sizeof(path));
+    bstr_to_cstr((BSTR)pkt->dp_Arg2, path, sizeof(path));
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
     ODFS_TRACE(&g->log, ODFS_SUB_DOS, "locate-path path=%s", path);
 #endif
@@ -3794,7 +3809,7 @@ static void action_locate_object(handler_global_t *g, struct DosPacket *pkt)
     trace_node(g, "locate-parent", lock_parent_node(ol));
 #endif
 
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+    pkt->dp_Res1 = (SIPTR)LOCK_TO_BPTR(ol);
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
     trace_pkt(g, "locate-exit", pkt);
 #endif
@@ -3960,7 +3975,7 @@ static void action_read_link(handler_global_t *g, struct DosPacket *pkt)
                                                LOCK_FROM_BPTR(pkt->dp_Arg1),
                                                (const char *)pkt->dp_Arg2,
                                                (char *)pkt->dp_Arg3,
-                                               pkt->dp_Arg4, &err);
+                                               (LONG)pkt->dp_Arg4, &err);
     pkt->dp_Res2 = err;
 }
 
@@ -3989,7 +4004,7 @@ static void action_copy_dir(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res2 = err_dos;
         return;
     }
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+    pkt->dp_Res1 = (SIPTR)LOCK_TO_BPTR(ol);
 }
 
 static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
@@ -4004,7 +4019,7 @@ static void action_copy_dir_fh(handler_global_t *g, struct DosPacket *pkt)
         pkt->dp_Res2 = err_dos;
         return;
     }
-    pkt->dp_Res1 = LOCK_TO_BPTR(ol);
+    pkt->dp_Res1 = (SIPTR)LOCK_TO_BPTR(ol);
 }
 
 static void action_parent(handler_global_t *g, struct DosPacket *pkt)
@@ -4035,7 +4050,7 @@ static void action_parent(handler_global_t *g, struct DosPacket *pkt)
     }
 #endif
 
-    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+    pkt->dp_Res1 = (SIPTR)LOCK_TO_BPTR(parent);
 }
 
 static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
@@ -4063,7 +4078,7 @@ static void action_parent_fh(handler_global_t *g, struct DosPacket *pkt)
         trace_node(g, "parentfh-result", lock_node(parent));
 #endif
 
-    pkt->dp_Res1 = LOCK_TO_BPTR(parent);
+    pkt->dp_Res1 = (SIPTR)LOCK_TO_BPTR(parent);
 }
 
 static void action_same_lock(handler_global_t *g, struct DosPacket *pkt)
@@ -4480,7 +4495,12 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 
 static size_t exall_align_size(size_t size)
 {
-    return (size + 1u) & ~1u;
+#ifdef __AROS__
+    const size_t align = __alignof__(struct ExAllData);
+#else
+    const size_t align = 2;
+#endif
+    return (size + align - 1) & ~(align - 1);
 }
 
 static inline struct ExAllData *exall_next_entry(struct ExAllData *entry,
@@ -4493,13 +4513,14 @@ static size_t exall_fixed_size(LONG data)
 {
     static const size_t sizes[] = {
         0,
-        8,  /* ED_NAME: ed_Next, ed_Name */
-        12, /* ED_TYPE */
-        16, /* ED_SIZE */
-        20, /* ED_PROTECTION */
-        32, /* ED_DATE */
-        36, /* ED_COMMENT */
-        40  /* ED_OWNER */
+        offsetof(struct ExAllData, ed_Type),  /* ED_NAME: ed_Next, ed_Name */
+        offsetof(struct ExAllData, ed_Size), /* ED_TYPE */
+        offsetof(struct ExAllData, ed_Prot), /* ED_SIZE */
+        offsetof(struct ExAllData, ed_Days), /* ED_PROTECTION */
+        offsetof(struct ExAllData, ed_Comment), /* ED_DATE */
+        offsetof(struct ExAllData, ed_OwnerUID), /* ED_COMMENT */
+        offsetof(struct ExAllData, ed_OwnerGID) +
+            sizeof(((struct ExAllData *)0)->ed_OwnerGID) /* ED_OWNER */
     };
 
     if (data < ED_NAME || data > ED_OWNER)
@@ -4672,8 +4693,8 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct ExAllData *buf = (struct ExAllData *)pkt->dp_Arg2;
-    LONG size = pkt->dp_Arg3;
-    LONG data = pkt->dp_Arg4;
+    LONG size = (LONG)pkt->dp_Arg3;
+    LONG data = (LONG)pkt->dp_Arg4;
     struct ExAllControl *control = (struct ExAllControl *)pkt->dp_Arg5;
     const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
     exall_ctx_t ec;
@@ -4731,7 +4752,7 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
     ec.control = control;
     ec.remaining = size;
     ec.data = data;
-    ec.previous_key = control->eac_LastKey;
+    ec.previous_key = (ULONG)control->eac_LastKey;
     ec.seen_previous = (ec.previous_key == 0);
     control->eac_Entries = 0;
 
@@ -4826,7 +4847,7 @@ static void action_fh_from_lock(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    fhandle->fh_Arg1 = (LONG)fh;
+    fhandle->fh_Arg1 = (SIPTR)fh;
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -4840,7 +4861,7 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
     odfs_fh_t *fh;
     LONG err_dos;
 
-    bstr_to_cstr(pkt->dp_Arg3, path, sizeof(path));
+    bstr_to_cstr((BSTR)pkt->dp_Arg3, path, sizeof(path));
 
     err_dos = odfs_handler_open_object(g, dirlock, path, MODE_OLDFILE, &fh);
     if (err_dos != 0) {
@@ -4849,7 +4870,7 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    fhandle->fh_Arg1 = (LONG)fh;
+    fhandle->fh_Arg1 = (SIPTR)fh;
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -4857,9 +4878,15 @@ static void action_read(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
     void *buf = (void *)pkt->dp_Arg2;
-    LONG len = pkt->dp_Arg3;
+    LONG len = (LONG)pkt->dp_Arg3;
     LONG actual;
     LONG err_dos;
+
+    if (pkt->dp_Arg3 < 0 || (IPTR)pkt->dp_Arg3 > INT32_MAX) {
+        pkt->dp_Res1 = -1;
+        pkt->dp_Res2 = ERROR_BAD_NUMBER;
+        return;
+    }
 
     err_dos = odfs_handler_read_object(g, fh, buf, len, &actual);
     if (err_dos != 0) {
@@ -4874,8 +4901,8 @@ static void action_read(handler_global_t *g, struct DosPacket *pkt)
 static void action_seek(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
-    LONG offset = pkt->dp_Arg2;
-    LONG mode = pkt->dp_Arg3;
+    SIPTR offset = pkt->dp_Arg2;
+    LONG mode = (LONG)pkt->dp_Arg3;
     int64_t oldpos;
     LONG err_dos;
 
@@ -4886,7 +4913,7 @@ static void action_seek(handler_global_t *g, struct DosPacket *pkt)
         return;
     }
 
-    pkt->dp_Res1 = (LONG)oldpos;
+    pkt->dp_Res1 = (SIPTR)oldpos;
 #if !ODFS_AMIGA_OS4
     prefetch_start(g, fh);
 #endif
@@ -4954,13 +4981,14 @@ static void action_current_volume(handler_global_t *g,
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
 
-    pkt->dp_Res1 = MKBADDR(volume_node_ptr(fh ? fh_volume(fh) : g->current_volume));
-    pkt->dp_Res2 = (LONG)g->devunit;
+    pkt->dp_Res1 = (SIPTR)MKBADDR(
+        volume_node_ptr(fh ? fh_volume(fh) : g->current_volume));
+    pkt->dp_Res2 = (SIPTR)g->devunit;
 }
 
 static void action_inhibit(handler_global_t *g, struct DosPacket *pkt)
 {
-    LONG err_dos = odfs_handler_inhibit(g, pkt->dp_Arg1);
+    LONG err_dos = odfs_handler_inhibit(g, pkt->dp_Arg1 != 0);
 
     if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
@@ -5601,20 +5629,20 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
                                   struct DosEnvec *de,
                                   odfs_mount_opts_t *opts)
 {
-    STRPTR args[CTRL__COUNT];
+    SIPTR args[CTRL__COUNT];
     char buf[250];
     struct RDArgs *rdargs;
-    int len, i;
+    size_t len, i;
 
     if (!de->de_Control)
         return;
 
     /* extract BCPL string (AROS-compatible) */
     {
-        len = AROS_BSTR_strlen(de->de_Control);
-        if (len <= 0 || (size_t)len >= sizeof(buf) - 1)
+        len = odfs_bstr_len((BSTR)de->de_Control);
+        if (len == 0 || len >= sizeof(buf) - 1)
             return;
-        memcpy(buf, AROS_BSTR_ADDR(de->de_Control), (size_t)len);
+        memcpy(buf, AROS_BSTR_ADDR((BSTR)de->de_Control), (size_t)len);
         buf[len] = '\n'; /* ReadArgs needs newline terminator */
         buf[len + 1] = '\0';
     }
@@ -5624,7 +5652,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
         if (buf[i] == '+') {
             if (i + 1 < len && buf[i + 1] == '+') {
                 /* ++ → literal + */
-                int j;
+                size_t j;
                 for (j = i; j < len; j++)
                     buf[j] = buf[j + 1];
                 len--;
@@ -5646,7 +5674,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
 
     rdargs->RDA_Flags |= RDAF_NOPROMPT;
     rdargs->RDA_Source.CS_Buffer = (STRPTR)buf;
-    rdargs->RDA_Source.CS_Length = len + 1;
+    rdargs->RDA_Source.CS_Length = (LONG)len + 1;
     rdargs->RDA_Source.CS_CurChr = 0;
 
     if (ReadArgs((CONST_STRPTR)
@@ -5658,7 +5686,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
                   "AIFF/S,"
                   "FB=FILEBUFFERS/K/N,"
                   "MC=METACACHE/K/N",
-                  (LONG *)args, rdargs)) {
+                  args, rdargs)) {
 
         if (args[CTRL_LOWERCASE])
             opts->lowercase_iso = 1;
@@ -5675,13 +5703,14 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
         if (args[CTRL_FILEBUFFERS]) {
             LONG blocks;
 
-            memcpy(&blocks, args[CTRL_FILEBUFFERS], sizeof(blocks));
+            memcpy(&blocks, (const void *)args[CTRL_FILEBUFFERS],
+                   sizeof(blocks));
             opts->cache_blocks = (uint32_t)blocks;
         }
         if (args[CTRL_METACACHE]) {
             LONG kib;
 
-            memcpy(&kib, args[CTRL_METACACHE], sizeof(kib));
+            memcpy(&kib, (const void *)args[CTRL_METACACHE], sizeof(kib));
             opts->meta_cache_kib = (kib > 0) ? (uint32_t)kib : 0;
         }
 
@@ -6033,7 +6062,7 @@ static void install_media_change(handler_global_t *g)
 
     g->chgreq->io_Command = TD_ADDCHANGEINT;
     g->changeint_data.task       = g->dosport->mp_SigTask;
-    g->changeint_data.sigmask    = 1UL << g->chgsigbit;
+    g->changeint_data.sigmask    = (ULONG)1 << g->chgsigbit;
     odfs_amiga_init_interrupt(&g->changeint, "odfs-mediachange",
                               &g->changeint_data, changeint_signal);
     /* the device is handed the embedded Interrupt, not our wrapper */
@@ -6336,14 +6365,7 @@ void handler_main_startup(struct Message *startup_msg)
         goto shutdown;
     }
 
-    {
-        int len = AROS_BSTR_strlen(fssm->fssm_Device);
-        if (len >= (int)sizeof(g->devname))
-            len = sizeof(g->devname) - 1;
-        memcpy(g->devname, AROS_BSTR_ADDR(fssm->fssm_Device),
-               (size_t)len);
-        g->devname[len] = '\0';
-    }
+    bstr_to_cstr(fssm->fssm_Device, g->devname, sizeof(g->devname));
     if (g->devname[0] == '\0') {
         ODFS_ERROR(&g->log, ODFS_SUB_CORE,
                    "startup message names no exec device; set Device= "
@@ -6357,7 +6379,7 @@ void handler_main_startup(struct Message *startup_msg)
     g->devflags = fssm->fssm_Flags;
 
     g->envec = de;
-    g->sector_size = de->de_SizeBlock << 2;
+    g->sector_size = (ULONG)de->de_SizeBlock << 2;
     if (g->sector_size == 0) {
         ODFS_WARN(&g->log, ODFS_SUB_CORE,
                   "mount entry sets no block size; assuming 2048");
@@ -6460,7 +6482,7 @@ void handler_main_startup(struct Message *startup_msg)
         /* plus the Seek read-ahead's sectors */
         #define DMA_BUF_RAW_SIZE(ss) \
             ((DMA_BUF_SECTORS + ODFS_PF_SECTORS) * (ss) + 15)
-        ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
+        ULONG memtype = (ULONG)de->de_BufMemType | MEMF_PUBLIC;
         ULONG raw_size = DMA_BUF_RAW_SIZE(g->sector_size);
         g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
         if (!g->dma_buf_raw) {
@@ -6470,7 +6492,8 @@ void handler_main_startup(struct Message *startup_msg)
         }
         if (g->dma_buf_raw) {
             /* 16-byte align */
-            g->dma_buf = (uint8_t *)(((ULONG)g->dma_buf_raw + 15) & ~15UL);
+            g->dma_buf = (uint8_t *)
+                (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
             g->dma_buf_size = DMA_BUF_SECTORS * g->sector_size;
             g->pf_buf = g->dma_buf + g->dma_buf_size;
         } else {
@@ -6569,12 +6592,12 @@ void handler_main_startup(struct Message *startup_msg)
     mount_volume(g);
 
     /* ---- main packet loop ---- */
-    dossig = 1UL << g->dosport->mp_SigBit;
-    chgsig = (g->chgsigbit >= 0) ? (1UL << g->chgsigbit) : 0;
+    dossig = (ULONG)1 << g->dosport->mp_SigBit;
+    chgsig = (g->chgsigbit >= 0) ? ((ULONG)1 << g->chgsigbit) : 0;
 
     while (running) {
         pubsig = g->publish_timer_port ?
-            (1UL << g->publish_timer_port->mp_SigBit) : 0;
+            ((ULONG)1 << g->publish_timer_port->mp_SigBit) : 0;
         waitmask = dossig | chgsig | pubsig;
         sigs = Wait(waitmask);
 
