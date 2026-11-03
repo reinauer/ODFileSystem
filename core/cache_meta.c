@@ -129,14 +129,20 @@ static odfs_meta_dir_t *meta_find(odfs_meta_cache_t *mc,
 
 /*
  * Whether the pool name at a equals the len bytes at b, ignoring the
- * case of ASCII letters as odfs_strcasecmp() does.
+ * case of ASCII letters as odfs_strcasecmp() does: bytes that differ
+ * match only when they are the same letter in the other case.
  */
 static int meta_name_eq(const char *a, const char *b, size_t len)
 {
     while (len--) {
-        if (odfs_ascii_tolower((unsigned char)*a++) !=
-            odfs_ascii_tolower((unsigned char)*b++))
-            return 0;
+        unsigned char x = (unsigned char)*a++;
+        unsigned char y = (unsigned char)*b++;
+
+        if (x != y) {
+            x |= 0x20;
+            if (x != (y | 0x20) || x < 'a' || x > 'z')
+                return 0;
+        }
     }
     return *a == '\0';
 }
@@ -155,7 +161,15 @@ static const odfs_meta_entry_t *meta_find_name(odfs_meta_dir_t *d,
     unsigned int hash;
 
     if (d->count < META_LOOKUP_HASH_MIN) {
+        unsigned char c0 = (unsigned char)name[0];
+
         for (; e < last; e++) {
+            unsigned char x = (unsigned char)d->pool[e->name_off];
+
+            /* first bytes that differ by more than the case bit
+             * cannot match */
+            if (x != c0 && (x ^ c0) != 0x20)
+                continue;
             if (meta_name_eq(d->pool + e->name_off, name, len))
                 return e;
         }
