@@ -3180,6 +3180,40 @@ LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh)
 }
 
 /*
+ * Serve a read inside one sector of a contiguous file from the block
+ * cache, when the sector is there, without the layers of odfs_read().
+ * Returns the byte count, or 0 to leave the read to the general path.
+ */
+static ULONG fh_read_cached(handler_global_t *g, odfs_fh_t *fh,
+                            void *buf, ULONG len)
+{
+    const uint8_t *sector;
+    ULONG pos;
+    ULONG off;
+    ULONG lba;
+
+    if (fh->direct_size == 0 || (ULONG)(fh->pos >> 32) != 0)
+        return 0;
+    pos = (ULONG)fh->pos;
+    if (pos >= fh->direct_size)
+        return 0;
+    if (len > fh->direct_size - pos)
+        len = fh->direct_size - pos;
+    off = pos & 2047;
+    if (len == 0 || len > 2048 - off)
+        return 0;
+
+    lba = fh->direct_lba + (pos >> 11);
+    if (!odfs_cache_contains(&g->mount.cache, lba) ||
+        odfs_cache_read(&g->mount.cache, lba, &sector) != ODFS_OK)
+        return 0;
+
+    memcpy(buf, sector + off, len);
+    fh->pos = pos + len;
+    return len;
+}
+
+/*
  * Serve a read of whole sectors of a contiguous file with one device
  * request into the caller's buffer, skipping the core and the cache.
  * The general path would issue the same request for such a read; this
@@ -3209,7 +3243,10 @@ static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
         ((ULONG)buf & g->direct_buf_blocked) != 0)
         return 0;
 #if !ODFS_AMIGA_OS4
-    if (!amiga_direct_memtype_ok(g, buf, want))
+    if (g->direct_mem_need != 0 &&
+        ((ULONG)buf < g->direct_mem_lo ||
+         (ULONG)buf + want - 1 >= g->direct_mem_hi) &&
+        !amiga_direct_memtype_ok(g, buf, want))
         return 0;
 #endif
 
@@ -3222,40 +3259,18 @@ static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
     return 1;
 }
 
-LONG odfs_handler_read_object(handler_global_t *g,
-                              odfs_fh_t *fh,
-                              void *buf,
-                              LONG len,
-                              LONG *actual_out)
+/*
+ * The general read, through odfs_read() and the block cache, for what
+ * the quick paths in odfs_handler_read_object() do not serve. Kept out
+ * of line, so the quick paths need no large stack frame.
+ */
+static LONG __attribute__((noinline))
+read_object_general(handler_global_t *g, odfs_fh_t *fh, void *buf,
+                    LONG len, LONG *actual_out)
 {
-    size_t actual;
+    size_t actual = (size_t)len;
     odfs_err_t err;
 
-    if (actual_out)
-        *actual_out = 0;
-    if (!g || !fh || !buf || !actual_out)
-        return ERROR_OBJECT_NOT_FOUND;
-    if (len < 0)
-        return ERROR_BAD_NUMBER;
-    if (!fh_is_active(g, fh))
-        return ERROR_OBJECT_NOT_FOUND;
-
-    {
-        LONG err_dos = validate_object_volume(g, fh_volume(fh));
-        if (err_dos != 0)
-            return err_dos;
-    }
-
-    {
-        ULONG direct;
-
-        if (fh_read_direct(g, fh, buf, (ULONG)len, &direct)) {
-            *actual_out = (LONG)direct;
-            return 0;
-        }
-    }
-
-    actual = (size_t)len;
 #if !ODFS_AMIGA_OS4
     {
         uint8_t *prev_buf = g->direct_read_buf;
@@ -3276,6 +3291,48 @@ LONG odfs_handler_read_object(handler_global_t *g,
     fh->pos += actual;
     *actual_out = (LONG)actual;
     return 0;
+}
+
+LONG odfs_handler_read_object(handler_global_t *g,
+                              odfs_fh_t *fh,
+                              void *buf,
+                              LONG len,
+                              LONG *actual_out)
+{
+    if (actual_out)
+        *actual_out = 0;
+    if (!g || !fh || !buf || !actual_out)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (len < 0)
+        return ERROR_BAD_NUMBER;
+    if (!fh_is_active(g, fh))
+        return ERROR_OBJECT_NOT_FOUND;
+
+    {
+        LONG err_dos = validate_object_volume(g, fh_volume(fh));
+        if (err_dos != 0)
+            return err_dos;
+    }
+
+    if (fh->direct_size != 0) {
+        ULONG n;
+
+        if ((ULONG)len >= 2 * 2048) {
+            /* large reads go to the device in one request */
+            if (fh_read_direct(g, fh, buf, (ULONG)len, &n)) {
+                *actual_out = (LONG)n;
+                return 0;
+            }
+        } else if (len > 0) {
+            n = fh_read_cached(g, fh, buf, (ULONG)len);
+            if (n != 0) {
+                *actual_out = (LONG)n;
+                return 0;
+            }
+        }
+    }
+
+    return read_object_general(g, fh, buf, len, actual_out);
 }
 
 LONG odfs_handler_seek_object(handler_global_t *g,
