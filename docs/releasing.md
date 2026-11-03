@@ -6,7 +6,9 @@ Pushing a `v*` tag runs the GitHub draft-release workflow and the separate
 Aminet publishing workflow. The draft-release workflow also submits its
 existing OS4 archive to OS4Depot, without rebuilding it. OS4Depot receives
 `odfilesystem.lha` and `odfilesystem_lha.readme`, replacing the existing
-`driver/filesystem/odfilesystem.lha` entry.
+`driver/filesystem/odfilesystem.lha` entry. OS4Depot versions are at most 10
+characters, so the upload drops the tag's `v` and shortens a pre-release
+suffix: `v1.0.0-beta3` is submitted as `1.0.0b3`, `v1.1.0-rc1` as `1.1.0rc1`.
 
 Configure the repository Actions secret `OS4DEPOT_PASSPHRASE` with the
 passphrase for that existing OS4Depot entry (1-40 characters on one line).

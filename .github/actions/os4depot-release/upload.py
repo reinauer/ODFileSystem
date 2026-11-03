@@ -13,10 +13,18 @@ import subprocess
 import tempfile
 
 
+def os4depot_version(tag):
+    """OS4Depot takes at most 10 characters: drop the tag's "v" and
+    shorten a pre-release suffix, so v1.0.0-beta3 becomes 1.0.0b3."""
+    short = {"alpha": "a", "beta": "b", "rc": "rc"}
+    return re.sub(r"-(alpha|beta|rc)(?=[0-9]*$)",
+                  lambda m: short[m[1]], tag.removeprefix("v"))
+
+
 def main():
     archive = Path(os.environ["OS4DEPOT_ARCHIVE"])
     filename = os.environ["OS4DEPOT_FILENAME"]
-    version = os.environ["OS4DEPOT_VERSION"].removeprefix("v")
+    version = os4depot_version(os.environ["OS4DEPOT_VERSION"])
     passphrase = os.environ["OS4DEPOT_PASSPHRASE"]
     template = Path(os.environ["OS4DEPOT_README"]).read_text(encoding="utf-8")
 
