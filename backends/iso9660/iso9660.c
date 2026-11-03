@@ -443,6 +443,9 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
     uint32_t target_offset = (resume_offset && *resume_offset) ? *resume_offset : 0;
     uint32_t offset = 0;
     odfs_namefix_state_t namefix;
+    const uint8_t *sector = NULL;
+    uint32_t sector_held = 0;
+    uint32_t sector_gen = 0;
 
     ODFS_TRACE(log, ODFS_SUB_ISO,
                 "readdir: LBA %" PRIu32 ", size %" PRIu32, dir_lba, dir_size);
@@ -452,13 +455,19 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
         uint32_t entry_start = offset;
         uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
         uint32_t sector_off = offset % ISO_SECTOR_SIZE;
-        const uint8_t *sector;
         odfs_err_t err;
 
-        err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK) {
-            odfs_namefix_destroy(&namefix);
-            return err;
+        /* a sector holds dozens of records: look it up once, and keep
+         * the pointer while the cache has replaced nothing */
+        if (!sector || sector_lba != sector_held ||
+            cache->generation != sector_gen) {
+            err = odfs_cache_read(cache, sector_lba, &sector);
+            if (err != ODFS_OK) {
+                odfs_namefix_destroy(&namefix);
+                return err;
+            }
+            sector_held = sector_lba;
+            sector_gen = cache->generation;
         }
 
         const uint8_t *rec = sector + sector_off;
@@ -506,6 +515,8 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
                     odfs_namefix_destroy(&namefix);
                     return err;
                 }
+                sector_held = sector_lba;
+                sector_gen = cache->generation;
                 rec = sector + sector_off;
                 sua = rec + sua_off;
             }

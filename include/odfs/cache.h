@@ -51,6 +51,10 @@ typedef struct odfs_cache {
     uint8_t            *stream_buf;  /* staging for clustered miss reads;
                                         NULL disables read-ahead */
     uint32_t             last_miss_lba; /* detects sequential miss runs */
+    uint32_t             generation;  /* bumped whenever a valid entry is
+                                         replaced or dropped, so a caller
+                                         holding a data pointer can tell
+                                         it still holds the same sector */
 } odfs_cache_t;
 
 /* lifecycle */
