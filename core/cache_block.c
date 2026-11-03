@@ -298,6 +298,7 @@ void odfs_cache_flush(odfs_cache_t *cache)
     for (uint32_t i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
+    cache->generation++;
     cache_reset_indices(cache);
 }
 #endif
@@ -327,6 +328,7 @@ static int32_t cache_commit(odfs_cache_t *cache, int32_t victim,
         cache_remove_index(cache, (uint32_t)victim);
         cache_lru_remove(cache, (uint32_t)victim);
         cache->stats.evictions++;
+        cache->generation++;
     } else {
         int32_t free_idx = cache_pop_free(cache);
 
