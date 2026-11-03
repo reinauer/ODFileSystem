@@ -551,6 +551,22 @@ odfs_err_t odfs_read(odfs_mount_t *mnt,
                      offset, buf, len);
 }
 
+int odfs_file_is_contiguous(const odfs_mount_t *mnt,
+                            const odfs_node_t *file,
+                            uint32_t *lba)
+{
+    const odfs_backend_ops_t *ops;
+
+    if (!mnt || !file || file->kind != ODFS_NODE_FILE ||
+        !mount_backend_for_type(mnt, file->backend, &ops, NULL) ||
+        !ops || !(ops->flags & ODFS_BACKEND_F_CONTIGUOUS))
+        return 0;
+
+    if (lba)
+        *lba = file->extent.lba;
+    return 1;
+}
+
 odfs_err_t odfs_lookup(odfs_mount_t *mnt,
                          const odfs_node_t *dir,
                          const char *name,

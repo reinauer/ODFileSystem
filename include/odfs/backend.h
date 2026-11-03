@@ -19,9 +19,16 @@ typedef struct odfs_mount odfs_mount_t;
 typedef odfs_err_t (*odfs_dir_iter_fn)(const odfs_node_t *entry, void *ctx);
 
 /* backend operations vtable */
+/*
+ * Every file's data is one run of whole sectors starting at
+ * node->extent.lba, so byte n of a file is byte n of that run.
+ */
+#define ODFS_BACKEND_F_CONTIGUOUS 0x1u
+
 typedef struct odfs_backend_ops {
     const char           *name;          /* e.g. "iso9660", "rock_ridge", "joliet" */
     odfs_backend_type_t  backend_type;  /* enum value for this backend */
+    uint32_t             flags;         /* ODFS_BACKEND_F_* */
 
     /*
      * Probe media for this format.

@@ -96,6 +96,7 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
 const odfs_backend_ops_t joliet_backend_ops = {
     .name            = "joliet",
     .backend_type    = ODFS_BACKEND_JOLIET,
+    .flags           = ODFS_BACKEND_F_CONTIGUOUS,
     .probe           = joliet_probe,
     .mount           = joliet_mount,
     .unmount         = odfs_iso_unmount,

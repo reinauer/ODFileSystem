@@ -1060,6 +1060,7 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
 const odfs_backend_ops_t iso9660_backend_ops = {
     .name            = "iso9660",
     .backend_type    = ODFS_BACKEND_ISO9660,
+    .flags           = ODFS_BACKEND_F_CONTIGUOUS,
     .probe           = iso_probe,
     .mount           = iso_mount,
     .unmount         = odfs_iso_unmount,

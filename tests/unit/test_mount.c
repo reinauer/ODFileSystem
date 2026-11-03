@@ -309,6 +309,13 @@ TEST(mount_dispatches_virtual_backend_by_node_type)
     ASSERT_EQ(len, sizeof(fake_track_data));
     ASSERT(memcmp(buf, fake_track_data, sizeof(fake_track_data)) == 0);
     ASSERT_EQ(cdda_ctx.read_calls, 1);
+
+    /* a backend that does not declare contiguous files keeps its reads */
+    {
+        uint32_t lba = 0;
+
+        ASSERT_EQ(odfs_file_is_contiguous(&mnt, &file, &lba), 0);
+    }
 }
 
 TEST_MAIN()
