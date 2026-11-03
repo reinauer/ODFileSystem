@@ -32,8 +32,18 @@
 /* read little-endian 32 from a both-byte-order 8-byte field */
 static inline uint32_t iso_read_le32(const uint8_t *p)
 {
+#if defined(__mc68020__) || defined(__mc68030__) || \
+    defined(__mc68040__) || defined(__mc68060__)
+    /* GCC keeps to aligned accesses on every m68k and would assemble
+     * the value byte by byte; the 68020 and later load it unaligned */
+    uint32_t v;
+
+    __asm__("move.l %1,%0" : "=d" (v) : "m" (*(const uint8_t (*)[4])p));
+    return __builtin_bswap32(v);
+#else
     return (uint32_t)p[0]       | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+#endif
 }
 
 /* read little-endian 16 from a both-byte-order 4-byte field */
