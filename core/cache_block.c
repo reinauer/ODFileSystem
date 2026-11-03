@@ -362,6 +362,11 @@ static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
     return cache_commit(cache, victim, lba);
 }
 
+int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba)
+{
+    return cache && cache->entries && cache_find_index(cache, lba) >= 0;
+}
+
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
                              const uint8_t **out)
