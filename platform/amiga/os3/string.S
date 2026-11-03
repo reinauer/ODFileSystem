@@ -253,3 +253,77 @@ _memset:
 1:	move.l	(sp)+,d2
 	move.l	4(sp),d0
 	rts
+
+/* char *strchr(const char *s, int c) */
+	.globl	_strchr
+	.even
+_strchr:
+	move.l	4(sp),a0
+	move.b	11(sp),d1
+1:	move.b	(a0)+,d0
+	beq.s	3f
+	cmp.b	d0,d1
+	beq.s	2f
+	move.b	(a0)+,d0
+	beq.s	3f
+	cmp.b	d0,d1
+	bne.s	1b
+2:	subq.l	#1,a0
+	move.l	a0,d0
+	rts
+	/* end of string: found only when looking for the terminator */
+3:	tst.b	d1
+	beq.s	2b
+	moveq	#0,d0
+	rts
+
+/* int strcmp(const char *a, const char *b) */
+	.globl	_strcmp
+	.even
+_strcmp:
+	move.l	4(sp),a0
+	move.l	8(sp),a1
+	/* Compare long words while both strings are long-aligned. An
+	 * aligned long word never crosses a page, so reading past the
+	 * terminator within it is safe. */
+	move.w	a0,d0
+	move.w	a1,d1
+	or.w	d1,d0
+	and.w	#3,d0
+	bne.s	.Lcmp_bytes
+1:	move.l	(a0),d0
+	cmp.l	(a1),d0
+	bne.s	.Lcmp_bytes
+	move.l	d0,d1
+	sub.l	#0x01010101,d1
+	not.l	d0
+	and.l	d0,d1
+	and.l	#0x80808080,d1
+	bne.s	.Lcmp_equal
+	addq.l	#4,a0
+	addq.l	#4,a1
+	bra.s	1b
+.Lcmp_bytes:
+	move.b	(a0)+,d0
+	beq.s	.Lcmp_a_end
+	cmp.b	(a1)+,d0
+	bne.s	.Lcmp_diff
+	move.b	(a0)+,d0
+	beq.s	.Lcmp_a_end
+	cmp.b	(a1)+,d0
+	beq.s	.Lcmp_bytes
+	/* unsigned char difference: only the sign matters */
+.Lcmp_diff:
+	bhi.s	1f
+	moveq	#-1,d0
+	rts
+1:	moveq	#1,d0
+	rts
+.Lcmp_a_end:
+	tst.b	(a1)
+	bne.s	1f
+.Lcmp_equal:
+	moveq	#0,d0
+	rts
+1:	moveq	#-1,d0
+	rts

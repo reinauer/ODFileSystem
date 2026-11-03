@@ -172,6 +172,8 @@ AMIGA_DEFS     = -DAMIGA
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles
+# os3/string.S provides the memory and string functions; libc.a supplies
+# only the 68000 multiply and divide helpers.
 HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
 endif
 
