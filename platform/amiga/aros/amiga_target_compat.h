@@ -8,6 +8,7 @@
 #define ODFS_AMIGA_TARGET_COMPAT_H
 
 #define ODFS_AMIGA_OS4 0
+#define ODFS_AMIGA_DISK_TYPE ID_CDFS_DISK
 
 #ifndef __NOLIBBASE__
 #define __NOLIBBASE__

@@ -89,12 +89,16 @@ int main(void)
         handler_global_t g;
         odfs_entry_t entry;
         odfs_fh_t fh;
+        struct InfoData disk_info;
         int64_t oldpos;
 
         memset(&g, 0, sizeof(g));
         memset(&entry, 0, sizeof(entry));
         memset(&fh, 0, sizeof(fh));
         g.mounted = 1;
+        if (odfs_handler_fill_info(&g, NULL, &disk_info) ||
+            disk_info.id_DiskType != ID_CDFS_DISK)
+            return 16;
         entry.fnode.size = UINT64_C(0x200000000);
         fh.entry = &entry;
         fh.magic = ODFS_FH_MAGIC;
