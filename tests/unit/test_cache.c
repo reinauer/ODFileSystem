@@ -183,6 +183,31 @@ TEST(cache_hit)
     odfs_cache_destroy(&cache);
 }
 
+TEST(cache_contains_reports_without_reading)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    const uint8_t *data;
+    int reads = 0;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+
+    ASSERT_EQ(odfs_cache_contains(&cache, 7), 0);
+    ASSERT_OK(odfs_cache_read(&cache, 7, &data));
+    ASSERT_EQ(odfs_cache_contains(&cache, 7), 1);
+    ASSERT_EQ(odfs_cache_contains(&cache, 8), 0);
+    ASSERT_EQ(reads, 1);
+    ASSERT_EQ(odfs_cache_get_stats(&cache)->reads, 1);
+
+    /* evicted sectors are no longer reported */
+    ASSERT_OK(odfs_cache_read(&cache, 20, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 30, &data));
+    ASSERT_EQ(odfs_cache_contains(&cache, 7), 0);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST(cache_eviction)
 {
     odfs_cache_t cache;

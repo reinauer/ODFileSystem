@@ -63,6 +63,9 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
                              uint32_t capacity);
 void        odfs_cache_destroy(odfs_cache_t *cache);
 
+/* is the sector cached? (does not count as a use or touch the LRU) */
+int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba);
+
 /* read a single sector through the cache */
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
