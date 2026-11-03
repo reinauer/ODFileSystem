@@ -188,6 +188,7 @@ static void amiga_init_max_transfer(handler_global_t *g)
         g->max_transfer_blocks = 1;
     g->max_transfer = g->max_transfer_blocks * g->sector_size;
 
+    g->direct_buf_blocked = ~g->envec->de_Mask;
 #if !ODFS_AMIGA_OS4
     g->direct_mem_need = g->envec->de_BufMemType &
                          (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST | MEMF_LOCAL |
@@ -2298,6 +2299,14 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     fh->access = access;
     fh->pos = 0;
     fh->magic = ODFS_FH_MAGIC;
+    fh->direct_size = 0;
+    if (g->sector_size == 2048 &&
+        entry->fnode.size != 0 && entry->fnode.size <= 0xffffffffUL &&
+        odfs_file_is_contiguous(&g->mount, &entry->fnode, &fh->direct_lba) &&
+        fh->direct_lba < 0x200000UL &&
+        ((ULONG)((entry->fnode.size + 2047) >> 11)) <=
+            0x200000UL - fh->direct_lba)
+        fh->direct_size = (ULONG)entry->fnode.size; /* ends below 4 GiB */
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
@@ -3170,6 +3179,49 @@ LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh)
     return 0;
 }
 
+/*
+ * Serve a read of whole sectors of a contiguous file with one device
+ * request into the caller's buffer, skipping the core and the cache.
+ * The general path would issue the same request for such a read; this
+ * only drops the layers in between, which cost a large share of the
+ * time a 32 KiB Read() takes. Returns 0 when the read is not of that
+ * shape, the buffer may not take a direct transfer, or the request
+ * fails; the caller then takes the general path, which also reports
+ * any error.
+ */
+static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
+                          void *buf, ULONG len, ULONG *actual_out)
+{
+    ULONG pos;
+    ULONG want;
+    ULONG lba;
+
+    if (fh->direct_size == 0 || (ULONG)(fh->pos >> 32) != 0)
+        return 0;
+    pos = (ULONG)fh->pos;
+    if (pos >= fh->direct_size)
+        return 0;
+    want = fh->direct_size - pos;
+    if (want > len)
+        want = len;
+    if (((pos | want) & 2047) != 0 || want < 2 * 2048 ||
+        want > g->max_transfer ||
+        ((ULONG)buf & g->direct_buf_blocked) != 0)
+        return 0;
+#if !ODFS_AMIGA_OS4
+    if (!amiga_direct_memtype_ok(g, buf, want))
+        return 0;
+#endif
+
+    lba = fh->direct_lba + (pos >> 11);
+    if (amiga_read_lo(g, media_io_request(g), lba, want, buf) != ODFS_OK)
+        return 0;
+
+    fh->pos = pos + want;
+    *actual_out = want;
+    return 1;
+}
+
 LONG odfs_handler_read_object(handler_global_t *g,
                               odfs_fh_t *fh,
                               void *buf,
@@ -3192,6 +3244,15 @@ LONG odfs_handler_read_object(handler_global_t *g,
         LONG err_dos = validate_object_volume(g, fh_volume(fh));
         if (err_dos != 0)
             return err_dos;
+    }
+
+    {
+        ULONG direct;
+
+        if (fh_read_direct(g, fh, buf, (ULONG)len, &direct)) {
+            *actual_out = (LONG)direct;
+            return 0;
+        }
     }
 
     actual = (size_t)len;
