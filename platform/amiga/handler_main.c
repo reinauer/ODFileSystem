@@ -2300,6 +2300,7 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     fh->pos = 0;
     fh->magic = ODFS_FH_MAGIC;
     fh->direct_size = 0;
+    fh->last_read = 0;
     if (g->sector_size == 2048 &&
         entry->fnode.size != 0 && entry->fnode.size <= 0xffffffffUL &&
         odfs_file_is_contiguous(&g->mount, &entry->fnode, &fh->direct_lba) &&
@@ -3179,6 +3180,150 @@ LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh)
     return 0;
 }
 
+#if !ODFS_AMIGA_OS4
+/*
+ * Sector read-ahead on Seek. A program that seeks and then reads waits
+ * for the device only after its Read() arrives, although the Seek has
+ * already said where. On a Seek into a contiguous file, start reading
+ * the sector at the new position and the one after it in the
+ * background, and reply to the Seek at once; the read then overlaps the
+ * Seek's reply and the program's Read() call. A device request costs
+ * the same for one sector or two, and the second serves a small read
+ * that does not start on a sector boundary. The sectors stay in pf_buf
+ * as a small cache, so seeking back to them costs no device request.
+ *
+ * Only a handle whose last Read() was small reads ahead: a large read
+ * after a Seek goes to the device in one request anyway, and would
+ * otherwise first wait for the read-ahead to finish.
+ *
+ * The read uses its own request, like the change interrupt, so it never
+ * blocks other device I/O. Unmount and shutdown cancel it.
+ */
+static void prefetch_cancel(handler_global_t *g)
+{
+    if (g->pf_state == ODFS_PF_BUSY) {
+        AbortIO((struct IORequest *)g->pf_req);
+        WaitIO((struct IORequest *)g->pf_req);
+    }
+    g->pf_state = ODFS_PF_NONE;
+}
+
+static void prefetch_wait(handler_global_t *g)
+{
+    struct IOStdReq *req = g->pf_req;
+    int ok;
+
+    if (g->pf_state != ODFS_PF_BUSY)
+        return;
+    WaitIO((struct IORequest *)req);
+    if (req->io_Command == HD_SCSICMD)
+        ok = req->io_Error == 0 && g->pf_scsi.scsi_Status == 0 &&
+             g->pf_scsi.scsi_Actual == g->pf_count << 11;
+    else
+        ok = req->io_Error == 0 && req->io_Actual == g->pf_count << 11;
+    g->pf_state = ok ? ODFS_PF_VALID : ODFS_PF_NONE;
+}
+
+static int prefetch_open(handler_global_t *g)
+{
+    if (g->pf_req)
+        return 1;
+    if (!g->pf_buf || !g->devreq || !g->devreq->io_Device)
+        return 0;
+    if (!g->pf_port)
+        g->pf_port = odfs_amiga_create_msg_port();
+    if (!g->pf_port)
+        return 0;
+    g->pf_req = (struct IOStdReq *)odfs_amiga_create_io_request(
+        g->pf_port, sizeof(struct IOStdReq));
+    if (!g->pf_req)
+        return 0;
+    /* clone the device from the main request */
+    g->pf_req->io_Device = g->devreq->io_Device;
+    g->pf_req->io_Unit = g->devreq->io_Unit;
+
+    memset(g->pf_cdb, 0, sizeof(g->pf_cdb));
+    ((UBYTE *)g->pf_cdb)[2] = 0x28; /* READ(10) */
+    scsi_init_read(&g->pf_scsi, g->pf_buf, 0, (UBYTE *)g->pf_cdb + 2, 10,
+                   g->pf_sense, sizeof(g->pf_sense));
+    return 1;
+}
+
+static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
+{
+    struct IOStdReq *req;
+    ULONG sector;
+    ULONG lba;
+    ULONG count;
+
+    if (fh->direct_size == 0 || fh->last_read == 0 ||
+        fh->last_read > ODFS_PF_SECTORS * 2048 ||
+        (ULONG)(fh->pos >> 32) != 0 || (ULONG)fh->pos >= fh->direct_size)
+        return;
+    sector = (ULONG)fh->pos >> 11;
+    lba = fh->direct_lba + sector;
+    if ((g->pf_state != ODFS_PF_NONE && lba - g->pf_lba < g->pf_count) ||
+        odfs_cache_contains(&g->mount.cache, lba) || !prefetch_open(g))
+        return;
+
+    /* stay inside the file */
+    count = ((fh->direct_size - 1) >> 11) - sector + 1;
+    if (count > ODFS_PF_SECTORS)
+        count = ODFS_PF_SECTORS;
+
+    prefetch_cancel(g);
+    req = g->pf_req;
+    g->pf_lba = lba;
+    g->pf_count = count;
+    if (g->scsi_reads) {
+        g->pf_cdb[1] = lba;        /* cdb[2..5], big-endian */
+        ((UBYTE *)g->pf_cdb)[10] = (UBYTE)count;
+        g->pf_scsi.scsi_Length = count << 11;
+        g->pf_scsi.scsi_Actual = 0;
+        req->io_Command = HD_SCSICMD;
+        req->io_Data = &g->pf_scsi;
+        req->io_Length = sizeof(g->pf_scsi);
+    } else {
+        req->io_Command = CMD_READ;
+        req->io_Offset = lba << 11;
+        req->io_Data = g->pf_buf;
+        req->io_Length = count << 11;
+        req->io_Actual = 0;
+    }
+    SendIO((struct IORequest *)req);
+    g->pf_state = ODFS_PF_BUSY;
+}
+
+/* copy what a read wants of the read-ahead sectors; returns the count */
+static ULONG prefetch_read(handler_global_t *g, odfs_fh_t *fh,
+                           uint8_t *buf, ULONG len)
+{
+    ULONG pos;
+    ULONG off;
+    ULONG n;
+
+    if ((ULONG)(fh->pos >> 32) != 0)
+        return 0;
+    pos = (ULONG)fh->pos;
+    off = fh->direct_lba + (pos >> 11) - g->pf_lba; /* sector in pf_buf */
+    if (pos >= fh->direct_size || off >= g->pf_count)
+        return 0;
+    prefetch_wait(g);
+    if (g->pf_state != ODFS_PF_VALID)
+        return 0;
+
+    off = (off << 11) + (pos & 2047);
+    n = (g->pf_count << 11) - off;
+    if (n > fh->direct_size - pos)
+        n = fh->direct_size - pos;
+    if (n > len)
+        n = len;
+    memcpy(buf, g->pf_buf + off, n);
+    fh->pos = pos + n;
+    return n;
+}
+#endif
+
 /*
  * Serve a read inside one sector of a contiguous file from the block
  * cache, when the sector is there, without the layers of odfs_read().
@@ -3261,12 +3406,13 @@ static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
 
 /*
  * The general read, through odfs_read() and the block cache, for what
- * the quick paths in odfs_handler_read_object() do not serve. Kept out
- * of line, so the quick paths need no large stack frame.
+ * the quick paths in odfs_handler_read_object() do not serve. pre bytes
+ * were already copied from the read-ahead. Kept out of line, so the
+ * quick paths need no large stack frame.
  */
 static LONG __attribute__((noinline))
 read_object_general(handler_global_t *g, odfs_fh_t *fh, void *buf,
-                    LONG len, LONG *actual_out)
+                    LONG len, ULONG pre, LONG *actual_out)
 {
     size_t actual = (size_t)len;
     odfs_err_t err;
@@ -3285,11 +3431,11 @@ read_object_general(handler_global_t *g, odfs_fh_t *fh, void *buf,
 #else
     err = read_file_node(g, fh_node(fh), fh->pos, buf, &actual);
 #endif
-    if (err != ODFS_OK && actual == 0)
+    if (err != ODFS_OK && actual == 0 && pre == 0)
         return odfs_err_to_dos(err);
 
     fh->pos += actual;
-    *actual_out = (LONG)actual;
+    *actual_out = (LONG)(pre + actual);
     return 0;
 }
 
@@ -3299,6 +3445,8 @@ LONG odfs_handler_read_object(handler_global_t *g,
                               LONG len,
                               LONG *actual_out)
 {
+    ULONG pre = 0;
+
     if (actual_out)
         *actual_out = 0;
     if (!g || !fh || !buf || !actual_out)
@@ -3314,6 +3462,7 @@ LONG odfs_handler_read_object(handler_global_t *g,
             return err_dos;
     }
 
+    fh->last_read = (ULONG)len;
     if (fh->direct_size != 0) {
         ULONG n;
 
@@ -3324,15 +3473,27 @@ LONG odfs_handler_read_object(handler_global_t *g,
                 return 0;
             }
         } else if (len > 0) {
+#if !ODFS_AMIGA_OS4
+            if (g->pf_state != ODFS_PF_NONE) {
+                pre = prefetch_read(g, fh, buf, (ULONG)len);
+                if (pre != 0 &&
+                    (pre == (ULONG)len || fh->pos >= fh->direct_size)) {
+                    *actual_out = (LONG)pre;
+                    return 0;
+                }
+                buf = (uint8_t *)buf + pre;
+                len -= (LONG)pre;
+            }
+#endif
             n = fh_read_cached(g, fh, buf, (ULONG)len);
             if (n != 0) {
-                *actual_out = (LONG)n;
+                *actual_out = (LONG)(pre + n);
                 return 0;
             }
         }
     }
 
-    return read_object_general(g, fh, buf, len, actual_out);
+    return read_object_general(g, fh, buf, len, pre, actual_out);
 }
 
 LONG odfs_handler_seek_object(handler_global_t *g,
@@ -4697,6 +4858,9 @@ static void action_seek(handler_global_t *g, struct DosPacket *pkt)
     }
 
     pkt->dp_Res1 = (LONG)oldpos;
+#if !ODFS_AMIGA_OS4
+    prefetch_start(g, fh);
+#endif
 }
 
 static void action_end(handler_global_t *g, struct DosPacket *pkt)
@@ -5765,6 +5929,9 @@ static void unmount_volume(handler_global_t *g)
 {
     odfs_volume_t *volume;
 
+#if !ODFS_AMIGA_OS4
+    prefetch_cancel(g);
+#endif
     if (!g->mounted)
         return;
 
@@ -6261,8 +6428,11 @@ void handler_main_startup(struct Message *startup_msg)
      */
     {
         #define DMA_BUF_SECTORS  32
+        /* plus the Seek read-ahead's sectors */
+        #define DMA_BUF_RAW_SIZE(ss) \
+            ((DMA_BUF_SECTORS + ODFS_PF_SECTORS) * (ss) + 15)
         ULONG memtype = de->de_BufMemType | MEMF_PUBLIC;
-        ULONG raw_size = DMA_BUF_SECTORS * g->sector_size + 15;
+        ULONG raw_size = DMA_BUF_RAW_SIZE(g->sector_size);
         g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
         if (!g->dma_buf_raw) {
             /* fallback: try without specific memory type */
@@ -6273,6 +6443,7 @@ void handler_main_startup(struct Message *startup_msg)
             /* 16-byte align */
             g->dma_buf = (uint8_t *)(((ULONG)g->dma_buf_raw + 15) & ~15UL);
             g->dma_buf_size = DMA_BUF_SECTORS * g->sector_size;
+            g->pf_buf = g->dma_buf + g->dma_buf_size;
         } else {
             ODFS_ERROR(&g->log, ODFS_SUB_IO,
                        "AllocMem failed for DMA buffer size=%lu memtype=%lu",
@@ -6495,6 +6666,13 @@ void handler_main_startup(struct Message *startup_msg)
 
 shutdown:
     destroy_volume_publish_timer(g);
+#if !ODFS_AMIGA_OS4
+    prefetch_cancel(g);
+    if (g->pf_req)
+        odfs_amiga_delete_io_request((struct IORequest *)g->pf_req);
+    if (g->pf_port)
+        odfs_amiga_delete_msg_port(g->pf_port);
+#endif
     if (g->devreq) {
         if (g->devreq->io_Device)
             CloseDevice((struct IORequest *)g->devreq);
@@ -6510,7 +6688,7 @@ shutdown:
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
         odfs_amiga_free_mem(g->dma_buf_raw,
-                            DMA_BUF_SECTORS * g->sector_size + 15);
+                            DMA_BUF_RAW_SIZE(g->sector_size));
 
     if (g->devnode && g->devnode->dn_Task == g->dosport)
         g->devnode->dn_Task = NULL;
