@@ -598,6 +598,31 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
     return ops->lookup(backend_ctx, &mnt->cache, &mnt->log, dir, name, out);
 }
 
+odfs_err_t odfs_lookup_path(odfs_mount_t *mnt,
+                            const odfs_node_t *dir,
+                            const char *path,
+                            odfs_node_t *out,
+                            odfs_node_t *parent_out,
+                            odfs_node_t *grandparent_out,
+                            unsigned int *depth_out)
+{
+#if ODFS_FEATURE_CACHE_META
+    if (!mnt || !dir || !path || dir->kind != ODFS_NODE_DIR)
+        return ODFS_ERR_UNSUPPORTED;
+    return odfs_meta_lookup_path(&mnt->meta, dir, path, out, parent_out,
+                                 grandparent_out, depth_out);
+#else
+    (void)mnt;
+    (void)dir;
+    (void)path;
+    (void)out;
+    (void)parent_out;
+    (void)grandparent_out;
+    (void)depth_out;
+    return ODFS_ERR_UNSUPPORTED;
+#endif
+}
+
 odfs_err_t odfs_readlink(odfs_mount_t *mnt,
                            const odfs_node_t *dir,
                            const char *name,

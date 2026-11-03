@@ -100,21 +100,82 @@ static int meta_dir_cacheable(const odfs_meta_cache_t *mc,
     return 1;
 }
 
-static odfs_meta_dir_t *meta_find(odfs_meta_cache_t *mc,
-                                  const odfs_node_t *dir)
+static odfs_meta_dir_t *meta_find_extent(odfs_meta_cache_t *mc,
+                                         uint32_t lba,
+                                         uint32_t length,
+                                         uint8_t backend)
 {
     odfs_meta_dir_t *d;
 
     for (d = mc->lru_head; d; d = d->lru_next) {
-        if (d->dir_lba == dir->extent.lba &&
-            d->dir_length == dir->extent.length &&
-            d->dir_backend == (uint8_t)dir->backend) {
+        if (d->dir_lba == lba && d->dir_length == length &&
+            d->dir_backend == backend) {
             if (d != mc->lru_head) {
                 meta_unlink(mc, d);
                 meta_push_head(mc, d);
             }
             return d;
         }
+    }
+    return NULL;
+}
+
+static odfs_meta_dir_t *meta_find(odfs_meta_cache_t *mc,
+                                  const odfs_node_t *dir)
+{
+    return meta_find_extent(mc, dir->extent.lba, dir->extent.length,
+                            (uint8_t)dir->backend);
+}
+
+/*
+ * Whether the pool name at a equals the len bytes at b, ignoring the
+ * case of ASCII letters as odfs_strcasecmp() does.
+ */
+static int meta_name_eq(const char *a, const char *b, size_t len)
+{
+    while (len--) {
+        if (odfs_ascii_tolower((unsigned char)*a++) !=
+            odfs_ascii_tolower((unsigned char)*b++))
+            return 0;
+    }
+    return *a == '\0';
+}
+
+/*
+ * The entry named by the len bytes at name, compared without regard
+ * to case. The hash spares the string compare on all but the matching
+ * entry, but costs more than the few compares of a small directory.
+ */
+static const odfs_meta_entry_t *meta_find_name(odfs_meta_dir_t *d,
+                                               const char *name,
+                                               size_t len)
+{
+    const odfs_meta_entry_t *e = d->entries;
+    const odfs_meta_entry_t *last = e + d->count;
+    unsigned int hash;
+
+    if (d->count < META_LOOKUP_HASH_MIN) {
+        for (; e < last; e++) {
+            if (meta_name_eq(d->pool + e->name_off, name, len))
+                return e;
+        }
+        return NULL;
+    }
+
+    /* hash the names on the first lookup, not while building: listing
+     * a directory never needs them */
+    if (!d->hashed) {
+        odfs_meta_entry_t *h;
+
+        for (h = d->entries; h < last; h++)
+            h->name_hash = odfs_strcasehash(d->pool + h->name_off);
+        d->hashed = 1;
+    }
+    hash = odfs_strcasehash_len(name, len);
+    for (; e < last; e++) {
+        if (e->name_hash == hash &&
+            meta_name_eq(d->pool + e->name_off, name, len))
+            return e;
     }
     return NULL;
 }
@@ -556,10 +617,8 @@ odfs_err_t odfs_meta_lookup(odfs_meta_cache_t *mc,
                             odfs_node_t *out)
 {
     odfs_meta_dir_t *d;
+    const odfs_meta_entry_t *e;
     int orphan;
-    uint32_t i;
-    unsigned int hash = 0;
-    int use_hash;
     odfs_err_t err = ODFS_ERR_NOT_FOUND;
 
     if (!meta_dir_cacheable(mc, dir))
@@ -569,34 +628,82 @@ odfs_err_t odfs_meta_lookup(odfs_meta_cache_t *mc,
     if (!d)
         return ODFS_ERR_UNSUPPORTED;
 
-    /* the hash spares the string compare on all but the matching
-     * entry, but costs more than the few compares of a small
-     * directory */
-    use_hash = d->count >= META_LOOKUP_HASH_MIN;
-    if (use_hash) {
-        hash = odfs_strcasehash(name);
-        /* hash the names on the first lookup, not while building:
-         * listing a directory never needs them */
-        if (!d->hashed) {
-            for (i = 0; i < d->count; i++)
-                d->entries[i].name_hash =
-                    odfs_strcasehash(d->pool + d->entries[i].name_off);
-            d->hashed = 1;
-        }
-    }
-
-    for (i = 0; i < d->count; i++) {
-        if ((!use_hash || d->entries[i].name_hash == hash) &&
-            odfs_strcasecmp(d->pool + d->entries[i].name_off, name) == 0) {
-            meta_entry_to_node(d, &d->entries[i], out);
-            err = ODFS_OK;
-            break;
-        }
+    e = meta_find_name(d, name, strlen(name));
+    if (e) {
+        meta_entry_to_node(d, e, out);
+        err = ODFS_OK;
     }
 
     if (orphan)
         odfs_free(d);
     return err;
+}
+
+odfs_err_t odfs_meta_lookup_path(odfs_meta_cache_t *mc,
+                                 const odfs_node_t *dir,
+                                 const char *path,
+                                 odfs_node_t *out,
+                                 odfs_node_t *parent_out,
+                                 odfs_node_t *grandparent_out,
+                                 unsigned int *depth_out)
+{
+    /* the directory and entry of the last three names walked; only
+     * they become nodes, and no directory is built or evicted during
+     * the walk, so the pointers stay valid */
+    odfs_meta_dir_t *ring_dir[3];
+    const odfs_meta_entry_t *ring_ent[3];
+    odfs_meta_dir_t *d;
+    const odfs_meta_entry_t *e;
+    const char *p = path;
+    const char *end;
+    unsigned int depth = 0;
+    unsigned int slot = 0;
+
+    d = meta_find(mc, dir);
+    if (!d)
+        return ODFS_ERR_UNSUPPORTED;
+
+    for (;;) {
+        for (end = p; *end != '\0' && *end != '/'; end++)
+            ;
+        /* an empty name climbs to the parent: the caller's business */
+        if (end == p || (size_t)(end - p) >= sizeof(out->name))
+            return ODFS_ERR_UNSUPPORTED;
+        e = meta_find_name(d, p, (size_t)(end - p));
+        if (!e)
+            return ODFS_ERR_NOT_FOUND;
+        if (e->kind == ODFS_NODE_SYMLINK)
+            return ODFS_ERR_UNSUPPORTED;
+        ring_dir[slot] = d;
+        ring_ent[slot] = e;
+        depth++;
+
+        /* one '/' after a name only separates it from the next */
+        if (*end == '\0' || end[1] == '\0')
+            break;
+        p = end + 1;
+        if (*p == '/')
+            return ODFS_ERR_UNSUPPORTED;
+        if (e->kind != ODFS_NODE_DIR)
+            return ODFS_ERR_NOT_DIR;
+        d = meta_find_extent(mc, e->lba, e->length, e->backend);
+        if (!d)
+            return ODFS_ERR_UNSUPPORTED;
+        slot = slot == 2 ? 0 : slot + 1;
+    }
+
+    mc->stats.hits += depth;
+    meta_entry_to_node(ring_dir[slot], ring_ent[slot], out);
+    if (depth >= 2) {
+        slot = slot == 0 ? 2 : slot - 1;
+        meta_entry_to_node(ring_dir[slot], ring_ent[slot], parent_out);
+    }
+    if (depth >= 3) {
+        slot = slot == 0 ? 2 : slot - 1;
+        meta_entry_to_node(ring_dir[slot], ring_ent[slot], grandparent_out);
+    }
+    *depth_out = depth;
+    return ODFS_OK;
 }
 
 #endif /* ODFS_FEATURE_CACHE_META */

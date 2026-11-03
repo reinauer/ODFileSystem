@@ -104,6 +104,25 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
                          const char *name,
                          odfs_node_t *out);
 
+/*
+ * Look up a path of names, each separated from the next by one '/'
+ * (a single trailing '/' is ignored), below dir in one call. Fills
+ * out with the node the path names, parent_out with the directory
+ * holding it when the path has two names or more, and grandparent_out
+ * with the directory above that when it has three or more; *depth_out
+ * is the number of names. Answers only from directories the metadata
+ * cache already holds: ODFS_ERR_UNSUPPORTED means the path needs an
+ * uncached directory, climbs with an empty name, or passes a symbolic
+ * link, and the caller then looks the names up one by one.
+ */
+odfs_err_t odfs_lookup_path(odfs_mount_t *mnt,
+                            const odfs_node_t *dir,
+                            const char *path,
+                            odfs_node_t *out,
+                            odfs_node_t *parent_out,
+                            odfs_node_t *grandparent_out,
+                            unsigned int *depth_out);
+
 /* read a symlink's POSIX-style target; name is looked up within dir */
 odfs_err_t odfs_readlink(odfs_mount_t *mnt,
                            const odfs_node_t *dir,
