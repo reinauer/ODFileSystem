@@ -7,6 +7,8 @@
 #ifndef ODFS_STRING_H
 #define ODFS_STRING_H
 
+#include <stddef.h>
+
 static inline unsigned char odfs_ascii_tolower(unsigned char ch)
 {
     if (ch >= 'A' && ch <= 'Z')
@@ -32,6 +34,20 @@ static inline unsigned int odfs_strcasehash(const char *s)
     while ((c = (unsigned char)*s++) != 0) {
         hash = (hash << 5) | (hash >> 27);
         hash ^= c | 0x20u;
+    }
+    hash ^= hash >> 16;
+    hash ^= hash >> 8;
+    return hash;
+}
+
+/* odfs_strcasehash() of the len bytes at s, which need no terminator */
+static inline unsigned int odfs_strcasehash_len(const char *s, size_t len)
+{
+    unsigned int hash = 0;
+
+    while (len--) {
+        hash = (hash << 5) | (hash >> 27);
+        hash ^= (unsigned char)*s++ | 0x20u;
     }
     hash ^= hash >> 16;
     hash ^= hash >> 8;

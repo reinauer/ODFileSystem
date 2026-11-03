@@ -122,6 +122,18 @@ odfs_err_t odfs_meta_lookup(odfs_meta_cache_t *mc,
                             const char *name,
                             odfs_node_t *out);
 
+/*
+ * Resolve a path of names separated by single '/' below dir using only
+ * directories already cached; see odfs_lookup_path().
+ */
+odfs_err_t odfs_meta_lookup_path(odfs_meta_cache_t *mc,
+                                 const odfs_node_t *dir,
+                                 const char *path,
+                                 odfs_node_t *out,
+                                 odfs_node_t *parent_out,
+                                 odfs_node_t *grandparent_out,
+                                 unsigned int *depth_out);
+
 #endif /* ODFS_FEATURE_CACHE_META */
 
 #endif /* ODFS_CACHE_META_H */
