@@ -125,29 +125,37 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
                                        char *dst, size_t dst_size,
                                        int lowercase)
 {
-    size_t i, di = 0;
+    size_t n;
+    size_t i;
 
     if (!src || !dst || dst_size == 0)
         return ODFS_ERR_INVAL;
 
-    for (i = 0; i < src_len && di + 1 < dst_size; i++) {
+    n = src_len;
+    if (n > dst_size - 1)
+        n = dst_size - 1;
+
+    /* copy up to the version separator */
+    for (i = 0; i < n; i++) {
         char c = src[i];
 
-        /* stop at version separator */
         if (c == ';')
             break;
-
-        /* strip trailing dot for directories (single dot at end) */
-        if (c == '.' && i + 1 == src_len)
-            break;
-
-        if (lowercase && c >= 'A' && c <= 'Z')
-            c = (char)(c - 'A' + 'a');
-
-        dst[di++] = c;
+        dst[i] = c;
     }
 
-    dst[di] = '\0';
+    /* drop a dot that ends the whole identifier (directories) */
+    if (i == src_len && i > 0 && src[i - 1] == '.')
+        i--;
+
+    if (lowercase) {
+        for (size_t j = 0; j < i; j++) {
+            if (dst[j] >= 'A' && dst[j] <= 'Z')
+                dst[j] = (char)(dst[j] - 'A' + 'a');
+        }
+    }
+
+    dst[i] = '\0';
     return ODFS_OK;
 }
 
