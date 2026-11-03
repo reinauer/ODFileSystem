@@ -25,17 +25,17 @@ builds, and it is open source and actively developed.
 | HFS+ | ✓ | – | – | – | – | – | – |
 | Audio tracks as files | ✓ | – | ✓ | – | – | – | ✓ |
 
-It is also fast where browsing and loading software are concerned. In
-[CDBench](https://github.com/reinauer/CDBench), which publishes its
+It is also the fastest. In [CDBench](https://github.com/reinauer/CDBench), which
+publishes its
 [results for all eight filesystems](https://github.com/reinauer/CDBench/blob/main/BENCHMARKS.md),
-the 68020 build is the fastest at whole-directory traversal (12 214 entries/s,
-29% ahead of the next best) and small-file open and read (371 µs, nearly three
-times faster than the next best). Its sequential read speed is second to
-AllegroCDFS, which is about 8% faster. On Discovery, the first pass over a
-mounted disc, it is second at 7 679 entries/s, behind BabelCDFS at 9 365.
+the 68020 build is the fastest CD filesystem in every single metric: sequential
+reads (205 197 KiB/s), Discovery and whole-directory traversal, random reads,
+path lookups, and small-file open and read (319 µs, more than three times
+faster than the next best). The 68000 build leads in every metric but one,
+random reads from the same offset.
 
-See the [full comparison](docs/comparison.md) for every result, the test setup,
-and the areas where other filesystems lead.
+See the [full comparison](docs/comparison.md) for every result and the test
+setup.
 
 ## Installation
 
