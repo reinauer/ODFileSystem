@@ -93,6 +93,10 @@ const char version_string[] __attribute__((used)) =
 
 #define VOLUME_PUBLISH_RETRY_MICROS 100000UL
 
+#ifndef ODFS_AMIGA_DISK_TYPE
+#define ODFS_AMIGA_DISK_TYPE ID_DOS_DISK
+#endif
+
 #if ODFS_AMIGA_OS4
 typedef struct TimeRequest odfs_timer_request_t;
 #define ODFS_TIMER_IO(tr)       (&(tr)->Request)
@@ -3697,7 +3701,7 @@ LONG odfs_handler_fill_info(handler_global_t *g,
         (g->mounted ? g->mount.total_blocks : 0U);
     info->id_NumBlocksUsed = info->id_NumBlocks;
     info->id_BytesPerBlock = (info_block_t)g->sector_size;
-    info->id_DiskType      = g->mounted ? ID_DOS_DISK : ID_NO_DISK_PRESENT;
+    info->id_DiskType      = g->mounted ? ODFS_AMIGA_DISK_TYPE : ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
     info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
                               g->current_volume->volnode->dl_LockList) ?
@@ -5394,7 +5398,7 @@ static struct DeviceList *create_volume_node(handler_global_t *g)
         return NULL;
 
     dl->dl_Task     = g->dosport;
-    dl->dl_DiskType = ID_DOS_DISK;
+    dl->dl_DiskType = ODFS_AMIGA_DISK_TYPE;
     fill_volume_date(g, &dl->dl_VolumeDate);
 
     return dl;
