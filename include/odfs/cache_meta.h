@@ -58,6 +58,7 @@ typedef struct odfs_meta_dir {
     uint32_t              dir_length;
     uint8_t               dir_backend;
     uint8_t               hashed;      /* entries[].name_hash is valid */
+    uint8_t               referenced;  /* found since last moved to head */
     uint32_t              dir_id;      /* dir node id at build time */
     uint32_t              count;
     uint32_t              bytes;       /* total allocation size */
