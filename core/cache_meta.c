@@ -185,11 +185,29 @@ static void *meta_grow(void *old, size_t old_bytes, size_t new_bytes)
     return p;
 }
 
-static uint32_t meta_pool_add(meta_build_ctx_t *bc, const char *s)
+/* odfs_strcasehash() of s, also returning its length */
+static unsigned int meta_hash_len(const char *s, size_t *len_out)
 {
-    size_t len = strlen(s) + 1u;
+    const char *p = s;
+    unsigned int hash = 0;
+    unsigned int c;
+
+    while ((c = (unsigned char)*p++) != 0) {
+        hash = (hash << 5) | (hash >> 27);
+        hash ^= c | 0x20u;
+    }
+    hash ^= hash >> 16;
+    hash ^= hash >> 8;
+    *len_out = (size_t)(p - s - 1);
+    return hash;
+}
+
+static uint32_t meta_pool_add_len(meta_build_ctx_t *bc, const char *s,
+                                  size_t len)
+{
     uint32_t off;
 
+    len++;
     if (bc->pool_len + len > bc->pool_cap) {
         uint32_t new_cap = bc->pool_cap ? bc->pool_cap * 2u : 1024u;
 
@@ -204,6 +222,11 @@ static uint32_t meta_pool_add(meta_build_ctx_t *bc, const char *s)
     memcpy(bc->pool + off, s, len);
     bc->pool_len += (uint32_t)len;
     return off;
+}
+
+static uint32_t meta_pool_add(meta_build_ctx_t *bc, const char *s)
+{
+    return meta_pool_add_len(bc, s, strlen(s));
 }
 
 static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
@@ -237,11 +260,15 @@ static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
     if (entry->amiga_as.has_protection)
         memcpy(e->protection, entry->amiga_as.protection, 4);
 
-    off = meta_pool_add(bc, entry->name);
+    {
+        size_t len;
+
+        e->name_hash = meta_hash_len(entry->name, &len);
+        off = meta_pool_add_len(bc, entry->name, len);
+    }
     if (off == META_NO_COMMENT)
         goto fail;
     e->name_off = off;
-    e->name_hash = odfs_strcasehash(entry->name);
 
     e->has_comment = entry->amiga_as.has_comment;
     e->comment_off = META_NO_COMMENT;
@@ -288,6 +315,25 @@ static odfs_meta_dir_t *meta_build(odfs_meta_cache_t *mc,
 
     memset(&bc, 0, sizeof(bc));
     bc.budget = mc->budget;
+
+    /* Size the arrays from the directory extent up front: growing them
+     * by doubling costs an allocation and a copy per step. A record
+     * takes at least 34 bytes, so this bounds ISO directories; other
+     * formats fall back to growing. */
+    {
+        uint32_t est = dir->extent.length / 34u + 2u;
+
+        if (est < 16u)
+            est = 16u;
+        if (est > 1024u)
+            est = 1024u;
+        bc.entries = odfs_malloc((size_t)est * sizeof(*bc.entries));
+        if (bc.entries)
+            bc.cap = est;
+        bc.pool = odfs_malloc((size_t)est * 16u);
+        if (bc.pool)
+            bc.pool_cap = est * 16u;
+    }
 
     err = ops->readdir(backend_ctx, block_cache, log, dir,
                        meta_build_cb, &bc, NULL);
