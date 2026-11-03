@@ -273,6 +273,11 @@ static odfs_err_t amiga_read_hi(handler_global_t *g,
                                 uint32_t lba,
                                 uint32_t bytes,
                                 void *buf);
+static odfs_err_t amiga_read_lo(handler_global_t *g,
+                                struct IOStdReq *req,
+                                uint32_t lba,
+                                uint32_t bytes,
+                                void *buf);
 
 /* Read straight into buf, split into requests MaxTransfer allows. */
 static odfs_err_t amiga_read_direct(handler_global_t *g,
@@ -289,29 +294,12 @@ static odfs_err_t amiga_read_direct(handler_global_t *g,
 
     while (bytes > 0) {
         uint32_t chunk = bytes < max ? bytes : max;
-        ULONG byte_offset_lo;
-        ULONG byte_offset_hi = 0;
 
-        if (g->sector_size == 2048) {
-            byte_offset_lo = lba << 11;
-            byte_offset_hi = lba >> 21;
-        } else {
-            byte_offset_lo = lba * g->sector_size;
-        }
-
-        if (byte_offset_hi != 0) {
+        if (g->sector_size == 2048 && (lba >> 21) != 0) {
             if (amiga_read_hi(g, req, lba, chunk, out) != ODFS_OK)
                 return ODFS_ERR_IO;
         } else {
-            req->io_Offset = byte_offset_lo;
-            req->io_Actual = 0;
-            req->io_Length = chunk;
-            req->io_Data = out;
-            req->io_Command = CMD_READ;
-
-            if (DoIO((struct IORequest *)req) != 0 ||
-                req->io_Error != 0 ||
-                req->io_Actual != chunk) {
+            if (amiga_read_lo(g, req, lba, chunk, out) != ODFS_OK) {
                 ODFS_ERROR(&g->log, ODFS_SUB_IO,
                            "direct read failed unit=%lu lba=%lu count=%lu "
                            "bytes=%lu off=%lu io_Error=%ld actual=%lu "
@@ -497,6 +485,119 @@ static odfs_err_t amiga_read_hi(handler_global_t *g,
                    (long)io_error);
         return ODFS_ERR_IO;
     }
+}
+
+/*
+ * Issue the prebuilt READ(10) in g->read_scsi. Only the LBA, block
+ * count and buffer change between data reads, so this skips clearing
+ * and rebuilding the command, which is most of what scsi_read10() does
+ * besides the DoIO. Callers hold the filesystem lock, so one shared
+ * command block serves every reader.
+ */
+static odfs_err_t scsi_read10_data(handler_global_t *g,
+                                   struct IOStdReq *req,
+                                   uint32_t lba,
+                                   uint32_t bytes,
+                                   void *buf)
+{
+    struct SCSICmd *scsi = &g->read_scsi;
+    UBYTE *cdb = (UBYTE *)g->read_cdb + 2;
+    uint32_t blocks = bytes >> 11;
+
+    g->read_cdb[1] = lba;          /* cdb[2..5], big-endian */
+    cdb[7] = (UBYTE)(blocks >> 8);
+    cdb[8] = (UBYTE)blocks;
+    scsi->scsi_Data = (UWORD *)buf;
+    scsi->scsi_Length = bytes;
+    scsi->scsi_Actual = 0;
+
+    req->io_Command = HD_SCSICMD;
+    req->io_Data    = scsi;
+    req->io_Length  = sizeof(*scsi);
+
+    if (DoIO((struct IORequest *)req) != 0 || scsi->scsi_Status != 0 ||
+        scsi->scsi_Actual != bytes)
+        return ODFS_ERR_IO;
+    return ODFS_OK;
+}
+
+/*
+ * Read whole sectors below 4 GiB into buf. With scsi_reads set, issue
+ * SCSI READ(10) through HD_SCSICMD: drivers such as a4091.device do
+ * less work per request for it than for CMD_READ, and a filesystem
+ * that streams one device request per Read() packet pays that on every
+ * packet. A failed READ(10) is retried once with CMD_READ, so a quirk
+ * of the SCSI path can never fail a read CMD_READ would serve.
+ */
+static odfs_err_t amiga_read_lo(handler_global_t *g,
+                                struct IOStdReq *req,
+                                uint32_t lba,
+                                uint32_t bytes,
+                                void *buf)
+{
+    if (g->scsi_reads && bytes <= 0xffffUL * 2048UL &&
+        scsi_read10_data(g, req, lba, bytes, buf) == ODFS_OK)
+        return ODFS_OK;
+
+    req->io_Offset = (g->sector_size == 2048) ? lba << 11
+                                              : lba * g->sector_size;
+    req->io_Actual = 0;
+    req->io_Length = bytes;
+    req->io_Data = buf;
+    req->io_Command = CMD_READ;
+
+    if (DoIO((struct IORequest *)req) != 0 ||
+        req->io_Error != 0 ||
+        req->io_Actual != bytes)
+        return ODFS_ERR_IO;
+    return ODFS_OK;
+}
+
+/*
+ * Decide at mount whether data reads go through SCSI READ(10). Read
+ * one sector both ways and keep READ(10) only when both succeed with
+ * the same bytes: that rules out drivers without HD_SCSICMD, and drives
+ * whose logical block is not 2048 bytes, which READ(10) addresses by.
+ */
+static struct IOStdReq *media_io_request(handler_global_t *g);
+
+static void probe_scsi_reads(handler_global_t *g)
+{
+    struct IOStdReq *req;
+    uint8_t *a;
+    uint8_t *b;
+    LONG io_error;
+
+    g->scsi_reads = 0;
+    if (g->sector_size != 2048 || !g->dma_buf || g->dma_buf_size < 4096)
+        return;
+    req = media_io_request(g);
+    if (!req)
+        return;
+
+    a = g->dma_buf;
+    b = g->dma_buf + 2048;
+    if (amiga_read_lo(g, req, 16, 2048, a) != ODFS_OK)
+        return;
+    memset(b, 0, 2048);
+    if (scsi_read10(g, req, 16, 2048, b, &io_error) != ODFS_OK)
+        return;
+    if (memcmp(a, b, 2048) != 0)
+        return;
+
+    /* everything in the data-read command but LBA, length and buffer */
+    memset(g->read_cdb, 0, sizeof(g->read_cdb));
+    ((UBYTE *)g->read_cdb)[2] = 0x28; /* READ(10) */
+    scsi_init_read(&g->read_scsi, NULL, 0, (UBYTE *)g->read_cdb + 2, 10,
+                   g->read_sense, sizeof(g->read_sense));
+
+    memset(a, 0, 2048);
+    if (scsi_read10_data(g, req, 16, 2048, a) != ODFS_OK ||
+        memcmp(a, b, 2048) != 0)
+        return;
+
+    g->scsi_reads = 1;
+    ODFS_INFO(&g->log, ODFS_SUB_IO, "data reads use SCSI READ(10)");
 }
 
 static LONG changeint_signal(APTR data)
@@ -735,16 +836,8 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
             chunk = g->max_transfer;
 
         uint32_t cur_lba = lba + (done / g->sector_size);
-        ULONG byte_offset_lo, byte_offset_hi = 0;
 
-        if (g->sector_size == 2048) {
-            byte_offset_lo = cur_lba << 11;
-            byte_offset_hi = cur_lba >> 21;
-        } else {
-            byte_offset_lo = cur_lba * g->sector_size;
-        }
-
-        if (byte_offset_hi != 0) {
+        if (g->sector_size == 2048 && (cur_lba >> 21) != 0) {
             if (amiga_read_hi(g, req, cur_lba, chunk, g->dma_buf)
                     != ODFS_OK) {
                 ret = ODFS_ERR_IO;
@@ -755,15 +848,7 @@ static odfs_err_t amiga_read_sectors(void *ctx, uint32_t lba,
             continue;
         }
 
-        req->io_Offset = byte_offset_lo;
-        req->io_Actual = 0;
-        req->io_Length = chunk;
-        req->io_Data   = g->dma_buf;
-        req->io_Command = CMD_READ;
-
-        if (DoIO((struct IORequest *)req) != 0 ||
-            req->io_Error != 0 ||
-            req->io_Actual != chunk) {
+        if (amiga_read_lo(g, req, cur_lba, chunk, g->dma_buf) != ODFS_OK) {
             ODFS_ERROR(&g->log, ODFS_SUB_IO,
                        "sector read failed unit=%lu lba=%lu count=%lu "
                        "chunk=%lu off=%lu io_Error=%ld actual=%lu cmd=%lu",
@@ -5402,6 +5487,8 @@ static void mount_volume(handler_global_t *g)
      */
     if (g->geo_pending && probe_drive_geometry(g) == 0)
         g->geo_pending = 0;
+
+    probe_scsi_reads(g);
 
     odfs_mount_opts_default(&opts);
 
