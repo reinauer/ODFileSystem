@@ -248,6 +248,9 @@ AMIGA_ASM_SRCS =
 else
 AMIGA_ASM_SRCS = platform/amiga/startup.S
 endif
+ifeq ($(AMIGA_TARGET),os3)
+AMIGA_ASM_SRCS += platform/amiga/os3/string.S
+endif
 AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
 # The resident/romtag object is linked directly into the handler right after
