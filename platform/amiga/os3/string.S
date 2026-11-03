@@ -182,3 +182,74 @@ _memmove:
 	bne.s	1b
 2:	move.l	4(sp),d0
 	rts
+
+/* void *memset(void *dst, int c, size_t n) */
+	.globl	_memset
+	.even
+_memset:
+	move.l	12(sp),d0
+	move.l	4(sp),a0
+	move.b	11(sp),d1
+	cmp.l	#16,d0
+	bhi.s	.Lset_mid
+	add.w	d0,d0
+	neg.w	d0
+	jmp	.Lset_end(pc,d0.w)
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+	move.b	d1,(a0)+
+.Lset_end:
+	move.l	4(sp),d0
+	rts
+/* n > 16 */
+.Lset_mid:
+	move.l	d2,-(sp)
+	move.w	a0,d2
+	lsr.b	#1,d2
+	bcc.s	1f
+	move.b	d1,(a0)+
+	subq.l	#1,d0
+1:	move.b	d1,d2
+	lsl.w	#8,d1
+	move.b	d2,d1
+	move.w	d1,d2
+	swap	d1
+	move.w	d2,d1
+	move.l	d0,d2
+	lsr.l	#3,d2
+	bcc.s	1f
+	move.l	d1,(a0)+
+1:	lsr.l	#1,d2
+	bcc.s	1f
+	move.l	d1,(a0)+
+	move.l	d1,(a0)+
+1:	bra.s	3f
+2:	move.l	d1,(a0)+
+	move.l	d1,(a0)+
+	move.l	d1,(a0)+
+	move.l	d1,(a0)+
+3:	dbra	d2,2b
+	sub.l	#0x10000,d2
+	bcc.s	2b
+	btst	#1,d0
+	beq.s	1f
+	move.w	d1,(a0)+
+1:	btst	#0,d0
+	beq.s	1f
+	move.b	d1,(a0)+
+1:	move.l	(sp)+,d2
+	move.l	4(sp),d0
+	rts
