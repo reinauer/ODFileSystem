@@ -15,6 +15,7 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
+#include <devices/scsidisk.h>
 #include <stdint.h>
 
 #include "amiga_target_compat.h"
@@ -132,6 +133,12 @@ typedef struct handler_global {
 #define ODFS_READ64_SCSI     3   /* SCSI READ(10) via HD_SCSICMD */
 #define ODFS_READ64_NONE     (-1)
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
+    int                  scsi_reads;      /* 1: read data with SCSI READ(10),
+                                             0: with CMD_READ */
+    struct SCSICmd       read_scsi;       /* prebuilt READ(10) for data reads */
+    ULONG                read_cdb[3];     /* READ(10) CDB at byte 2, so its
+                                             LBA field is long-aligned */
+    UBYTE                read_sense[32];
 
     /* media change */
     struct MsgPort      *chgport;       /* media change signal port */
