@@ -40,7 +40,8 @@ typedef struct odfs_meta_entry {
     odfs_timestamp_t ctime;
     uint32_t mode;
     uint32_t name_off;     /* offset into the directory's string pool */
-    uint32_t name_hash;    /* odfs_strcasehash() of the name */
+    uint32_t name_hash;    /* odfs_strcasehash() of the name, filled
+                              in by the first hashed lookup */
     uint32_t comment_off;  /* offset into pool, UINT32_MAX = no comment */
     uint8_t  kind;
     uint8_t  backend;
@@ -56,6 +57,7 @@ typedef struct odfs_meta_dir {
     uint32_t              dir_lba;     /* key: extent identity + backend */
     uint32_t              dir_length;
     uint8_t               dir_backend;
+    uint8_t               hashed;      /* entries[].name_hash is valid */
     uint32_t              dir_id;      /* dir node id at build time */
     uint32_t              count;
     uint32_t              bytes;       /* total allocation size */

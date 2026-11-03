@@ -137,11 +137,14 @@ static void meta_entry_to_node(const odfs_meta_dir_t *d,
     out->extent.length = e->length;
     out->backend_data = NULL;
 
-    len = strlen(d->pool + e->name_off);
-    if (len >= sizeof(out->name))
-        len = sizeof(out->name) - 1;
-    memcpy(out->name, d->pool + e->name_off, len);
-    out->name[len] = '\0';
+    /* pool names come from node names, so they fit out->name */
+    {
+        const char *src = d->pool + e->name_off;
+        char *dst = out->name;
+
+        while ((*dst++ = *src++) != '\0')
+            ;
+    }
 
     out->amiga_as.has_protection = e->has_protection;
     if (e->has_protection)
@@ -185,23 +188,6 @@ static void *meta_grow(void *old, size_t old_bytes, size_t new_bytes)
     return p;
 }
 
-/* odfs_strcasehash() of s, also returning its length */
-static unsigned int meta_hash_len(const char *s, size_t *len_out)
-{
-    const char *p = s;
-    unsigned int hash = 0;
-    unsigned int c;
-
-    while ((c = (unsigned char)*p++) != 0) {
-        hash = (hash << 5) | (hash >> 27);
-        hash ^= c | 0x20u;
-    }
-    hash ^= hash >> 16;
-    hash ^= hash >> 8;
-    *len_out = (size_t)(p - s - 1);
-    return hash;
-}
-
 static uint32_t meta_pool_add_len(meta_build_ctx_t *bc, const char *s,
                                   size_t len)
 {
@@ -227,6 +213,26 @@ static uint32_t meta_pool_add_len(meta_build_ctx_t *bc, const char *s,
 static uint32_t meta_pool_add(meta_build_ctx_t *bc, const char *s)
 {
     return meta_pool_add_len(bc, s, strlen(s));
+}
+
+/*
+ * Append a node name, which never exceeds ODFS_NAME_MAX bytes with its
+ * terminator: with that much room in the pool, copy without measuring
+ * the name first.
+ */
+static uint32_t meta_pool_add_name(meta_build_ctx_t *bc, const char *s)
+{
+    uint32_t off = bc->pool_len;
+    char *d;
+
+    if (bc->pool_len + ODFS_NAME_MAX > bc->pool_cap)
+        return meta_pool_add(bc, s);
+
+    d = bc->pool + off;
+    while ((*d++ = *s++) != '\0')
+        ;
+    bc->pool_len = (uint32_t)(d - bc->pool);
+    return off;
 }
 
 static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
@@ -260,12 +266,7 @@ static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
     if (entry->amiga_as.has_protection)
         memcpy(e->protection, entry->amiga_as.protection, 4);
 
-    {
-        size_t len;
-
-        e->name_hash = meta_hash_len(entry->name, &len);
-        off = meta_pool_add_len(bc, entry->name, len);
-    }
+    off = meta_pool_add_name(bc, entry->name);
     if (off == META_NO_COMMENT)
         goto fail;
     e->name_off = off;
@@ -572,8 +573,17 @@ odfs_err_t odfs_meta_lookup(odfs_meta_cache_t *mc,
      * entry, but costs more than the few compares of a small
      * directory */
     use_hash = d->count >= META_LOOKUP_HASH_MIN;
-    if (use_hash)
+    if (use_hash) {
         hash = odfs_strcasehash(name);
+        /* hash the names on the first lookup, not while building:
+         * listing a directory never needs them */
+        if (!d->hashed) {
+            for (i = 0; i < d->count; i++)
+                d->entries[i].name_hash =
+                    odfs_strcasehash(d->pool + d->entries[i].name_off);
+            d->hashed = 1;
+        }
+    }
 
     for (i = 0; i < d->count; i++) {
         if ((!use_hash || d->entries[i].name_hash == hash) &&
