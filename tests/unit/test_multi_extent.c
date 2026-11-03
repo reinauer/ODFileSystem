@@ -206,6 +206,26 @@ TEST(multi_extent_merges_contiguous_parts)
     odfs_unmount(&mnt);
 }
 
+TEST(multi_extent_merged_file_is_contiguous)
+{
+    static me_media_t media;
+    odfs_mount_t mnt;
+    odfs_node_t file;
+    uint32_t lba = 0;
+
+    ASSERT_OK(me_mount_image(&media, &mnt));
+
+    /* a merged file is one run of sectors from its first extent */
+    ASSERT_OK(odfs_resolve_path(&mnt, "BIG.DAT", &file));
+    ASSERT_EQ(odfs_file_is_contiguous(&mnt, &file, &lba), 1);
+    ASSERT_EQ(lba, ME_BIG_LBA);
+
+    /* directories are not file data */
+    ASSERT_EQ(odfs_file_is_contiguous(&mnt, &mnt.root, &lba), 0);
+
+    odfs_unmount(&mnt);
+}
+
 TEST(multi_extent_read_crosses_extent_boundary)
 {
     static me_media_t media;

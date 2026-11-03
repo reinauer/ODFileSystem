@@ -88,6 +88,16 @@ odfs_err_t odfs_read(odfs_mount_t *mnt,
                        void *buf,
                        size_t *len);
 
+/*
+ * A file whose data the media holds as one run of whole sectors, as
+ * ISO 9660 stores every file: returns 1 and its first sector in *lba,
+ * so a platform can read whole sectors of it without the cache. Returns
+ * 0 for files whose layout needs the backend's read.
+ */
+int odfs_file_is_contiguous(const odfs_mount_t *mnt,
+                            const odfs_node_t *file,
+                            uint32_t *lba);
+
 /* lookup path component */
 odfs_err_t odfs_lookup(odfs_mount_t *mnt,
                          const odfs_node_t *dir,
