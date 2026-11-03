@@ -75,6 +75,39 @@ jobs:
             build/host/tools/
           if-no-files-found: error
 
+  build-aros:
+    runs-on: ubuntu-latest
+    container: amigadev/crosstools@sha256:9c4e978301da6b6584d68d4014caa1fa9e2689529e79e71f7190d40d1cb62e50
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Build AROS release and debug handlers
+        run: |
+          make amiga CC=x86_64-aros-gcc \
+            AMIGA_SYSFLAGS='--sysroot=/opt/x86_64-aros -static' \
+            AMIGA_BUILD=build/aros-x86_64
+          make amiga-test CC=x86_64-aros-gcc \
+            AMIGA_SYSFLAGS='--sysroot=/opt/x86_64-aros -static' \
+            AMIGA_TEST_BUILD=build/aros-x86_64-test
+
+      - name: Check packet layouts with the AROS SDK
+        run: sh tests/aros/check_abi.sh
+
+      - name: Upload AROS CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: odfilesystem-aros-x86_64-build
+          path: |
+            build/aros-x86_64/ODFileSystem
+            build/aros-x86_64-test/ODFileSystem
+          if-no-files-found: error
+
   build-amigaos4:
     runs-on: ubuntu-latest
     container: stefanreinauer/amiga-gcc:gcc-v16.2-ppc

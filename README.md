@@ -2,7 +2,8 @@
 
 [![Coverity](https://img.shields.io/coverity/scan/33023.svg)](https://scan.coverity.com/projects/33023)
 
-ODFileSystem is a read-only optical-disc filesystem for AmigaOS 3 and AmigaOS 4.
+ODFileSystem is a read-only optical-disc filesystem for AmigaOS 3, AmigaOS 4,
+and AROS.
 It lets Amiga applications browse and read CD-ROM, DVD, Blu-ray, and image-based
 media, and access audio-CD tracks as WAV or AIFF files.
 
@@ -49,6 +50,9 @@ for your AmigaOS version.
   `L:ODFileSystem` to use the same mount configuration.
 - **AmigaOS 4:** copy `ODFileSystem-amigaos4` from the OS4 archive as
   `L:ODFileSystem`.
+- **AROS:** build with a matching AROS SDK as described in
+  [Building](docs/building.md#aros), then copy the resulting `ODFileSystem`
+  to `L:ODFileSystem` and use a 32768-byte handler stack.
 
 If you built from source, use `build/amiga/ODFileSystem`, or the `ODFileSystem`
 file in your chosen build directory.

@@ -11,6 +11,9 @@
 #ifndef ODFS_AROS_COMPAT_H
 #define ODFS_AROS_COMPAT_H
 
+#include <stddef.h>
+#include <string.h>
+
 #ifdef __AROS__
 
 #include <aros/macros.h>
@@ -41,5 +44,17 @@ typedef long SIPTR;
 #endif
 
 #endif /* __AROS__ */
+
+/* Some SDKs implement strlen without a cast from STRPTR's UBYTE *. */
+static inline size_t odfs_bstr_len(BSTR bstr)
+{
+    if (!bstr)
+        return 0;
+#ifdef AROS_FAST_BSTR
+    return strlen((const char *)AROS_BSTR_ADDR(bstr));
+#else
+    return ((const UBYTE *)AROS_BSTR_ADDR(bstr))[-1];
+#endif
+}
 
 #endif /* ODFS_AROS_COMPAT_H */

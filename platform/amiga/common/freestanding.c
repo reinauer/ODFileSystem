@@ -1,5 +1,5 @@
 /*
- * freestanding.c - minimal libc for the AmigaOS 4 handler
+ * freestanding.c - minimal libc for freestanding handlers
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
@@ -7,6 +7,8 @@
  * the INewlib interface, which is set up by the C runtime startup the
  * handler cannot use (see start.c). Provide the handful of string
  * functions the handler and core library reference.
+ * AROS also uses these routines so its handler needs no stdc.library
+ * initialization or process startup.
  *
  * Compiled with -fno-builtin -fno-tree-loop-distribute-patterns so the
  * compiler cannot turn these loops back into calls to themselves.
@@ -14,6 +16,7 @@
 
 #include <stddef.h>
 #include <string.h>
+#include "amiga_target_compat.h"
 #include <proto/exec.h>
 
 /* Word accesses through this type may alias any object. */

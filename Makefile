@@ -11,8 +11,8 @@ ifeq ($(origin CC),default)
 CC      = m68k-amigaos-gcc
 endif
 
-# AROS cross-compiler (override: make CC=m68k-aros-gcc AROS=1)
-# When AROS=1, uses -static instead of -noixemul and defines __AROS__
+# AROS compilers select their frontend automatically. AROS=1 also allows
+# SDK wrapper compilers whose -dumpmachine does not identify AROS.
 AROS ?= 0
 
 # Derive target tools from CC so CC=ppc-amigaos-gcc also selects the
@@ -28,20 +28,22 @@ ifneq ($(filter ppc-amigaos,$(AMIGA_CC_TARGET)),)
 AMIGA_TARGET ?= os4
 else ifeq ($(AROS),1)
 AMIGA_TARGET ?= aros
+else ifneq ($(findstring aros,$(AMIGA_CC_TARGET)),)
+AMIGA_TARGET ?= aros
 else
 AMIGA_TARGET ?= os3
 endif
 
-ifeq ($(AMIGA_TARGET),os4)
-AMIGA_OSDIR := os4
-else
+ifeq ($(AMIGA_TARGET),os3)
 AMIGA_OSDIR := os3
+else
+AMIGA_OSDIR := $(AMIGA_TARGET)
 endif
 
 # NDK include path (override with: make NDK_PATH=/your/path)
 ifeq ($(AMIGA_TARGET),os4)
 NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../ppc-amigaos/SDK/include/include_h 2>/dev/null)
-else
+else ifeq ($(AMIGA_TARGET),os3)
 NDK_PATH ?= $(shell realpath $$(dirname $$(which $(CC)))/../m68k-amigaos/ndk-include 2>/dev/null)
 endif
 
@@ -93,7 +95,7 @@ SERIAL_DEBUG ?= 0
 PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
-ifeq ($(AMIGA_TARGET),os4)
+ifneq ($(filter os4 aros,$(AMIGA_TARGET)),)
 AMIGA_SIZE_LIMIT ?= 155648
 else
 AMIGA_SIZE_LIMIT ?= 98304
@@ -132,14 +134,16 @@ FEATURE_DEFS = \
           -DODFS_FEATURE_CDDA=$(FEATURE_CDDA)
 
 ifeq ($(AMIGA_TARGET),aros)
-AMIGA_CPUFLAGS ?= -m68000 -mtune=68020-60 -msoft-float
+AMIGA_CPUFLAGS ?=
 AMIGA_SYSFLAGS ?= -static
 AMIGA_WARNFLAGS =
-AMIGA_DEFS     = -DAMIGA -D__AROS__
+AMIGA_DEFS     = -DAMIGA
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
-LIBS           = -lamiga -lgcc
-HANDLER_LDFLAGS = -nostartfiles
-HANDLER_LIBS   = -nostdlib -Wl,-u,_exit -lgcc -lc -lgcc -lamiga -ramiga-dev
+LIBS           = -lamiga -larossupport -lgcc
+HANDLER_LDFLAGS = -nostartfiles -Wl,-u,odfs_aros_handler
+# No C runtime startup may consume the handler's ACTION_STARTUP packet.
+# The shared freestanding string routines need no stdc.library base.
+HANDLER_LIBS   = -nostdlib -lamiga -larossupport -lgcc
 else ifeq ($(AMIGA_TARGET),os4)
 AMIGA_CRT      ?= newlib
 AMIGA_CPUFLAGS ?= -mcpu=powerpc
@@ -202,25 +206,8 @@ AMIGA_020_CPUFLAGS ?= -m68020 -msoft-float
 # ---- shared source lists ----
 
 # Core library (shared between host and Amiga)
-CORE_SRCS = \
-    core/error.c \
-    core/log.c \
-    core/node.c \
-    core/timestamp.c \
-    core/namefix.c \
-    core/cache_block.c \
-    core/cache_meta.c \
-    core/charset.c \
-    core/ancestry.c \
-    core/mount.c \
-    core/session.c \
-    backends/iso9660/iso9660.c \
-    backends/rock_ridge/rock_ridge.c \
-    backends/joliet/joliet.c \
-    backends/udf/udf.c \
-    backends/hfs/hfs.c \
-    backends/hfsplus/hfsplus.c \
-    backends/cdda/cdda.c
+include sources.mk
+CORE_SRCS = $(ODFS_CORE_SRCS)
 
 # Host-only sources
 HOST_SRCS = platform/host/file_media.c
@@ -232,8 +219,11 @@ AMIGA_SRCS = platform/amiga/handler_main.c \
 ifeq ($(AMIGA_TARGET),os4)
 AMIGA_SRCS += platform/amiga/os4/main.c \
     platform/amiga/os4/start.c \
-    platform/amiga/os4/freestanding.c \
+    platform/amiga/common/freestanding.c \
     platform/amiga/os4/vector_port.c
+else ifeq ($(AMIGA_TARGET),aros)
+AMIGA_SRCS += platform/amiga/aros/start.c \
+    platform/amiga/common/freestanding.c
 else
 AMIGA_SRCS += platform/amiga/libc_stubs.c
 endif
@@ -241,11 +231,11 @@ endif
 # Freestanding libc replacements: stop the compiler from recognizing
 # the copy loops and emitting calls to the functions being defined.
 # -fno-builtin alone does not stop loop distribution from doing that.
-$(AMIGA_BUILD)/platform/amiga/os4/freestanding.o: CFLAGS += -fno-builtin \
+$(AMIGA_BUILD)/platform/amiga/common/freestanding.o: CFLAGS += -fno-builtin \
     -fno-tree-loop-distribute-patterns
 
 # Amiga assembly
-ifeq ($(AMIGA_TARGET),os4)
+ifneq ($(filter os4 aros,$(AMIGA_TARGET)),)
 AMIGA_ASM_SRCS =
 else
 AMIGA_ASM_SRCS = platform/amiga/startup.S
@@ -257,7 +247,7 @@ AMIGA_ASM_OBJS = $(patsubst %.S,$(AMIGA_BUILD)/%.o,$(AMIGA_ASM_SRCS))
 
 # The resident/romtag object is linked directly into the handler right after
 # startup.o, not archived into libodfs.a
-ifeq ($(AMIGA_TARGET),os4)
+ifneq ($(filter os4 aros,$(AMIGA_TARGET)),)
 AMIGA_RESIDENT_OBJ =
 else
 AMIGA_RESIDENT_OBJ = $(AMIGA_BUILD)/platform/amiga/resident.o

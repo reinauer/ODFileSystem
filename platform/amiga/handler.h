@@ -99,7 +99,7 @@ typedef struct handler_global {
     ULONG                max_transfer;  /* largest request in bytes */
     ULONG                max_transfer_blocks; /* the same in sectors */
     char                 devname[128];  /* device name */
-    ULONG                devunit;       /* device unit */
+    IPTR                 devunit;       /* device unit */
     ULONG                devflags;      /* device open flags */
     struct DosEnvec     *envec;         /* for control string parsing */
 
@@ -135,12 +135,12 @@ typedef struct handler_global {
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  scsi_reads;      /* 1: read data with SCSI READ(10),
                                              0: with CMD_READ */
-    ULONG                direct_buf_blocked; /* ~Mask: buffer address bits
+    uintptr_t            direct_buf_blocked; /* ~Mask: buffer address bits
                                              that rule out a direct transfer */
     ULONG                direct_mem_need; /* MEMF_ bits BufMemType asks of
                                              a direct-transfer buffer */
-    ULONG                direct_mem_lo;   /* memory region [lo, hi) last */
-    ULONG                direct_mem_hi;   /* found to have direct_mem_need */
+    uintptr_t            direct_mem_lo;   /* memory region [lo, hi) last */
+    uintptr_t            direct_mem_hi;   /* found to have direct_mem_need */
     struct SCSICmd       read_scsi;       /* prebuilt READ(10) for data reads */
     ULONG                read_cdb[3];     /* READ(10) CDB at byte 2, so its
                                              LBA field is long-aligned */
@@ -317,11 +317,11 @@ static inline void bstr_to_cstr(BSTR bstr, char *buf, int bufsize)
         return;
     }
 
-    int len = AROS_BSTR_strlen(bstr);
+    size_t len = odfs_bstr_len(bstr);
     const char *addr = (const char *)AROS_BSTR_ADDR(bstr);
-    if (len >= bufsize)
-        len = bufsize - 1;
-    for (int i = 0; i < len; i++)
+    if (len >= (size_t)bufsize)
+        len = (size_t)bufsize - 1;
+    for (size_t i = 0; i < len; i++)
         buf[i] = addr[i];
     buf[len] = '\0';
 }

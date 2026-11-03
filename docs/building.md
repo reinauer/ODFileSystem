@@ -5,6 +5,7 @@ the Amiga frontend from the compiler target:
 
 - `m68k-amigaos-gcc` builds the AmigaOS 3/classic handler
 - `ppc-amigaos-gcc` builds the native AmigaOS 4 handler
+- AROS compilers such as `x86_64-aros-gcc` build the native AROS handler
 
 ## AmigaOS 3
 
@@ -101,6 +102,45 @@ make amiga \
 The Makefile normally derives the NDK include path from the selected compiler.
 If your SDK is elsewhere, add `NDK_PATH=/path/to/include_h`.
 
+## AROS
+
+Use an AROS SDK matching your target CPU and ABI:
+
+```sh
+make amiga CC=x86_64-aros-gcc AMIGA_BUILD=build/aros-x86_64
+make amiga-test CC=x86_64-aros-gcc AMIGA_TEST_BUILD=build/aros-x86_64-test
+```
+
+The compiler target selects AROS automatically; `AROS=1` is available for
+SDK wrappers. CPU flags come from the SDK, rather than assuming m68k.
+Keep outputs for different SDKs and CPUs in separate build directories.
+
+The standalone binary is `build/aros-x86_64/ODFileSystem`. Install it as
+`L:ODFileSystem`, and set `FileSystem = L:ODFileSystem` and `StackSize = 32768`
+in a DOSDriver with the appropriate device and unit. The handler uses native
+AROS process and interrupt entry conventions and leaves its first process
+message for the DOS packet loop. It does not use C runtime startup.
+
+For the `amigadev/crosstools:x86_64-aros` Docker image, whose SDK has been
+relocated, pass `AMIGA_SYSFLAGS='--sysroot=/opt/x86_64-aros -static'`.
+The isolated packet-layout regression check runs inside that Linux image:
+
+```sh
+sh tests/aros/check_abi.sh
+```
+
+This check compiles production helpers against AROS headers and runs their
+OS-independent paths in a Linux harness. It covers fast BSTRs, pointer-sized
+locks, FileInfoBlock encoding, and all seven ExAll buffer layouts. It does
+not mount media or exercise an AROS kernel or device driver.
+
+AROS can also embed this repository as a Git submodule and compile the
+sources listed in `sources.mk`. Define `ODFS_AROS_RESIDENT` for that build
+and configure genmodule's `handler_func` as `odfs_aros_handler`. The generated
+resident supplies the process entry and filesystem registration; omit the
+standalone entry. The AROS integration builds `L:ODFileSystem-handler` and
+registers the existing optical-disc DOS types along with `CD01`.
+
 ## Debug and Size Limits
 
 Release builds have serial logging disabled. For a test build with serial
@@ -128,7 +168,7 @@ This creates `build/amiga-os4/ODFileSystem-amigaos4.lha` containing
 `CDFileSystem-test`, `Env-Archive/Sys/def_cdda.info`, and `README.md`.
 
 Release builds enforce a default size limit of `98304` bytes for OS3 and
-`155648` bytes for OS4. If intentional growth needs a higher ceiling, override
+`155648` bytes for OS4 and AROS. If intentional growth needs a higher ceiling, override
 it with `AMIGA_SIZE_LIMIT=<bytes>`. During local bring-up, the limit can be
 disabled with `ENFORCE_SIZE_LIMITS=0`.
 
