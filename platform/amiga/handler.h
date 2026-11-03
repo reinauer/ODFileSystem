@@ -146,6 +146,21 @@ typedef struct handler_global {
                                              LBA field is long-aligned */
     UBYTE                read_sense[32];
 
+    /* sector read ahead on Seek (handler task only) */
+    struct MsgPort      *pf_port;
+    struct IOStdReq     *pf_req;
+    uint8_t             *pf_buf;          /* ODFS_PF_SECTORS DMA-safe sectors */
+#define ODFS_PF_SECTORS  2
+    ULONG                pf_lba;
+    ULONG                pf_count;        /* sectors read into pf_buf */
+    int                  pf_state;        /* ODFS_PF_* */
+#define ODFS_PF_NONE     0
+#define ODFS_PF_BUSY     1                /* read of pf_lba in flight */
+#define ODFS_PF_VALID    2                /* pf_buf holds pf_lba */
+    struct SCSICmd       pf_scsi;
+    ULONG                pf_cdb[3];       /* READ(10) at byte 2, as read_cdb */
+    UBYTE                pf_sense[32];
+
     /* media change */
     struct MsgPort      *chgport;       /* media change signal port */
     struct IOStdReq     *chgreq;        /* media change I/O request */
@@ -245,6 +260,7 @@ struct odfs_fh {
     ULONG           direct_size;    /* file size when whole sectors of the
                                        file may be read straight from the
                                        media, else 0 */
+    ULONG           last_read;      /* length of the last Read(), 0 = none */
 };
 
 /* ---- helper macros ---- */
