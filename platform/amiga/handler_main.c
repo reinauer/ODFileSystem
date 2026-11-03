@@ -187,6 +187,16 @@ static void amiga_init_max_transfer(handler_global_t *g)
     if (g->max_transfer_blocks == 0)
         g->max_transfer_blocks = 1;
     g->max_transfer = g->max_transfer_blocks * g->sector_size;
+
+#if !ODFS_AMIGA_OS4
+    g->direct_mem_need = g->envec->de_BufMemType &
+                         (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST | MEMF_LOCAL |
+                          MEMF_24BITDMA | MEMF_KICK);
+#else
+    g->direct_mem_need = 0;
+#endif
+    g->direct_mem_lo = 0;
+    g->direct_mem_hi = 0;
 }
 
 #if !ODFS_AMIGA_OS4
@@ -212,20 +222,49 @@ static int amiga_direct_read_window_ok(handler_global_t *g,
     return start >= win_start && end <= win_end;
 }
 
-static int amiga_direct_memtype_ok(ULONG memtype, const void *buf,
+/*
+ * Does buf lie in memory of the type BufMemType asks for? Mount sets
+ * MEMF_PUBLIC even for "BufMemType = 0", so this is asked of nearly
+ * every direct read. Answer from the memory region that held the last
+ * buffer that passed: callers reuse their buffers, and a region's
+ * attributes never change. Otherwise find the region in the memory
+ * list, as TypeOfMem() would, and remember it; a buffer spanning two
+ * regions is checked at both ends instead.
+ */
+static int amiga_direct_memtype_ok(handler_global_t *g, const void *buf,
                                    uint32_t len)
 {
-    ULONG need = memtype & (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST |
-                            MEMF_LOCAL | MEMF_24BITDMA | MEMF_KICK);
-    ULONG start_type;
-    ULONG end_type;
+    ULONG need = g->direct_mem_need;
+    ULONG start = (ULONG)buf;
+    ULONG end = start + len - 1;
+    struct MemHeader *mh;
+    int found = 0;
 
     if (need == MEMF_ANY)
         return 1;
+    if (start >= g->direct_mem_lo && end < g->direct_mem_hi)
+        return 1;
 
-    start_type = TypeOfMem((CONST_APTR)buf);
-    end_type = TypeOfMem((CONST_APTR)((ULONG)buf + len - 1));
-    return ((start_type & need) == need) && ((end_type & need) == need);
+    Forbid();
+    for (mh = (struct MemHeader *)SysBase->MemList.lh_Head;
+         mh->mh_Node.ln_Succ;
+         mh = (struct MemHeader *)mh->mh_Node.ln_Succ) {
+        if (start >= (ULONG)mh->mh_Lower && start < (ULONG)mh->mh_Upper) {
+            if (end < (ULONG)mh->mh_Upper &&
+                (mh->mh_Attributes & need) == need) {
+                g->direct_mem_lo = (ULONG)mh->mh_Lower;
+                g->direct_mem_hi = (ULONG)mh->mh_Upper;
+                found = 1;
+            }
+            break;
+        }
+    }
+    Permit();
+    if (found)
+        return 1;
+
+    return (TypeOfMem((CONST_APTR)start) & need) == need &&
+           (TypeOfMem((CONST_APTR)end) & need) == need;
 }
 #endif
 
@@ -264,7 +303,7 @@ static int amiga_can_read_direct(handler_global_t *g, const void *buf,
 #if ODFS_AMIGA_OS4
     return 1;
 #else
-    return amiga_direct_memtype_ok(de->de_BufMemType, buf, len);
+    return amiga_direct_memtype_ok(g, buf, len);
 #endif
 }
 

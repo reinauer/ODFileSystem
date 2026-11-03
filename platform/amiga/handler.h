@@ -135,6 +135,10 @@ typedef struct handler_global {
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  scsi_reads;      /* 1: read data with SCSI READ(10),
                                              0: with CMD_READ */
+    ULONG                direct_mem_need; /* MEMF_ bits BufMemType asks of
+                                             a direct-transfer buffer */
+    ULONG                direct_mem_lo;   /* memory region [lo, hi) last */
+    ULONG                direct_mem_hi;   /* found to have direct_mem_need */
     struct SCSICmd       read_scsi;       /* prebuilt READ(10) for data reads */
     ULONG                read_cdb[3];     /* READ(10) CDB at byte 2, so its
                                              LBA field is long-aligned */
