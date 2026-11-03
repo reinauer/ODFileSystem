@@ -135,6 +135,8 @@ typedef struct handler_global {
     int                  cdtext_passthrough; /* -1 unknown, 0 unsupported, 1 ok */
     int                  scsi_reads;      /* 1: read data with SCSI READ(10),
                                              0: with CMD_READ */
+    ULONG                direct_buf_blocked; /* ~Mask: buffer address bits
+                                             that rule out a direct transfer */
     ULONG                direct_mem_need; /* MEMF_ bits BufMemType asks of
                                              a direct-transfer buffer */
     ULONG                direct_mem_lo;   /* memory region [lo, hi) last */
@@ -239,6 +241,10 @@ struct odfs_fh {
     LONG            access;         /* originating DOS access mode */
     uint64_t        pos;            /* current read position */
     ULONG           magic;          /* liveness check for handle validation */
+    uint32_t        direct_lba;     /* first sector, when direct_size != 0 */
+    ULONG           direct_size;    /* file size when whole sectors of the
+                                       file may be read straight from the
+                                       media, else 0 */
 };
 
 /* ---- helper macros ---- */
