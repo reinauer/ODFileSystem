@@ -536,6 +536,16 @@ static odfs_err_t amiga_read_hi(handler_global_t *g,
     }
 }
 
+/* Keep the aligned CDB store on big-endian CPUs; SCSI uses wire order. */
+static uint32_t scsi_lba_be(uint32_t lba)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return __builtin_bswap32(lba);
+#else
+    return lba;
+#endif
+}
+
 /*
  * Issue the prebuilt READ(10) in g->read_scsi. Only the LBA, block
  * count and buffer change between data reads, so this skips clearing
@@ -553,7 +563,7 @@ static odfs_err_t scsi_read10_data(handler_global_t *g,
     UBYTE *cdb = (UBYTE *)g->read_cdb + 2;
     uint32_t blocks = bytes >> 11;
 
-    g->read_cdb[1] = lba;          /* cdb[2..5], big-endian */
+    g->read_cdb[1] = scsi_lba_be(lba); /* cdb[2..5] */
     cdb[7] = (UBYTE)(blocks >> 8);
     cdb[8] = (UBYTE)blocks;
     scsi->scsi_Data = (UWORD *)buf;
@@ -3318,7 +3328,7 @@ static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
     g->pf_lba = lba;
     g->pf_count = count;
     if (g->scsi_reads) {
-        g->pf_cdb[1] = lba;        /* cdb[2..5], big-endian */
+        g->pf_cdb[1] = scsi_lba_be(lba); /* cdb[2..5] */
         ((UBYTE *)g->pf_cdb)[10] = (UBYTE)count;
         g->pf_scsi.scsi_Length = count << 11;
         g->pf_scsi.scsi_Actual = 0;
