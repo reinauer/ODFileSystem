@@ -3401,8 +3401,8 @@ static ULONG fh_read_cached(handler_global_t *g, odfs_fh_t *fh,
         return 0;
 
     lba = fh->direct_lba + (pos >> 11);
-    if (!odfs_cache_contains(&g->mount.cache, lba) ||
-        odfs_cache_read(&g->mount.cache, lba, &sector) != ODFS_OK)
+    sector = odfs_cache_read_cached(&g->mount.cache, lba);
+    if (!sector)
         return 0;
 
     memcpy(buf, sector + off, len);

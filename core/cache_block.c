@@ -367,6 +367,24 @@ int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba)
     return cache && cache->entries && cache_find_index(cache, lba) >= 0;
 }
 
+const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba)
+{
+    int32_t hit;
+
+    if (!cache || !cache->entries)
+        return NULL;
+    hit = cache_find_index(cache, lba);
+    if (hit < 0)
+        return NULL;
+
+    cache->stats.reads++;
+    cache->stats.hits++;
+    cache->clock++;
+    cache->entries[hit].age = cache->clock;
+    cache_lru_make_mru(cache, (uint32_t)hit);
+    return cache->entries[hit].data;
+}
+
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
                              const uint8_t **out)
