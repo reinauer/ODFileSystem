@@ -96,6 +96,13 @@ jobs:
             AMIGA_SYSFLAGS='--sysroot=/opt/x86_64-aros -static' \
             AMIGA_TEST_BUILD=build/aros-x86_64-test
 
+      - name: Check loader relocations in stripped AROS handlers
+        run: |
+          for handler in build/aros-x86_64/ODFileSystem \
+                         build/aros-x86_64-test/ODFileSystem; do
+            x86_64-aros-readelf --relocs "$handler" | grep -q 'R_X86_64_'
+          done
+
       - name: Check packet layouts with the AROS SDK
         run: sh tests/aros/check_abi.sh
 
