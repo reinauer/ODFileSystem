@@ -144,6 +144,8 @@ HANDLER_LDFLAGS = -nostartfiles -Wl,-u,odfs_aros_handler
 # No C runtime startup may consume the handler's ACTION_STARTUP packet.
 # The shared freestanding string routines need no stdc.library base.
 HANDLER_LIBS   = -nostdlib -lamiga -larossupport -lgcc
+# AROS executables are relocatable ELF files; keep loader relocations.
+STRIPFLAGS    ?= --strip-unneeded
 else ifeq ($(AMIGA_TARGET),os4)
 AMIGA_CRT      ?= newlib
 AMIGA_CPUFLAGS ?= -mcpu=powerpc
@@ -622,7 +624,7 @@ $(AMIGA_TEST_TOOL): $(AMIGA_TEST_BUILD)/tests/amiga/test_handler.o
 	@echo "  LINK  $@"
 	@$(CC) $(LDFLAGS) -o $@ $< $(LIBS)
 	@echo "  STRIP $@"
-	@$(STRIP) $@
+	@$(STRIP) $(STRIPFLAGS) $@
 
 # ---- Amiga handler ----
 
@@ -631,7 +633,7 @@ $(HANDLER): $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) $(AMIGA_BUILD)/libodfs.a
 	@echo "  LINK  $@"
 	@$(CC) $(LDFLAGS) $(AMIGA_ABIFLAGS) $(HANDLER_LDFLAGS) -o $@ $(AMIGA_ASM_OBJS) $(AMIGA_RESIDENT_OBJ) -L$(AMIGA_BUILD) -lodfs $(HANDLER_LIBS)
 	@echo "  STRIP $@"
-	@$(STRIP) $@
+	@$(STRIP) $(STRIPFLAGS) $@
 
 ifeq ($(AMIGA_TARGET),os4)
 $(KICKSTART_MODULE): $(AMIGA_BUILD)/platform/amiga/os4/start.o $(AMIGA_BUILD)/libodfs.a
