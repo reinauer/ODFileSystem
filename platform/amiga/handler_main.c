@@ -3701,7 +3701,8 @@ LONG odfs_handler_fill_info(handler_global_t *g,
         (g->mounted ? g->mount.total_blocks : 0U);
     info->id_NumBlocksUsed = info->id_NumBlocks;
     info->id_BytesPerBlock = (info_block_t)g->sector_size;
-    info->id_DiskType      = g->mounted ? ODFS_AMIGA_DISK_TYPE : ID_NO_DISK_PRESENT;
+    info->id_DiskType      = g->mounted ? (LONG)ODFS_AMIGA_DISK_TYPE
+                                      : (LONG)ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
     info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
                               g->current_volume->volnode->dl_LockList) ?
