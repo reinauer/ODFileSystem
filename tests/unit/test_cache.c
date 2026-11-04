@@ -208,6 +208,79 @@ TEST(cache_contains_reports_without_reading)
     odfs_cache_destroy(&cache);
 }
 
+TEST(cache_read_cached_hit_and_collision)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    const uint8_t *data;
+    const uint8_t *first;
+    uint32_t generation;
+    int reads = 0;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+    /* Both LBAs use the same bucket; the older one is behind the newer. */
+    ASSERT_OK(odfs_cache_read(&cache, 10, &first));
+    ASSERT_OK(odfs_cache_read(&cache, 20, &data));
+    generation = cache.generation;
+    data = odfs_cache_read_cached(&cache, 10);
+    ASSERT(data == first);
+    for (size_t i = 0; i < MOCK_SECTOR_SIZE; i++)
+        ASSERT_EQ(data[i], 10);
+    ASSERT_EQ(reads, 2);
+    ASSERT_EQ(cache.stats.reads, 3);
+    ASSERT_EQ(cache.stats.hits, 1);
+    ASSERT_EQ(cache.stats.misses, 2);
+    ASSERT_EQ(cache.clock, 3);
+    ASSERT_EQ(cache.entries[cache.lru_head].age, 3);
+    ASSERT_EQ(cache.generation, generation);
+
+    /* A cached-only read protects the hit from the next eviction. */
+    ASSERT_OK(odfs_cache_read(&cache, 30, &data));
+    ASSERT(odfs_cache_contains(&cache, 10));
+    ASSERT_EQ(odfs_cache_contains(&cache, 20), 0);
+    ASSERT(odfs_cache_read_cached(&cache, 20) == NULL);
+    ASSERT_EQ(reads, 3);
+    odfs_cache_destroy(&cache);
+}
+
+TEST(cache_read_cached_miss_has_no_side_effects)
+{
+    odfs_cache_t cache;
+    odfs_cache_t before;
+    odfs_cache_entry_t entries[2];
+    odfs_media_t media;
+    const uint8_t *data;
+    int reads = 0;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+    ASSERT_OK(odfs_cache_read(&cache, 10, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 20, &data));
+    memcpy(&before, &cache, sizeof(cache));
+    memcpy(entries, cache.entries, sizeof(entries));
+    ASSERT(odfs_cache_read_cached(&cache, 30) == NULL);
+    ASSERT_EQ(memcmp(&cache, &before, sizeof(cache)), 0);
+    ASSERT_EQ(memcmp(cache.entries, entries, sizeof(entries)), 0);
+    ASSERT_EQ(reads, 2);
+
+    /* The fallback performs and counts the miss exactly once. */
+    ASSERT_OK(odfs_cache_read(&cache, 30, &data));
+    ASSERT_EQ(data[0], 30);
+    ASSERT_EQ(cache.stats.reads, 3);
+    ASSERT_EQ(cache.stats.hits, 0);
+    ASSERT_EQ(cache.stats.misses, 3);
+    ASSERT_EQ(reads, 3);
+    ASSERT_EQ(odfs_cache_contains(&cache, 10), 0);
+    ASSERT(odfs_cache_contains(&cache, 20));
+
+    odfs_cache_flush(&cache);
+    ASSERT(odfs_cache_read_cached(&cache, 30) == NULL);
+    odfs_cache_destroy(&cache);
+    ASSERT(odfs_cache_read_cached(&cache, 30) == NULL);
+    ASSERT(odfs_cache_read_cached(NULL, 30) == NULL);
+}
+
 TEST(cache_eviction)
 {
     odfs_cache_t cache;

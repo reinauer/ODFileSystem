@@ -66,6 +66,13 @@ void        odfs_cache_destroy(odfs_cache_t *cache);
 /* is the sector cached? (does not count as a use or touch the LRU) */
 int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba);
 
+/*
+ * Read an already cached sector without I/O. A hit counts as a read and
+ * updates the LRU; a miss returns NULL without changing the cache or stats.
+ * The returned data has the same lifetime as odfs_cache_read() data.
+ */
+const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba);
+
 /* read a single sector through the cache */
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
                              uint32_t lba,
