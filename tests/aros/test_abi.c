@@ -20,6 +20,20 @@ int main(void)
     BSTR bstr = (BSTR)MKBADDR(bstrbuf);
     struct FileInfoBlock fib;
 
+    /* READ(10) LBAs must remain big-endian on little-endian AROS. */
+    {
+        ULONG cdb[3] = { 0, 0, 0 };
+        static const UBYTE expected[4] = { 0x12, 0x34, 0x56, 0x78 };
+
+        cdb[1] = scsi_lba_be(UINT32_C(0x12345678));
+        if (memcmp((UBYTE *)cdb + 4, expected, sizeof(expected)))
+            return 17;
+        cdb[1] = scsi_lba_be(16);
+        if (((UBYTE *)cdb)[4] || ((UBYTE *)cdb)[5] ||
+            ((UBYTE *)cdb)[6] || ((UBYTE *)cdb)[7] != 16)
+            return 18;
+    }
+
     /* On x86_64 the stack addresses also catch pointer truncation. */
     memset(&lock, 0, sizeof(lock));
     if (LOCK_FROM_BPTR((SIPTR)LOCK_TO_BPTR(&lock)) != &lock)
