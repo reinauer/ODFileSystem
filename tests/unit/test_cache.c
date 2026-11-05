@@ -478,4 +478,53 @@ TEST(cache_sequential_miss_installs_readahead)
     odfs_cache_destroy(&cache);
 }
 
+TEST(cache_retain_external_read)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    int reads = 0;
+    uint8_t sector[MOCK_SECTOR_SIZE];
+    const uint8_t *data;
+    uint32_t generation;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 2));
+    memset(sector, 0x5a, sizeof(sector));
+    ASSERT_OK(odfs_cache_retain(&cache, 10, sector));
+    memset(sector, 0xa5, sizeof(sector));
+    ASSERT_OK(odfs_cache_retain(&cache, 20, sector));
+    ASSERT_EQ(cache.valid_count, 2);
+    ASSERT_EQ(cache.stats.reads, 0);
+    ASSERT_EQ(cache.stats.misses, 0);
+    ASSERT_EQ(reads, 0);
+
+    /* Retaining a duplicate must not replace data or allocate an entry. */
+    generation = cache.generation;
+    ASSERT_OK(odfs_cache_retain(&cache, 10, sector));
+    ASSERT_EQ(cache.valid_count, 2);
+    ASSERT_EQ(cache.generation, generation);
+    ASSERT_OK(odfs_cache_read(&cache, 10, &data));
+    ASSERT_EQ(data[0], 0x5a);
+    ASSERT_EQ(data[MOCK_SECTOR_SIZE - 1], 0x5a);
+    ASSERT_EQ(reads, 0);
+
+    /* A new read-ahead sector evicts the unused sector, not the MRU. */
+    ASSERT_OK(odfs_cache_retain(&cache, 30, sector));
+    ASSERT(odfs_cache_contains(&cache, 10));
+    ASSERT(!odfs_cache_contains(&cache, 20));
+    ASSERT(odfs_cache_contains(&cache, 30));
+    ASSERT_EQ(cache.stats.evictions, 1);
+    ASSERT_EQ(cache.generation, generation + 1);
+    ASSERT_EQ(cache.stats.reads, 1);
+    ASSERT_EQ(cache.stats.hits, 1);
+    ASSERT_EQ(reads, 0);
+
+    ASSERT_EQ(odfs_cache_retain(&cache, 40, NULL), ODFS_ERR_INVAL);
+    ASSERT_EQ(odfs_cache_retain(NULL, 40, sector), ODFS_ERR_INVAL);
+    odfs_cache_flush(&cache);
+    ASSERT(!odfs_cache_contains(&cache, 10));
+    odfs_cache_destroy(&cache);
+    ASSERT_EQ(odfs_cache_retain(&cache, 10, sector), ODFS_ERR_INVAL);
+}
+
 TEST_MAIN()

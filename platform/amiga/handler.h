@@ -110,6 +110,9 @@ typedef struct handler_global {
     void                *fh_pool;
 
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
+#ifdef __AROS__
+    ULONG                dma_buf_raw_size;
+#endif
     uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
     ULONG                dma_buf_size;  /* usable size in bytes */
 #if !ODFS_AMIGA_OS4
@@ -150,7 +153,14 @@ typedef struct handler_global {
     struct MsgPort      *pf_port;
     struct IOStdReq     *pf_req;
     uint8_t             *pf_buf;          /* ODFS_PF_SECTORS DMA-safe sectors */
+#ifdef __AROS__
+#define ODFS_PF_SECTORS  16
+#else
 #define ODFS_PF_SECTORS  2
+#endif
+#ifdef __AROS__
+    ULONG                pf_capacity;    /* two-sector fallback on low memory */
+#endif
     ULONG                pf_lba;
     ULONG                pf_count;        /* sectors read into pf_buf */
     int                  pf_state;        /* ODFS_PF_* */

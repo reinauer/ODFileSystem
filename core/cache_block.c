@@ -367,6 +367,16 @@ int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba)
     return cache && cache->entries && cache_find_index(cache, lba) >= 0;
 }
 
+odfs_err_t odfs_cache_retain(odfs_cache_t *cache, uint32_t lba,
+                            const uint8_t *data)
+{
+    if (!cache || !cache->entries || !data)
+        return ODFS_ERR_INVAL;
+    if (cache_find_index(cache, lba) >= 0)
+        return ODFS_OK;
+    return cache_install(cache, lba, data) >= 0 ? ODFS_OK : ODFS_ERR_INVAL;
+}
+
 const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba)
 {
     int32_t hit;
