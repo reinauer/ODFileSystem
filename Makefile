@@ -153,7 +153,8 @@ AMIGA_CPUFLAGS ?= -mcpu=powerpc
 # and the kickstart loader expects plain PT_LOAD program headers only.
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
-AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__
+AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__ \
+                 -DODFS_FEATURE_CACHE_RETAIN=0
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.
@@ -174,7 +175,9 @@ AMIGA_SYSFLAGS ?= -noixemul
 # Standalone test programs keep the C runtime's default calling convention.
 AMIGA_ABIFLAGS ?= -mregparm=2
 AMIGA_WARNFLAGS =
-AMIGA_DEFS     = -DAMIGA
+# The OS3/OS4 handlers do not use the AROS retention API. Omitting it also
+# preserves their code layout and avoids shifting unrelated hot routines.
+AMIGA_DEFS     = -DAMIGA -DODFS_FEATURE_CACHE_RETAIN=0
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 LIBS           = -lamiga -lgcc
 HANDLER_LDFLAGS = -nostartfiles

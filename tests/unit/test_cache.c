@@ -478,6 +478,7 @@ TEST(cache_sequential_miss_installs_readahead)
     odfs_cache_destroy(&cache);
 }
 
+#if ODFS_FEATURE_CACHE_RETAIN
 TEST(cache_retain_external_read)
 {
     odfs_cache_t cache;
@@ -526,5 +527,7 @@ TEST(cache_retain_external_read)
     odfs_cache_destroy(&cache);
     ASSERT_EQ(odfs_cache_retain(&cache, 10, sector), ODFS_ERR_INVAL);
 }
+
+#endif
 
 TEST_MAIN()

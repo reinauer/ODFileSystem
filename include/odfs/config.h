@@ -84,6 +84,12 @@
 
 /* ---------- cache feature flags ---------- */
 
+/* External read-ahead retention is currently used by the AROS handler.
+ * Other frontends may omit the unused API to preserve their binary layout. */
+#ifndef ODFS_FEATURE_CACHE_RETAIN
+  #define ODFS_FEATURE_CACHE_RETAIN 1
+#endif
+
 #ifndef ODFS_FEATURE_CACHE_BLOCK
   #define ODFS_FEATURE_CACHE_BLOCK    1
 #endif

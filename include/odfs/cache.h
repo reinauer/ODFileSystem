@@ -73,6 +73,7 @@ int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba);
  */
 const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba);
 
+#if ODFS_FEATURE_CACHE_RETAIN
 /*
  * Retain a sector read by an external read-ahead request. Existing entries
  * are unchanged. This may evict the LRU entry but performs no media I/O and
@@ -82,6 +83,8 @@ const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba);
  */
 odfs_err_t odfs_cache_retain(odfs_cache_t *cache, uint32_t lba,
                             const uint8_t *data);
+
+#endif
 
 /* read a single sector through the cache */
 odfs_err_t odfs_cache_read(odfs_cache_t *cache,
