@@ -31,7 +31,9 @@ typedef unsigned long __attribute__((__may_alias__)) word_t;
 /* Below this an exec call costs more than its tuned copy saves. */
 #define COPYMEM_MIN 64
 
-/* Word copies need both pointers at the same offset within a word. */
+/* Word copies need both pointers at the same offset within a word.
+ * The word casts below pass through void after checking alignment at
+ * runtime; this also avoids false cast-align warnings on strict targets. */
 static int co_aligned(const void *a, const void *b)
 {
     return (((size_t)a ^ (size_t)b) & WMASK) == 0;
@@ -45,16 +47,16 @@ static void copy_fwd(unsigned char *d, const unsigned char *s, size_t n)
             n--;
         }
         while (n >= 4 * WSIZE) {
-            ((word_t *)d)[0] = ((const word_t *)s)[0];
-            ((word_t *)d)[1] = ((const word_t *)s)[1];
-            ((word_t *)d)[2] = ((const word_t *)s)[2];
-            ((word_t *)d)[3] = ((const word_t *)s)[3];
+            ((word_t *)(void *)d)[0] = ((const word_t *)(const void *)s)[0];
+            ((word_t *)(void *)d)[1] = ((const word_t *)(const void *)s)[1];
+            ((word_t *)(void *)d)[2] = ((const word_t *)(const void *)s)[2];
+            ((word_t *)(void *)d)[3] = ((const word_t *)(const void *)s)[3];
             d += 4 * WSIZE;
             s += 4 * WSIZE;
             n -= 4 * WSIZE;
         }
         while (n >= WSIZE) {
-            *(word_t *)d = *(const word_t *)s;
+            *(word_t *)(void *)d = *(const word_t *)(const void *)s;
             d += WSIZE;
             s += WSIZE;
             n -= WSIZE;
@@ -76,7 +78,7 @@ static void copy_bwd(unsigned char *d, const unsigned char *s, size_t n)
             d -= WSIZE;
             s -= WSIZE;
             n -= WSIZE;
-            *(word_t *)d = *(const word_t *)s;
+            *(word_t *)(void *)d = *(const word_t *)(const void *)s;
         }
     }
     while (n--)
@@ -131,15 +133,15 @@ void *memset(void *dst, int c, size_t n)
             n--;
         }
         while (n >= 4 * WSIZE) {
-            ((word_t *)d)[0] = w;
-            ((word_t *)d)[1] = w;
-            ((word_t *)d)[2] = w;
-            ((word_t *)d)[3] = w;
+            ((word_t *)(void *)d)[0] = w;
+            ((word_t *)(void *)d)[1] = w;
+            ((word_t *)(void *)d)[2] = w;
+            ((word_t *)(void *)d)[3] = w;
             d += 4 * WSIZE;
             n -= 4 * WSIZE;
         }
         while (n >= WSIZE) {
-            *(word_t *)d = w;
+            *(word_t *)(void *)d = w;
             d += WSIZE;
             n -= WSIZE;
         }
@@ -163,7 +165,7 @@ int memcmp(const void *a, const void *b, size_t n)
             pb++;
             n--;
         }
-        while (n >= WSIZE && *(const word_t *)pa == *(const word_t *)pb) {
+        while (n >= WSIZE && *(const word_t *)(const void *)pa == *(const word_t *)(const void *)pb) {
             pa += WSIZE;
             pb += WSIZE;
             n -= WSIZE;
@@ -190,7 +192,7 @@ size_t strlen(const char *s)
     }
     /* an aligned word never straddles a page, so reading past the
      * terminator within it is safe */
-    for (w = (const word_t *)p; !HAS_ZERO(*w); w++)
+    for (w = (const word_t *)(const void *)p; !HAS_ZERO(*w); w++)
         ;
     for (p = (const char *)w; *p; p++)
         ;

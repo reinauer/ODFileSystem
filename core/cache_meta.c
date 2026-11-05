@@ -457,7 +457,7 @@ static odfs_meta_dir_t *meta_build(odfs_meta_cache_t *mc,
     d->dir_id = dir->id;
     d->count = bc.count;
     d->bytes = (uint32_t)total;
-    d->entries = (odfs_meta_entry_t *)(d + 1);
+    d->entries = d->storage;
     d->pool = (char *)d->entries + entry_bytes;
     memcpy(d->entries, bc.entries, entry_bytes);
     memcpy(d->pool, bc.pool, bc.pool_len);
