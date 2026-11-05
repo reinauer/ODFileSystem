@@ -3243,7 +3243,12 @@ LONG odfs_handler_close_object(handler_global_t *g, odfs_fh_t *fh)
  * Seek's reply and the program's Read() call. A device request costs
  * the same for one sector or two, and the second serves a small read
  * that does not start on a sector boundary. The sectors stay in pf_buf
- * as a small cache, so seeking back to them costs no device request.
+ * as a small cache. On AROS, completed random reads are also retained in
+ * the block cache so a small working set needs no further I/O. Sequential
+ * seeks use a larger window without populating the block cache, keeping
+ * streaming data from evicting metadata and random-read sectors. OS3 keeps
+ * the smaller window: copying random read-ahead into the block cache costs
+ * more than it saves on its strided and seeded workloads.
  *
  * Only a handle whose last Read() was small reads ahead: a large read
  * after a Seek goes to the device in one request anyway, and would
@@ -3275,6 +3280,19 @@ static void prefetch_wait(handler_global_t *g)
     else
         ok = req->io_Error == 0 && req->io_Actual == g->pf_count << 11;
     g->pf_state = ok ? ODFS_PF_VALID : ODFS_PF_NONE;
+#ifdef __AROS__
+    if (ok && g->pf_count <= 2) {
+        ULONG i;
+
+        /* Keep small completed read-ahead when a seek replaces pf_buf.
+         * Otherwise a small working set outside its two-sector window
+         * repeatedly goes to the device despite fitting in the cache.
+         * Larger streaming windows deliberately bypass the block cache. */
+        for (i = g->pf_count; i-- > 0; )
+            (void)odfs_cache_retain(&g->mount.cache, g->pf_lba + i,
+                                   g->pf_buf + (i << 11));
+    }
+#endif
 }
 
 static int prefetch_open(handler_global_t *g)
@@ -3302,19 +3320,62 @@ static int prefetch_open(handler_global_t *g)
     return 1;
 }
 
+#ifdef __AROS__
+/* Bound speculative I/O by both the allocated window and the mount limit. */
+static ULONG prefetch_sector_count(const handler_global_t *g, ULONG remaining,
+                                   int sequential)
+{
+    ULONG count = sequential ? g->pf_capacity : 2;
+
+    if (count > g->max_transfer_blocks)
+        count = g->max_transfer_blocks;
+    if (count > remaining)
+        count = remaining;
+    return count;
+}
+
+static void prefetch_start(handler_global_t *g, odfs_fh_t *fh, int sequential)
+#else
 static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
+#endif
 {
     struct IOStdReq *req;
     ULONG sector;
     ULONG lba;
     ULONG count;
+#ifdef __AROS__
+    ULONG wanted;
+    ULONG i;
+#endif
 
     if (fh->direct_size == 0 || fh->last_read == 0 ||
-        fh->last_read > ODFS_PF_SECTORS * 2048 ||
+        fh->last_read > 2 * 2048 ||
         (ULONG)(fh->pos >> 32) != 0 || (ULONG)fh->pos >= fh->direct_size)
         return;
     sector = (ULONG)fh->pos >> 11;
     lba = fh->direct_lba + sector;
+#ifdef __AROS__
+    wanted = fh->direct_size - (ULONG)fh->pos;
+    if (wanted > fh->last_read)
+        wanted = fh->last_read;
+    wanted = (((ULONG)fh->pos & 2047) + wanted + 2047) >> 11;
+    if (g->pf_state != ODFS_PF_NONE &&
+        lba - g->pf_lba < g->pf_count &&
+        wanted <= g->pf_count - (lba - g->pf_lba))
+        return;
+    /* A cached first sector cannot serve an unaligned read whose last
+     * sector is missing. Keep overlapping I/O with the Seek reply. */
+    for (i = 0; i < wanted; i++) {
+        if (!odfs_cache_contains(&g->mount.cache, lba + i))
+            break;
+    }
+    if (i == wanted || !prefetch_open(g))
+        return;
+
+    /* stay inside the file */
+    count = ((fh->direct_size - 1) >> 11) - sector + 1;
+    count = prefetch_sector_count(g, count, sequential);
+#else
     if ((g->pf_state != ODFS_PF_NONE && lba - g->pf_lba < g->pf_count) ||
         odfs_cache_contains(&g->mount.cache, lba) || !prefetch_open(g))
         return;
@@ -3323,6 +3384,7 @@ static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
     count = ((fh->direct_size - 1) >> 11) - sector + 1;
     if (count > ODFS_PF_SECTORS)
         count = ODFS_PF_SECTORS;
+#endif
 
     prefetch_cancel(g);
     req = g->pf_req;
@@ -4930,7 +4992,9 @@ static void action_seek(handler_global_t *g, struct DosPacket *pkt)
     }
 
     pkt->dp_Res1 = (SIPTR)oldpos;
-#if !ODFS_AMIGA_OS4
+#ifdef __AROS__
+    prefetch_start(g, fh, fh->pos == (uint64_t)oldpos);
+#elif !ODFS_AMIGA_OS4
     prefetch_start(g, fh);
 #endif
 }
@@ -6258,6 +6322,39 @@ static struct DosPacket *packet_from_message(const struct Message *msg)
     return (struct DosPacket *)(uintptr_t)msg->mn_Node.ln_Name;
 }
 
+#ifdef __AROS__
+/* Keep the original 64 KiB bounce buffer, with a separate read-ahead area.
+ * Try the larger sequential window first; low-memory systems can retain
+ * the original two-sector allocation. Record its actual size for FreeMem.
+ */
+static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
+{
+    const ULONG bounce_sectors = 32;
+
+    g->pf_capacity = ODFS_PF_SECTORS;
+    for (;;) {
+        g->dma_buf_raw_size = (bounce_sectors + g->pf_capacity) *
+                             g->sector_size + 15;
+        g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(g->dma_buf_raw_size,
+                                                       memtype);
+        if (!g->dma_buf_raw && memtype != MEMF_PUBLIC)
+            g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(
+                g->dma_buf_raw_size, MEMF_PUBLIC);
+        if (g->dma_buf_raw || g->pf_capacity == 2)
+            break;
+        g->pf_capacity = 2;
+    }
+    if (!g->dma_buf_raw)
+        return 0;
+
+    g->dma_buf = (uint8_t *)
+        (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
+    g->dma_buf_size = bounce_sectors * g->sector_size;
+    g->pf_buf = g->dma_buf + g->dma_buf_size;
+    return 1;
+}
+#endif
+
 void handler_main_startup(struct Message *startup_msg)
 {
     handler_global_t *g;
@@ -6494,6 +6591,15 @@ void handler_main_startup(struct Message *startup_msg)
      * single device request while leaving room for larger callers.
      */
     {
+#ifdef __AROS__
+        ULONG memtype = (ULONG)de->de_BufMemType | MEMF_PUBLIC;
+
+        if (!alloc_dma_buffer(g, memtype)) {
+            ODFS_ERROR(&g->log, ODFS_SUB_IO,
+                       "AllocMem failed for DMA buffer size=%lu memtype=%lu",
+                       (unsigned long)g->dma_buf_raw_size,
+                       (unsigned long)memtype);
+#else
         #define DMA_BUF_SECTORS  32
         /* plus the Seek read-ahead's sectors */
         #define DMA_BUF_RAW_SIZE(ss) \
@@ -6517,6 +6623,7 @@ void handler_main_startup(struct Message *startup_msg)
                        "AllocMem failed for DMA buffer size=%lu memtype=%lu",
                        (unsigned long)raw_size,
                        (unsigned long)memtype);
+#endif
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_NO_FREE_STORE;
             return_packet(g, pkt);
@@ -6756,7 +6863,11 @@ shutdown:
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
         odfs_amiga_free_mem(g->dma_buf_raw,
+#ifdef __AROS__
+                            g->dma_buf_raw_size);
+#else
                             DMA_BUF_RAW_SIZE(g->sector_size));
+#endif
 
     if (g->devnode && g->devnode->dn_Task == g->dosport)
         g->devnode->dn_Task = NULL;

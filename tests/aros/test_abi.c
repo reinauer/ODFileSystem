@@ -7,6 +7,23 @@
 
 #include "../../platform/amiga/handler_main.c"
 
+_Static_assert(ODFS_PF_SECTORS == 16, "AROS streaming window disabled");
+
+static UBYTE dma_test_mem[(32 + ODFS_PF_SECTORS) * 2048 + 32];
+static ULONG dma_test_limit;
+static ULONG dma_test_calls;
+static int dma_test_public_only;
+
+void *odfs_amiga_alloc_mem(ULONG size, ULONG flags)
+{
+    dma_test_calls++;
+    if (size > dma_test_limit ||
+        (dma_test_public_only && flags != MEMF_PUBLIC))
+        return NULL;
+    /* Exercise the buffer's alignment padding, too. */
+    return dma_test_mem + 1;
+}
+
 int main(void)
 {
     union {
@@ -19,6 +36,72 @@ int main(void)
     UBYTE bstrbuf[16] __attribute__((aligned(8)));
     BSTR bstr = (BSTR)MKBADDR(bstrbuf);
     struct FileInfoBlock fib;
+
+    {
+        handler_global_t g;
+
+        memset(&g, 0, sizeof(g));
+        g.sector_size = 2048;
+        dma_test_limit = sizeof(dma_test_mem);
+        if (!alloc_dma_buffer(&g, MEMF_PUBLIC | MEMF_CHIP) ||
+            g.pf_capacity != ODFS_PF_SECTORS || dma_test_calls != 1 ||
+            ((uintptr_t)g.dma_buf & 15) || g.dma_buf_size != 65536 ||
+            g.pf_buf != g.dma_buf + g.dma_buf_size ||
+            g.pf_buf + g.pf_capacity * 2048 >
+                g.dma_buf_raw + g.dma_buf_raw_size)
+            return 19;
+
+        memset(&g, 0, sizeof(g));
+        g.sector_size = 2048;
+        dma_test_calls = 0;
+        dma_test_public_only = 1;
+        if (!alloc_dma_buffer(&g, MEMF_PUBLIC | MEMF_CHIP) ||
+            dma_test_calls != 2 || g.pf_capacity != ODFS_PF_SECTORS)
+            return 20;
+
+        memset(&g, 0, sizeof(g));
+        g.sector_size = 2048;
+        dma_test_calls = 0;
+        dma_test_public_only = 0;
+        dma_test_limit = 34 * 2048 + 15;
+        if (!alloc_dma_buffer(&g, MEMF_PUBLIC | MEMF_CHIP) ||
+            g.pf_capacity != 2 || dma_test_calls != 3 ||
+            g.dma_buf_raw_size != dma_test_limit ||
+            g.pf_buf + 4096 > g.dma_buf_raw + g.dma_buf_raw_size)
+            return 21;
+
+        memset(&g, 0, sizeof(g));
+        g.sector_size = 2048;
+        dma_test_calls = 0;
+        dma_test_limit = 0;
+        if (alloc_dma_buffer(&g, MEMF_PUBLIC | MEMF_CHIP) ||
+            dma_test_calls != 4 || g.dma_buf_raw || g.pf_buf)
+            return 22;
+    }
+
+    /* Streaming, random and short-file requests obey MaxTransfer too. */
+    {
+        handler_global_t g;
+
+        memset(&g, 0, sizeof(g));
+        g.pf_capacity = ODFS_PF_SECTORS;
+        g.max_transfer_blocks = 64;
+        if (prefetch_sector_count(&g, 100, 1) != 16 ||
+            prefetch_sector_count(&g, 100, 0) != 2 ||
+            prefetch_sector_count(&g, 1, 1) != 1)
+            return 23;
+        g.max_transfer_blocks = 3;
+        if (prefetch_sector_count(&g, 100, 1) != 3)
+            return 24;
+        g.max_transfer_blocks = 1;
+        if (prefetch_sector_count(&g, 100, 1) != 1 ||
+            prefetch_sector_count(&g, 100, 0) != 1)
+            return 25;
+        g.max_transfer_blocks = 64;
+        g.pf_capacity = 2;
+        if (prefetch_sector_count(&g, 100, 1) != 2)
+            return 26;
+    }
 
     /* READ(10) LBAs must remain big-endian on little-endian AROS. */
     {

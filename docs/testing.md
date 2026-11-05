@@ -85,3 +85,25 @@ sh tools/check_rom_sections.sh \
     build/amiga-020/ODFileSystem \
     build/amiga-rom/ODFileSystem
 ```
+
+## Performance changes
+
+Compare release handlers with the same compiler, flags, CDBench binary,
+fixture, mount settings, emulator build and CPU configuration. Use a fresh
+boot for each run and alternate the baseline/candidate order. Keep diagnostic
+instrumentation out of scored builds. Emulator runs measure filesystem
+overhead with image-backed media; they do not measure optical-drive speed or
+establish physical-hardware compatibility.
+
+For AROS read-ahead changes, score all 16 applicable data-disc workloads from
+`CDBench BENCH: ITER 1024 CSV`. Check the byte and operation counts as well as
+the timings. Keep the three audio/mixed-disc skips explicit; a data-disc run
+does not validate CDDA. Repeat load-contaminated runs using a criterion chosen
+before examining their scores, and retain the excluded results.
+
+AmigaOS 3 performance is a release gate even when the optimization targets
+AROS. Test both the 68000 and 68020 release builds. Compare every metric with
+the baseline's run-to-run range and the timer's reporting resolution; do not
+assume a blanket percentage is normal noise. Investigate a repeatable slowdown
+outside that envelope. Keep AmigaOS 4 as a separate comparison and native AROS
+m68k/ARM/PPC execution as separate portability checks.
