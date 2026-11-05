@@ -64,6 +64,7 @@ typedef struct odfs_meta_dir {
     uint32_t              bytes;       /* total allocation size */
     odfs_meta_entry_t    *entries;     /* into the same allocation */
     char                 *pool;        /* into the same allocation */
+    odfs_meta_entry_t      storage[];   /* keeps trailing entries aligned */
 } odfs_meta_dir_t;
 
 typedef struct odfs_meta_cache_stats {

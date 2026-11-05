@@ -2117,7 +2117,8 @@ static void drain_all_objects(handler_global_t *g)
     struct Node *node;
 
     while ((node = RemHead((struct List *)&g->fhlist)) != NULL) {
-        odfs_fh_t *fh = (odfs_fh_t *)node;
+        /* RemHead returns the first member of an allocated odfs_fh_t. */
+        odfs_fh_t *fh = (odfs_fh_t *)(void *)node;
         release_volume_object(g, fh->entry->volume);
         release_entry(g, fh->entry);
         odfs_amiga_free_mem(fh, sizeof(*fh));
