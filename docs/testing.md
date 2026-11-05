@@ -107,3 +107,9 @@ the baseline's run-to-run range and the timer's reporting resolution; do not
 assume a blanket percentage is normal noise. Investigate a repeatable slowdown
 outside that envelope. Keep AmigaOS 4 as a separate comparison and native AROS
 m68k/ARM/PPC execution as separate portability checks.
+
+If a target's final release binary is byte-for-byte identical to its tested
+baseline with fixed version/date strings, record both hashes. That proves
+this patch cannot change its executable behavior; timing differences between
+those identical artifacts measure environmental variation. Run a final guest
+artifact check and keep this identity result distinct from a measured speedup.
