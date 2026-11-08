@@ -187,8 +187,13 @@ static int scsi_is_unsupported_command(const uint8_t *sense)
  */
 static void amiga_init_max_transfer(handler_global_t *g)
 {
+#if defined(__AROS__) && __SIZEOF_POINTER__ > 4
+    /* 64-bit AROS keeps DosEnvec fields in IPTRs */
     ULONG max = (g->envec->de_MaxTransfer > UINT32_MAX) ?
         UINT32_MAX : (ULONG)g->envec->de_MaxTransfer;
+#else
+    ULONG max = g->envec->de_MaxTransfer;
+#endif
 
     if (max == 0)
         max = 0xffffffffUL;
