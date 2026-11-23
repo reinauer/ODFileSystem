@@ -417,4 +417,67 @@ TEST(mount_prefers_iso_family_over_hfsplus_on_hybrid)
     odfs_media_close(&inner);
 }
 
+#define IMG_PLAIN "tests/images/test_plain.iso"
+#define IMG_RR_JOLIET "tests/images/test_rr_joliet.iso"
+
+/* on success, odfs_unmount() closes the media */
+static int mount_image(const char *path, const odfs_mount_opts_t *opts,
+                       odfs_media_t *media, odfs_mount_t *mnt)
+{
+    if (odfs_media_open_image(path, media) != ODFS_OK) {
+        printf("  (skipped: fixture %s unavailable)\n", path);
+        return 0;
+    }
+    if (odfs_mount(media, opts, NULL, mnt) != ODFS_OK) {
+        odfs_media_close(media);
+        return -1;
+    }
+    return 1;
+}
+
+static odfs_err_t find_name_cb(const odfs_node_t *entry, void *ctx)
+{
+    if (strcmp(entry->name, ctx) == 0)
+        return ODFS_ERR_EOF;
+    return ODFS_OK;
+}
+
+TEST(mount_applies_iso_options)
+{
+    odfs_media_t media;
+    odfs_mount_opts_t opts;
+    odfs_mount_t mnt;
+    int rc;
+
+    /* NORR on a Rock Ridge disc gives the plain ISO 9660 view */
+    odfs_mount_opts_default(&opts);
+    opts.disable_rr = 1;
+    rc = mount_image(IMG_RR, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ISO9660);
+    odfs_unmount(&mnt);
+
+    /* ... and on a Rock Ridge + Joliet disc the Joliet view */
+    rc = mount_image(IMG_RR_JOLIET, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_JOLIET);
+    odfs_unmount(&mnt);
+
+    /* LOWERCASE lowercases plain ISO 9660 names */
+    odfs_mount_opts_default(&opts);
+    opts.lowercase_iso = 1;
+    rc = mount_image(IMG_PLAIN, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ISO9660);
+    ASSERT_ERR(odfs_readdir(&mnt, &mnt.root, find_name_cb, "deep", NULL),
+               ODFS_ERR_EOF);
+    odfs_unmount(&mnt);
+}
+
 TEST_MAIN()

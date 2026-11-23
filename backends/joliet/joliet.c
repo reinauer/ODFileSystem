@@ -85,8 +85,8 @@ static odfs_err_t joliet_mount(odfs_cache_t *cache,
     if (err != ODFS_OK)
         return err;
 
-    return odfs_iso_mount_vd(cache, log, session_start, svd_lba, 1,
-                             root_out, backend_ctx);
+    return odfs_iso_mount_vd(cache, log, session_start, svd_lba,
+                             ODFS_ISO_JOLIET, root_out, backend_ctx);
 }
 
 /* ------------------------------------------------------------------ */
