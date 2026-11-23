@@ -264,7 +264,6 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
             cache->sector_shift++;
         }
     }
-    cache->clock = 0;
     cache->media = media;
 #if ODFS_FEATURE_CACHE_STREAM
     cache->stream_buf = NULL;
@@ -338,7 +337,9 @@ static int32_t cache_commit(odfs_cache_t *cache, int32_t victim,
     if (entry->valid) {
         cache_remove_index(cache, (uint32_t)victim);
         cache_lru_remove(cache, (uint32_t)victim);
+#if !defined(AMIGA)
         cache->stats.evictions++;
+#endif
         cache->generation++;
     } else {
         int32_t free_idx = cache_pop_free(cache);
@@ -349,13 +350,17 @@ static int32_t cache_commit(odfs_cache_t *cache, int32_t victim,
     }
 
     entry->lba = lba;
+#if !defined(AMIGA)
     entry->age = cache->clock;
+#endif
     entry->valid = 1;
     cache_insert_index(cache, (uint32_t)victim);
     cache_lru_insert_head(cache, (uint32_t)victim);
 
+#if !defined(AMIGA)
     if (cache->valid_count > cache->stats.max_used)
         cache->stats.max_used = cache->valid_count;
+#endif
 
     return victim;
 }
@@ -403,10 +408,12 @@ const uint8_t *odfs_cache_read_cached(odfs_cache_t *cache, uint32_t lba)
     if (hit < 0)
         return NULL;
 
+#if !defined(AMIGA)
     cache->stats.reads++;
     cache->stats.hits++;
     cache->clock++;
     cache->entries[hit].age = cache->clock;
+#endif
     cache_lru_make_mru(cache, (uint32_t)hit);
     return cache->entries[hit].data;
 }
@@ -422,20 +429,26 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     if (!cache || !cache->entries || !out)
         return ODFS_ERR_INVAL;
 
+#if !defined(AMIGA)
     cache->stats.reads++;
     cache->clock++;
+#endif
 
     hit = cache_find_index(cache, lba);
     if (hit >= 0) {
+#if !defined(AMIGA)
         cache->entries[hit].age = cache->clock;
-        cache_lru_make_mru(cache, (uint32_t)hit);
         cache->stats.hits++;
+#endif
+        cache_lru_make_mru(cache, (uint32_t)hit);
         *out = cache->entries[hit].data;
         return ODFS_OK;
     }
 
     /* miss — find victim (LRU or first invalid) */
+#if !defined(AMIGA)
     cache->stats.misses++;
+#endif
 
 #if ODFS_FEATURE_CACHE_STREAM
     /* Cluster only sequential miss patterns (directory scans, small

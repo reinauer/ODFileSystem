@@ -25,7 +25,9 @@ typedef struct odfs_cache_stats {
 /* single cache entry */
 typedef struct odfs_cache_entry {
     uint32_t lba;         /* sector this entry holds */
+#if !defined(AMIGA)
     uint32_t age;         /* for LRU: incremented each access cycle */
+#endif
     int32_t  lru_prev;    /* previous entry in LRU list */
     int32_t  lru_next;    /* next entry in LRU/free list */
     int      valid;       /* is this entry populated? */
@@ -42,11 +44,15 @@ typedef struct odfs_cache {
     uint32_t             valid_count;
     uint32_t             sector_size;
     uint32_t             sector_shift; /* log2(sector_size) */
+#if !defined(AMIGA)
     uint32_t             clock;       /* LRU clock */
+#endif
     int32_t              free_head;   /* first unused entry */
     int32_t              lru_head;    /* most recently used valid entry */
     int32_t              lru_tail;    /* least recently used valid entry */
+#if !defined(AMIGA)
     odfs_cache_stats_t  stats;
+#endif
     odfs_media_t       *media;       /* underlying media for miss reads */
 #if ODFS_FEATURE_CACHE_STREAM
     uint8_t            *stream_buf;  /* staging for clustered miss reads;
