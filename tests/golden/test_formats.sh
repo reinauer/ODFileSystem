@@ -77,6 +77,13 @@ assert_contains "rr: nested file" "nested.txt" "$DEEP"
 CONTENT=$("$TOOLS/imgcat" "$IMAGES/test_rr.iso" /SHORT.TXT 2>/dev/null)
 assert_eq "rr: file content" "Short" "$CONTENT"
 
+if "$TOOLS/imgcat" "$IMAGES/test_rr.iso" /deep >/dev/null 2>&1; then
+    STATUS=0
+else
+    STATUS=$?
+fi
+assert_eq "rr: imgcat on a directory fails" "1" "$STATUS"
+
 # ---- Joliet ----
 INFO=$("$TOOLS/imginfo" "$IMAGES/test_joliet.iso" 2>/dev/null)
 ROOT=$("$TOOLS/imgls" "$IMAGES/test_joliet.iso" 2>/dev/null)
