@@ -663,8 +663,10 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
         return;
 
     err = odfs_media_read_cdtext(ctx->media, &raw, &raw_size);
-    if (err != ODFS_OK || !raw || raw_size <= 4)
+    if (err != ODFS_OK || !raw || raw_size <= 4) {
+        odfs_free(raw);
         return;
+    }
 
     pack_count = (raw_size - 4u) / 18u;
     if (pack_count == 0) {
