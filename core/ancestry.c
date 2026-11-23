@@ -6,6 +6,8 @@
 
 #include "odfs/ancestry.h"
 
+#if ODFS_PARENT_SEARCH
+
 #include "odfs/api.h"
 #include "odfs/alloc.h"
 
@@ -209,3 +211,5 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
     odfs_free(frames);
     return err;
 }
+
+#endif /* ODFS_PARENT_SEARCH */
