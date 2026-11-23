@@ -259,6 +259,12 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         return err;
     }
 
+    err = odfs_hfs_alloc_node_buf(vol);
+    if (err != ODFS_OK) {
+        odfs_free(vol);
+        return err;
+    }
+
     ODFS_INFO(log, ODFS_SUB_HFSPLUS,
                "catalog: root %" PRIu32 ", node size %" PRIu32,
                vol->cat.root_node, vol->cat.node_size);

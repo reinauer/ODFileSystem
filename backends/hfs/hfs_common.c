@@ -145,6 +145,13 @@ odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
     return ODFS_OK;
 }
 
+/* the walk runs on every readdir and lookup; allocate its buffer once */
+odfs_err_t odfs_hfs_alloc_node_buf(hfs_volume_t *vol)
+{
+    vol->node_buf = odfs_malloc(vol->cat.node_size);
+    return vol->node_buf ? ODFS_OK : ODFS_ERR_NOMEM;
+}
+
 /* ------------------------------------------------------------------ */
 /* catalog walk                                                        */
 /* ------------------------------------------------------------------ */
@@ -163,13 +170,9 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
     const hfs_btree_t *tree = &vol->cat;
     uint32_t node_size = tree->node_size;
     uint32_t cur_node = tree->root_node;
-    uint8_t *node;
+    uint8_t *node = vol->node_buf;
     odfs_err_t err;
     int depth;
-
-    node = odfs_malloc(node_size);
-    if (!node)
-        return ODFS_ERR_NOMEM;
 
     /* descend index nodes; the leaf found here stays in the buffer */
     for (depth = 0; depth < 20; depth++) {
@@ -179,15 +182,13 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
 
         err = hfs_read_node(vol, tree, cache, cur_node, node);
         if (err != ODFS_OK)
-            goto out;
+            return err;
 
         if (node[8] == HFS_NODE_LEAF)
             break;
         if (node[8] != HFS_NODE_INDEX ||
-            !hfs_read_record_count(node, node_size, &nrecs, &limit)) {
-            err = ODFS_ERR_CORRUPT;
-            goto out;
-        }
+            !hfs_read_record_count(node, node_size, &nrecs, &limit))
+            return ODFS_ERR_CORRUPT;
 
         for (uint16_t r = 0; r < nrecs; r++) {
             uint32_t off = hfs_rec_offset(node, node_size, r);
@@ -212,25 +213,20 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
                 break;
         }
 
-        if (child == 0) {
-            err = ODFS_ERR_NOT_FOUND;
-            goto out;
-        }
+        if (child == 0)
+            return ODFS_ERR_NOT_FOUND;
         cur_node = child;
     }
-    err = ODFS_OK;
     if (depth == 20)
-        goto out;
+        return ODFS_OK;
 
     /* scan leaf nodes for records of parent_cnid */
     for (;;) {
         uint16_t nrecs;
         uint32_t limit;
 
-        if (!hfs_read_record_count(node, node_size, &nrecs, &limit)) {
-            err = ODFS_ERR_CORRUPT;
-            goto out;
-        }
+        if (!hfs_read_record_count(node, node_size, &nrecs, &limit))
+            return ODFS_ERR_CORRUPT;
 
         for (uint16_t r = 0; r < nrecs; r++) {
             uint32_t off = hfs_rec_offset(node, node_size, r);
@@ -249,7 +245,7 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
             if (key_parent < parent_cnid)
                 continue;
             if (key_parent > parent_cnid)
-                goto out; /* past our directory — done */
+                return ODFS_OK; /* past our directory — done */
 
             /* record data follows the key (padded to even boundary) */
             data_off = off + key_len;
@@ -263,22 +259,18 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
             err = callback(&node[off], key_len, &node[data_off],
                            next_off - data_off, cb_ctx);
             if (err != ODFS_OK)
-                goto out;
+                return err;
         }
 
         /* follow forward link to next leaf */
         cur_node = hfs_be32(&node[0]);
         if (cur_node == 0)
-            goto out;
+            return ODFS_OK;
 
         err = hfs_read_node(vol, tree, cache, cur_node, node);
         if (err != ODFS_OK || node[8] != HFS_NODE_LEAF)
-            goto out;
+            return err;
     }
-
-out:
-    odfs_free(node);
-    return err;
 }
 
 /* ------------------------------------------------------------------ */
@@ -637,5 +629,8 @@ uint32_t odfs_hfs_get_volume_size(void *backend_ctx)
 
 void odfs_hfs_unmount(void *backend_ctx)
 {
-    odfs_free(backend_ctx);
+    hfs_volume_t *vol = backend_ctx;
+
+    odfs_free(vol->node_buf);
+    odfs_free(vol);
 }

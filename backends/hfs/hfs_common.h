@@ -81,6 +81,7 @@ struct hfs_volume {
     uint8_t            hfsplus;       /* catalog uses HFS+ record layout */
     hfs_parse_entry_fn parse_entry;
     hfs_btree_t        cat;           /* catalog B-tree */
+    uint8_t           *node_buf;      /* one B-tree node, for the walk */
     uint32_t           next_node_id;
     odfs_node_t        root;
     char               volume_name[]; /* sized by the backend */
@@ -92,6 +93,7 @@ typedef odfs_err_t (*hfs_record_fn)(const uint8_t *key, size_t key_len,
 
 odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
                                odfs_cache_t *cache);
+odfs_err_t odfs_hfs_alloc_node_buf(hfs_volume_t *vol);
 
 odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
                                  odfs_cache_t *cache, uint32_t parent_cnid,
