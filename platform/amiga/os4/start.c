@@ -99,7 +99,8 @@ static const char odfs_resident_id[] =
 static APTR odfs_ks_init(APTR dummy1, APTR dummy2, struct ExecBase *sysbase)
 {
     struct FileSysResource *fsr;
-    struct FileSysEntry *fse;
+    struct FileSysEntry *fse, *old;
+    uint32 existing = 0;
 
     (void)dummy1;
     (void)dummy2;
@@ -121,8 +122,8 @@ static APTR odfs_ks_init(APTR dummy1, APTR dummy2, struct ExecBase *sysbase)
 
     /*
      * Mirror the original module's plain AllocMem: AllocVecTags is not
-     * a safe assumption this early in coldstart, and the entry is
-     * never freed.
+     * a safe assumption this early in coldstart, and a registered
+     * entry is never freed.
      */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -135,14 +136,43 @@ static APTR odfs_ks_init(APTR dummy1, APTR dummy2, struct ExecBase *sysbase)
         return NULL;
 
     fse->fse_Node.ln_Name = (char *)odfs_resident_id;
-    fse->fse_DosType = 0x43443031; /* CD01 */
+    fse->fse_DosType = ODFS_OS4_CD_DOSTYPE;
     fse->fse_Version = (54UL << 16);
     fse->fse_PatchFlags = FSEF_SEGLIST | FSEF_GLOBVEC | FSEF_STACKSIZE;
     fse->fse_StackSize = 16384;
     fse->fse_SegList = MKBADDR(&odfs_ks_seg.next);
     fse->fse_GlobalVec = -1;
 
-    AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
+    /*
+     * Go ahead of the stock CDFileSystem 53.x, but leave an entry of
+     * at least our version (such as ODFS itself) alone.
+     */
+    Forbid();
+    for (old = (struct FileSysEntry *)fsr->fsr_FileSysEntries.lh_Head;
+         old->fse_Node.ln_Succ != NULL;
+         old = (struct FileSysEntry *)old->fse_Node.ln_Succ) {
+        if (old->fse_DosType == ODFS_OS4_CD_DOSTYPE &&
+            old->fse_Version >= fse->fse_Version) {
+            existing = old->fse_Version;
+            break;
+        }
+    }
+    if (!existing)
+        AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
+    Permit();
+
+    if (existing) {
+#if ODFS_SERIAL_DEBUG
+        DebugPrintF("[ODFS] ks_init: CD01 %lu.%lu already registered, "
+                    "skipping\n", (unsigned long)(existing >> 16),
+                    (unsigned long)(existing & 0xffff));
+#endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        FreeMem(fse, sizeof(*fse));
+#pragma GCC diagnostic pop
+        return NULL;
+    }
 #if ODFS_SERIAL_DEBUG
     DebugPrintF("[ODFS] ks_init: CD01 entry registered, seg=%p\n",
                 (APTR)fse->fse_SegList);
