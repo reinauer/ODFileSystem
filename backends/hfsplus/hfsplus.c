@@ -44,30 +44,45 @@ static void hfsp_decode_name(const uint8_t *uname, uint16_t ulen,
 /* probe — scan for H+ signature                                       */
 /* ------------------------------------------------------------------ */
 
+/*
+ * A Volume Header carries 'H+' or 'HX', version 4 or 5 (HFSX), and a
+ * power-of-two block size of at least 512 bytes.
+ */
+static int hfsp_valid_vh(const uint8_t *vh)
+{
+    uint16_t sig = hfs_be16(&vh[0]);
+    uint16_t version = hfs_be16(&vh[2]);
+    uint32_t block_size = hfs_be32(&vh[40]);
+
+    if ((sig != HFSPLUS_SIG && sig != HFSX_SIG) ||
+        (version != 4 && version != 5))
+        return 0;
+    return block_size >= 512 && block_size <= 65536 &&
+           (block_size & (block_size - 1)) == 0;
+}
+
 static int hfsp_check_part(odfs_cache_t *cache, uint64_t part_byte, void *ctx)
 {
     const uint8_t *vh = odfs_hfs_read_block(cache, part_byte + HFSPLUS_VH_OFFSET);
-    uint16_t sig;
 
     if (!vh)
         return 0;
-    sig = hfs_be16(vh);
 
     /*
      * An HFS wrapper: an HFS volume whose MDB points at an HFS+ volume
      * embedded in its allocation blocks (drEmbedExtent).
      */
-    if (sig == HFS_MDB_SIG && hfs_be16(&vh[HFS_MDB_EMBEDSIG]) == HFSPLUS_SIG) {
+    if (hfs_be16(vh) == HFS_MDB_SIG &&
+        hfs_be16(&vh[HFS_MDB_EMBEDSIG]) == HFSPLUS_SIG) {
         part_byte += (uint64_t)hfs_be16(&vh[HFS_MDB_ALBLST]) * 512 +
                      (uint64_t)hfs_be16(&vh[HFS_MDB_EMBEDEXT]) *
                      hfs_be32(&vh[HFS_MDB_ALBLKSIZ]);
         vh = odfs_hfs_read_block(cache, part_byte + HFSPLUS_VH_OFFSET);
         if (!vh)
             return 0;
-        sig = hfs_be16(vh);
     }
 
-    if (sig != HFSPLUS_SIG && sig != HFSX_SIG)
+    if (!hfsp_valid_vh(vh))
         return 0;
     *(uint64_t *)ctx = part_byte + HFSPLUS_VH_OFFSET;
     return 1;
@@ -94,11 +109,11 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
     for (uint32_t lba = session_start; lba < session_start + 128; lba++) {
         if (odfs_cache_read(cache, lba, &sector) != ODFS_OK)
             continue;
-        for (uint32_t off = 0; off <= 2048U - 2U; off += 512U) {
-            uint16_t sig = hfs_be16(&sector[off]);
-            if (sig == HFSPLUS_SIG || sig == HFSX_SIG) {
-                /* VH is at this offset; volume start is 1024 before it */
-                uint64_t vh_byte = (uint64_t)lba * 2048U + off;
+        for (uint32_t off = 0; off < 2048U; off += 512U) {
+            /* VH is at this offset; volume start is 1024 before it */
+            uint64_t vh_byte = (uint64_t)lba * 2048U + off;
+
+            if (vh_byte >= HFSPLUS_VH_OFFSET && hfsp_valid_vh(&sector[off])) {
                 *vh_offset_out = vh_byte;
                 return ODFS_OK;
             }
@@ -253,17 +268,12 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         }
     }
 
-    uint16_t sig = hfs_be16(&vh[0]);
-    if (sig != HFSPLUS_SIG && sig != HFSX_SIG) {
+    if (!hfsp_valid_vh(vh)) {
         odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
     }
 
     vol->block_size   = hfs_be32(&vh[40]);
     vol->total_blocks = hfs_be32(&vh[44]);
-
-    if (vol->block_size == 0 || vol->block_size > 65536) {
-        odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
-    }
 
     ODFS_INFO(log, ODFS_SUB_HFSPLUS,
                "HFS+ block size: %" PRIu32 ", total: %" PRIu32,
