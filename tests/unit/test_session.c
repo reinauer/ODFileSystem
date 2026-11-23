@@ -269,4 +269,22 @@ TEST(find_last_session_pvd_scan_survives_wrapping_volume_size)
     ASSERT(pm.reads <= 2);
 }
 
+TEST(find_last_session_pvd_scan_finds_pvd_near_image_end)
+{
+    pvd_scan_media_t pm;
+    odfs_media_t media = { &pvd_scan_ops, &pm };
+    uint32_t lba = 999;
+
+    /* session 2 at LBA 100 has its PVD 4 sectors before the end */
+    memset(&pm, 0, sizeof(pm));
+    pm.total_sectors = 120;
+    pm.pvd_lba[0] = 16;
+    pm.vol_size[0] = 100;
+    pm.pvd_lba[1] = 116;
+    pm.vol_size[1] = 20;
+
+    ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
+    ASSERT_EQ(lba, 100);
+}
+
 TEST_MAIN()
