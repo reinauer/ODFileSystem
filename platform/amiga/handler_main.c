@@ -4305,7 +4305,6 @@ static odfs_err_t exnext_cb(const odfs_node_t *entry, void *ctx)
     return ODFS_ERR_EOF; /* stop after one entry */
 }
 
-#if !ODFS_AMIGA_OS4
 static odfs_exnext_cursor_t *exnext_cursor_for(handler_global_t *g,
                                                odfs_lock_t *ol)
 {
@@ -4356,7 +4355,6 @@ static void exnext_cursor_update(odfs_exnext_cursor_t *cursor,
     cursor->valid = 1;
     cursor->cdda_emitted = cdda_emitted;
 }
-#endif
 
 #if ODFS_AMIGA_OS4
 typedef struct dir_next_ctx {
@@ -4514,11 +4512,11 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
     }
 
     fill_fib(g, fib, fnode);
-#if !ODFS_AMIGA_OS4
     if (fnode->kind == ODFS_NODE_DIR)
         exnext_cursor_reset(exnext_cursor_for(g, ol), amiga_node_key(fnode));
     else
         exnext_cursor_invalidate(exnext_cursor_for(g, ol));
+#if !ODFS_AMIGA_OS4
     if (ol)
         ol->dos_private[1] = (ULONG)-1;
 #endif
@@ -4541,10 +4539,8 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     ULONG dir_key;
     uint32_t resume = 0;
     exnext_ctx_t ec;
-#if !ODFS_AMIGA_OS4
-    odfs_exnext_cursor_t *cursor = NULL;
+    odfs_exnext_cursor_t *cursor;
     int use_cursor = 0;
-#endif
     LONG err_dos;
 
     err_dos = odfs_handler_get_lock_node(g, ol, &dir);
@@ -4561,41 +4557,35 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     }
 
     dir_key = ol ? ol->key : amiga_node_key(dir);
-#if !ODFS_AMIGA_OS4
     cursor = exnext_cursor_for(g, ol);
     if (dir->backend != ODFS_BACKEND_CDDA &&
         exnext_cursor_matches(cursor, dir_key, (ULONG)fib->fib_DiskKey)) {
         resume = cursor->resume;
         use_cursor = 1;
     }
-#endif
     ec.g = g;
     ec.fib = fib;
     ec.previous_key = (ULONG)fib->fib_DiskKey;
     ec.first = (ec.previous_key == dir_key);
-#if !ODFS_AMIGA_OS4
     if (use_cursor)
         ec.first = 1;
-#endif
     ec.seen_previous = 0;
     ec.found = 0;
 
     /*
      * Match the Amiga CD filesystem model: Examine() leaves fib_DiskKey as
      * the directory key, and ExNext() returns each child's object key.  This
-     * keeps the visible key contract while the OS3 lock-private cursor carries
+     * keeps the visible key contract while the lock-private cursor carries
      * the backend resume offset when callers preserve fib_DiskKey normally.
      */
 
     /* check if CDDA virtual dir was already emitted */
 #if ODFS_FEATURE_CDDA
-#if !ODFS_AMIGA_OS4
     if (use_cursor && cursor->cdda_emitted) {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
         return;
     }
-#endif
     if (g->has_cdda && !ec.first &&
         ec.previous_key == amiga_node_key(&g->cdda_root)) {
         pkt->dp_Res1 = DOSFALSE;
@@ -4621,11 +4611,9 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 
     (void)odfs_readdir(&g->mount, dir, exnext_cb, &ec, &resume);
     if (ec.found) {
-#if !ODFS_AMIGA_OS4
         if (dir->backend != ODFS_BACKEND_CDDA)
             exnext_cursor_update(cursor, dir_key, (ULONG)fib->fib_DiskKey,
                                  resume, 0);
-#endif
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
         ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                    "exnext-found key=%08lx type=%ld name=%s",
@@ -4640,11 +4628,9 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
         if (g->has_cdda && node_is_mount_root(g, dir) &&
             ec.previous_key != amiga_node_key(&g->cdda_root)) {
             fill_fib(g, fib, &g->cdda_root);
-#if !ODFS_AMIGA_OS4
             if (dir->backend != ODFS_BACKEND_CDDA)
                 exnext_cursor_update(cursor, dir_key,
                                      (ULONG)fib->fib_DiskKey, resume, 1);
-#endif
 #if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
             ODFS_TRACE(&g->log, ODFS_SUB_DOS,
                        "exnext-inject-cdda key=%08lx",
@@ -4656,10 +4642,8 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 #endif
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
-#if !ODFS_AMIGA_OS4
         if (dir->backend != ODFS_BACKEND_CDDA)
             exnext_cursor_update(cursor, dir_key, ec.previous_key, resume, 0);
-#endif
     }
 }
 
