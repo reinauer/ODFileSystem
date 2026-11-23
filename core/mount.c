@@ -571,7 +571,7 @@ odfs_err_t odfs_readdir(odfs_mount_t *mnt,
     void *backend_ctx;
 
     if (!mnt || !dir)
-        return ODFS_ERR_UNSUPPORTED;
+        return ODFS_ERR_INVAL;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
@@ -604,7 +604,7 @@ odfs_err_t odfs_read(odfs_mount_t *mnt,
     void *backend_ctx;
 
     if (!mnt || !file)
-        return ODFS_ERR_UNSUPPORTED;
+        return ODFS_ERR_INVAL;
 
     if (file->kind == ODFS_NODE_DIR)
         return ODFS_ERR_IS_DIR;
@@ -642,7 +642,7 @@ odfs_err_t odfs_lookup(odfs_mount_t *mnt,
     void *backend_ctx;
 
     if (!mnt || !dir)
-        return ODFS_ERR_UNSUPPORTED;
+        return ODFS_ERR_INVAL;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
