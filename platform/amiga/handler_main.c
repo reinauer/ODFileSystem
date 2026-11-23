@@ -5989,6 +5989,7 @@ static void finish_pure_audio_mount(handler_global_t *g)
     g->mount.backend_ops = &cdda_backend_ops;
     g->mount.backend_ctx = g->cdda_ctx;
     g->mount.active_backend = ODFS_BACKEND_CDDA;
+    g->mount.total_blocks = cdda_backend_ops.get_volume_size(g->cdda_ctx);
     odfs_mount_register_backend(&g->mount, ODFS_BACKEND_CDDA,
                                 &cdda_backend_ops, g->cdda_ctx,
                                 &g->cdda_root);
