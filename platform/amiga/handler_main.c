@@ -202,6 +202,8 @@ static void amiga_init_max_transfer(handler_global_t *g)
     if (g->max_transfer_blocks == 0)
         g->max_transfer_blocks = 1;
     g->max_transfer = g->max_transfer_blocks * g->sector_size;
+    g->read10_max = (g->max_transfer < 0xffffUL * 2048UL) ?
+                    g->max_transfer : 0xffffUL * 2048UL;
 
     g->direct_buf_blocked = ~(uintptr_t)g->envec->de_Mask;
     /* below the lowest blocked range bit: exact for the usual masks, which
@@ -2426,10 +2428,8 @@ static odfs_fh_t *alloc_fh(handler_global_t *g, odfs_entry_t *entry, LONG access
     if (g->sector_size == 2048 &&
         entry->fnode.size != 0 && entry->fnode.size <= 0xffffffffUL &&
         odfs_file_is_contiguous(&g->mount, &entry->fnode, &fh->direct_lba) &&
-        fh->direct_lba < 0x200000UL &&
-        ((ULONG)((entry->fnode.size + 2047) >> 11)) <=
-            0x200000UL - fh->direct_lba)
-        fh->direct_size = (ULONG)entry->fnode.size; /* ends below 4 GiB */
+        (((ULONG)entry->fnode.size - 1) >> 11) < 0xffffffffUL - fh->direct_lba)
+        fh->direct_size = (ULONG)entry->fnode.size; /* sector numbers fit */
     retain_volume_object(entry->volume);
     AddTail((struct List *)&g->fhlist, (struct Node *)&fh->node);
     return fh;
@@ -3478,6 +3478,9 @@ static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
         return;
     sector = (ULONG)fh->pos >> 11;
     lba = fh->direct_lba + sector;
+    /* a CMD_READ byte offset reaches only the first 4 GiB */
+    if (lba >= 0x200000UL && !g->scsi_reads)
+        return;
 #ifdef __AROS__
     wanted = fh->direct_size - (ULONG)fh->pos;
     if (wanted > fh->last_read)
@@ -3599,14 +3602,28 @@ static ULONG fh_read_cached(handler_global_t *g, odfs_fh_t *fh,
 }
 
 /*
- * Serve a read of whole sectors of a contiguous file with one device
- * request into the caller's buffer, skipping the core and the cache.
- * The general path would issue the same request for such a read; this
- * only drops the layers in between, which cost a large share of the
- * time a 32 KiB Read() takes. Returns 0 when the read is not of that
- * shape, the buffer may not take a direct transfer, or the request
- * fails; the caller then takes the general path, which also reports
- * any error.
+ * The rest of fh_read_direct(), out of line: one CMD_READ in the first
+ * 4 GiB, which its byte offset reaches, and otherwise requests split to
+ * MaxTransfer and addressed by amiga_read_direct().
+ */
+static odfs_err_t __attribute__((noinline))
+fh_read_direct_slow(handler_global_t *g, struct IOStdReq *req, ULONG lba,
+                    ULONG want, void *buf)
+{
+    if (want <= g->max_transfer && lba < 0x200000UL)
+        return amiga_read_cmd(g, req, lba, want, buf);
+    return amiga_read_direct(g, req, lba, want >> 11, want, buf);
+}
+
+/*
+ * Serve a read of whole sectors of a contiguous file straight into the
+ * caller's buffer, skipping the core and the cache: with one READ(10)
+ * when it fits MaxTransfer, else through fh_read_direct_slow(). The
+ * general path would issue the same requests for such a read; this only
+ * drops the layers in between, which cost a large share of the time a
+ * 32 KiB Read() takes. Returns 0 when the read is not of that shape,
+ * the buffer may not take a direct transfer, or a request fails; the
+ * caller then takes the general path, which also reports any error.
  */
 static inline __attribute__((always_inline)) int
 fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
@@ -3626,7 +3643,6 @@ fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
     if (want > len)
         want = len;
     if (((pos | want) & 2047) != 0 || want < 2 * 2048 ||
-        want > g->max_transfer ||
         !amiga_buf_mask_ok(g, buf, want))
         return 0;
 #if !ODFS_AMIGA_OS4
@@ -3639,9 +3655,9 @@ fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
 
     lba = fh->direct_lba + (pos >> 11);
     req = media_io_request(g);
-    if (!(g->scsi_reads && want <= 0xffffUL * 2048UL &&
+    if (!(g->scsi_reads && want <= g->read10_max &&
           scsi_read10_data(g, req, lba, want, buf) == ODFS_OK) &&
-        amiga_read_cmd(g, req, lba, want, buf) != ODFS_OK)
+        fh_read_direct_slow(g, req, lba, want, buf) != ODFS_OK)
         return 0;
 
     fh->pos = pos + want;
