@@ -659,6 +659,41 @@ TEST(udf_read_follows_aed_continuation)
     odfs_cache_destroy(&cache);
 }
 
+TEST(udf_read_follows_many_descriptors)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t file;
+    uint32_t ads[2 * 12];
+    uint8_t buf[12 * 100];
+    size_t len;
+    int i;
+
+    /* twelve 100-byte extents, alternating between sectors 1 and 2,
+     * more descriptors than fit in one window of the cursor */
+    for (i = 0; i < 12; i++) {
+        ads[i * 2] = 100;
+        ads[i * 2 + 1] = 1u + (uint32_t)(i & 1);
+    }
+
+    udf_setup_read_env(&mock, &media, &cache, &log, &ctx, &file, 1200);
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_FILE, 1200, ads, 12);
+    memset(mock.sectors[1], 'A', MOCK_SECTOR_SIZE);
+    memset(mock.sectors[2], 'B', MOCK_SECTOR_SIZE);
+
+    len = sizeof(buf);
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   0, buf, &len));
+    ASSERT_EQ(len, sizeof(buf));
+    for (i = 0; i < 1200; i++)
+        ASSERT_EQ(buf[i], (i / 100) & 1 ? 'B' : 'A');
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST(udf_readdir_multi_extent_directory)
 {
     udf_mock_media_t mock;
