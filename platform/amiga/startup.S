@@ -45,6 +45,9 @@
 #define SWAP_STACK	16384
 
 _start:
+	bra.s	_entrypoint
+	.balign	4
+	.long	0
 _entrypoint:
 	move.l	4.w,a6			/* SysBase */
 	sub.l	a1,a1
