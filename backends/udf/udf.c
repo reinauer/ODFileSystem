@@ -49,6 +49,51 @@ static __attribute__((noinline)) uint16_t udf_tag_id(const uint8_t *data)
 /* OSTA CS0 compressed Unicode → UTF-8                                 */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Decode a OSTA CS0 identifier (from FID name field).
+ * Unlike d-strings, these don't have the length byte at the end.
+ * Returns the length of the UTF-8 result.
+ */
+static size_t udf_decode_cs0(const uint8_t *src, size_t len,
+                             char *dst, size_t dst_size)
+{
+    if (len == 0 || dst_size == 0) {
+        if (dst_size > 0) dst[0] = '\0';
+        return 0;
+    }
+
+    uint8_t comp_id = src[0]; /* 8 = Latin-1, 16 = UCS-2 */
+    size_t di = 0;
+
+    if (comp_id == 8) {
+        /* 8-bit characters are Latin-1, i.e. U+0000..U+00FF */
+        for (size_t i = 1; i < len; i++) {
+            uint8_t c = src[i];
+
+            if (c < 0x80) {
+                if (di + 1 >= dst_size)
+                    break;
+                dst[di++] = (char)c;
+            } else {
+                if (di + 2 >= dst_size)
+                    break;
+                dst[di++] = (char)(0xC0u | (c >> 6));
+                dst[di++] = (char)(0x80u | (c & 0x3Fu));
+            }
+        }
+    } else if (comp_id == 16) {
+        /* 16-bit UCS-2 BE */
+        odfs_ucs2be_to_utf8(src + 1, len - 1,
+                              dst, dst_size, &di);
+    } else {
+        /* unknown compression, copy raw */
+        for (size_t i = 1; i < len && di + 1 < dst_size; i++)
+            dst[di++] = (char)src[i];
+    }
+    dst[di] = '\0';
+    return di;
+}
+
 static void udf_decode_dstring(const uint8_t *src, size_t field_len,
                                char *dst, size_t dst_size)
 {
@@ -64,56 +109,11 @@ static void udf_decode_dstring(const uint8_t *src, size_t field_len,
         return;
     }
 
-    uint8_t comp_id = src[0]; /* 8 = Latin-1, 16 = UCS-2 */
-    size_t di = 0;
-
-    if (comp_id == 8) {
-        /* 8-bit characters (Latin-1) */
-        for (size_t i = 1; i < used && di + 1 < dst_size; i++)
-            dst[di++] = (char)src[i];
-    } else if (comp_id == 16) {
-        /* 16-bit UCS-2 BE */
-        odfs_ucs2be_to_utf8(src + 1, used - 1,
-                              dst, dst_size, &di);
-    } else {
-        /* unknown compression, copy raw */
-        for (size_t i = 1; i < used && di + 1 < dst_size; i++)
-            dst[di++] = (char)src[i];
-    }
-
-    dst[di] = '\0';
+    size_t di = udf_decode_cs0(src, used, dst, dst_size);
 
     /* trim trailing spaces */
     while (di > 0 && dst[di - 1] == ' ')
         dst[--di] = '\0';
-}
-
-/*
- * Decode a OSTA CS0 identifier (from FID name field).
- * Unlike d-strings, these don't have the length byte at the end.
- */
-static void udf_decode_cs0(const uint8_t *src, size_t len,
-                            char *dst, size_t dst_size)
-{
-    if (len == 0 || dst_size == 0) {
-        if (dst_size > 0) dst[0] = '\0';
-        return;
-    }
-
-    uint8_t comp_id = src[0];
-    size_t di = 0;
-
-    if (comp_id == 8) {
-        for (size_t i = 1; i < len && di + 1 < dst_size; i++)
-            dst[di++] = (char)src[i];
-    } else if (comp_id == 16) {
-        odfs_ucs2be_to_utf8(src + 1, len - 1,
-                              dst, dst_size, &di);
-    } else {
-        for (size_t i = 1; i < len && di + 1 < dst_size; i++)
-            dst[di++] = (char)src[i];
-    }
-    dst[di] = '\0';
 }
 
 /* ------------------------------------------------------------------ */
