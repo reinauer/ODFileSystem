@@ -193,7 +193,6 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
-    ctx->next_node_id = 1;
     ctx->lv_block_size = 2048;
 
     /* read AVDP */
@@ -847,7 +846,7 @@ static odfs_err_t udf_decode_dir_entry(const udf_fid_info_t *fid, void *arg)
     }
 
     memset(&entry, 0, sizeof(entry));
-    entry.node.id = walk->ctx->next_node_id++;
+    entry.node.id = fid->icb_lba + 1u; /* 0 is the root */
     entry.node.parent_id = walk->dir->id;
     entry.node.backend = ODFS_BACKEND_UDF;
     entry.start = fid->start;

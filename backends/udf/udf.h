@@ -132,8 +132,6 @@ typedef struct udf_context {
     uint32_t root_icb_lba;   /* root directory ICB LBA (partition-relative) */
     uint16_t root_icb_part;
 
-    /* node tracking */
-    uint32_t next_node_id;
     odfs_node_t root;
 } udf_context_t;
 
