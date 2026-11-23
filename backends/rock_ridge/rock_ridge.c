@@ -5,6 +5,9 @@
  */
 
 #include "rock_ridge.h"
+
+#if ODFS_FEATURE_ROCK_RIDGE
+
 #include "odfs/cache.h"
 #include "iso9660/iso9660.h"
 
@@ -464,3 +467,5 @@ int rr_find_parent_link(const uint8_t *sua, size_t sua_len, int skip,
         pos = 0;
     }
 }
+
+#endif /* ODFS_FEATURE_ROCK_RIDGE */

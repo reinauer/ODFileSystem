@@ -5,6 +5,9 @@
  */
 
 #include "iso9660.h"
+
+#if ODFS_FEATURE_ISO9660 || ODFS_FEATURE_JOLIET
+
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
@@ -20,6 +23,12 @@
 
 #include <string.h>
 #include <inttypes.h>
+
+#if ODFS_FEATURE_HIGH_SIERRA
+#define ISO_IS_HS(ctx) ((ctx)->high_sierra)
+#else
+#define ISO_IS_HS(ctx) 0
+#endif
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -156,7 +165,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
                                 const uint8_t **sua_out,
                                 size_t *sua_len_out)
 {
-    int high_sierra = ctx->high_sierra;
+    int high_sierra = ISO_IS_HS(ctx);
     uint8_t rec_len;
     uint8_t name_len;
     uint8_t flags;
@@ -215,6 +224,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
         node->name[0] = '.';
         node->name[1] = '.';
         node->name[2] = '\0';
+#if ODFS_FEATURE_JOLIET
     } else if (ctx->joliet) {
         /* Joliet: UCS-2 BE → UTF-8, then strip a ";digits" version suffix */
         size_t out_len, p;
@@ -227,6 +237,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
             p--;
         if (p < out_len && p > 0 && node->name[p - 1] == ';')
             node->name[p - 1] = '\0';
+#endif
     } else {
         odfs_iso_name_to_display((const char *)&data[ISO_DR_NAME], name_len,
                                   node->name, sizeof(node->name),
@@ -251,6 +262,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
 /* probe                                                               */
 /* ------------------------------------------------------------------ */
 
+#if ODFS_FEATURE_ISO9660
 static odfs_err_t iso_probe(odfs_cache_t *cache,
                              odfs_log_state_t *log,
                              uint32_t session_start)
@@ -293,6 +305,7 @@ static odfs_err_t iso_probe(odfs_cache_t *cache,
                session_start + ISO_VD_START_LBA);
     return ODFS_OK;
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /* mount                                                               */
@@ -334,7 +347,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 #endif
 
     /* parse PVD fields — High Sierra fields sit 8+ bytes later */
-    if (ctx->high_sierra) {
+    if (ISO_IS_HS(ctx)) {
         iso_copy_strfield(&sector[HS_PVD_SYSTEM_ID], 32,
                           ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
         iso_copy_strfield(&sector[HS_PVD_VOLUME_ID], 32,
@@ -348,6 +361,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     } else {
         iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
                           ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+#if ODFS_FEATURE_JOLIET
         if (joliet) {
             /* Joliet SVD: volume id is UCS-2; trim trailing spaces */
             size_t vname_len;
@@ -357,7 +371,9 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
             while (vname_len > 0 &&
                    ctx->pvd.volume_id[vname_len - 1] == ' ')
                 ctx->pvd.volume_id[--vname_len] = '\0';
-        } else {
+        } else
+#endif
+        {
             iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
                               ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
         }
@@ -401,7 +417,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
     ODFS_INFO(log, ODFS_SUB_ISO,
                "%svolume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
-               ctx->high_sierra ? "High Sierra " : (joliet ? "Joliet " : ""),
+               ISO_IS_HS(ctx) ? "High Sierra " : (joliet ? "Joliet " : ""),
                ctx->pvd.volume_id, ctx->pvd.system_id,
                ctx->pvd.volume_space_size, ctx->pvd.logical_block_size);
     ODFS_INFO(log, ODFS_SUB_ISO,
@@ -422,14 +438,14 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
     /* parse timestamps from root dir record */
     iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE],
-                       ctx->high_sierra, &root_out->mtime);
+                       ISO_IS_HS(ctx), &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
 #if ODFS_FEATURE_ROCK_RIDGE
     /* detect Rock Ridge by reading the root directory's "." entry;
      * High Sierra predates SUSP and Joliet's UCS-2 tree never carries
      * Rock Ridge, so skip the probe for both */
-    if (!ctx->high_sierra && !joliet && !(flags & ODFS_ISO_NO_RR)) {
+    if (!ISO_IS_HS(ctx) && !joliet && !(flags & ODFS_ISO_NO_RR)) {
         const uint8_t *root_sector;
         err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
         if (err == ODFS_OK) {
@@ -469,6 +485,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     return ODFS_OK;
 }
 
+#if ODFS_FEATURE_ISO9660
 static odfs_err_t iso_mount(odfs_cache_t *cache,
                              odfs_log_state_t *log,
                              uint32_t session_start,
@@ -479,6 +496,7 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
                              session_start + ISO_VD_START_LBA, 0,
                              root_out, backend_ctx);
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /* unmount                                                             */
@@ -570,7 +588,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
 
         /* ISO Level 3: fold multi-extent continuation records into the node */
         if (node.kind == ODFS_NODE_FILE &&
-            (rec[ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS] &
+            (rec[ISO_IS_HS(ctx) ? HS_DR_FLAGS : ISO_DR_FLAGS] &
              ISO_DR_FLAG_MULTI_EXTENT) != 0) {
             size_t sua_off = (sua && sua_len > 0) ? (size_t)(sua - rec) : 0;
 
@@ -744,7 +762,7 @@ odfs_err_t odfs_iso_lookup(void *backend_ctx,
 /* readlink                                                            */
 /* ------------------------------------------------------------------ */
 
-#if ODFS_FEATURE_ROCK_RIDGE
+#if ODFS_FEATURE_ROCK_RIDGE && ODFS_FEATURE_ISO9660
 /*
  * Rock Ridge symlink targets live in SL entries of the directory record's
  * System Use Area, which readdir does not carry into the node. Re-scan the
@@ -834,7 +852,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
 
     return ODFS_ERR_NOT_FOUND;
 }
-#endif /* ODFS_FEATURE_ROCK_RIDGE */
+#endif /* ODFS_FEATURE_ROCK_RIDGE && ODFS_FEATURE_ISO9660 */
 
 /* ------------------------------------------------------------------ */
 /* get_volume_name                                                     */
@@ -985,7 +1003,7 @@ odfs_err_t odfs_iso_merge_multi_extent(const iso_context_t *ctx,
 {
     uint8_t ident[255];
     uint8_t ident_len;
-    size_t flags_off = ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
+    size_t flags_off = ISO_IS_HS(ctx) ? HS_DR_FLAGS : ISO_DR_FLAGS;
     int more = (first_rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
     uint64_t merged = node->extent.length;
     int contiguous = 1;
@@ -1168,6 +1186,7 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
 /* backend ops table                                                   */
 /* ------------------------------------------------------------------ */
 
+#if ODFS_FEATURE_ISO9660
 const odfs_backend_ops_t iso9660_backend_ops = {
     .name            = "iso9660",
     .backend_type    = ODFS_BACKEND_ISO9660,
@@ -1185,3 +1204,6 @@ const odfs_backend_ops_t iso9660_backend_ops = {
     .get_volume_name = odfs_iso_get_volume_name,
     .get_volume_size = odfs_iso_get_volume_size,
 };
+#endif
+
+#endif /* ODFS_FEATURE_ISO9660 || ODFS_FEATURE_JOLIET */
