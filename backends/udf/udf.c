@@ -423,6 +423,131 @@ static odfs_err_t udf_parse_icb(odfs_cache_t *cache,
     return ODFS_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* allocation descriptor cursor                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Walks the allocation descriptors of a File Entry, following AED
+ * continuations, one extent per udf_ad_next() call. Descriptors are
+ * copied into a small window and the window is refilled from the
+ * cache: reading file data between two calls can evict the ICB or AED
+ * sector they live in, so the cursor holds no pointer into the cache.
+ */
+typedef struct udf_ad_cursor {
+    const udf_context_t *ctx;
+    odfs_cache_t        *cache;
+    uint32_t             desc_lba;  /* sector holding the current run */
+    uint32_t             run_off;   /* offset of the run in that sector */
+    uint32_t             run_len;
+    uint32_t             pos;       /* next descriptor within the run */
+    uint32_t             win_start; /* run offset of win[0] */
+    uint32_t             etype;     /* current extent */
+    uint32_t             elen;
+    uint32_t             phys_lba;
+    int                  guard;
+    uint8_t              ad_size;
+    uint8_t              win_len;
+    uint8_t              win[64];
+} udf_ad_cursor_t;
+
+static odfs_err_t udf_ad_init(udf_ad_cursor_t *cur,
+                              const udf_context_t *ctx,
+                              odfs_cache_t *cache,
+                              uint32_t icb_phys,
+                              const udf_icb_info_t *icb)
+{
+    if (icb->alloc_type == UDF_ICB_ALLOC_SHORT)
+        cur->ad_size = 8;
+    else if (icb->alloc_type == UDF_ICB_ALLOC_LONG)
+        cur->ad_size = 16;
+    else
+        return ODFS_ERR_UNSUPPORTED; /* extended ADs are not used on optical media */
+
+    cur->ctx = ctx;
+    cur->cache = cache;
+    cur->desc_lba = icb_phys;
+    cur->run_off = icb->ad_offset;
+    cur->run_len = icb->ad_length;
+    cur->pos = 0;
+    cur->win_start = 0;
+    cur->win_len = 0;
+    cur->guard = 0;
+    return ODFS_OK;
+}
+
+/*
+ * Advance to the next extent. On ODFS_OK, cur->elen > 0 describes it
+ * (cur->phys_lba is valid for recorded extents), or cur->elen == 0
+ * marks the end of the descriptors.
+ */
+static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
+{
+    for (;;) {
+        const uint8_t *ad;
+        uint32_t len_field, etype, elen, elba;
+        odfs_err_t err;
+
+        if (cur->pos + cur->ad_size > cur->run_len) {
+            cur->elen = 0; /* end of this run and no continuation */
+            return ODFS_OK;
+        }
+
+        if (cur->pos - cur->win_start + cur->ad_size > cur->win_len) {
+            const uint8_t *sec;
+            uint32_t wlen = cur->run_len - cur->pos;
+
+            err = odfs_cache_read(cur->cache, cur->desc_lba, &sec);
+            if (err != ODFS_OK)
+                return err;
+            if (wlen > sizeof(cur->win))
+                wlen = sizeof(cur->win);
+            memcpy(cur->win, sec + cur->run_off + cur->pos, wlen);
+            cur->win_start = cur->pos;
+            cur->win_len = (uint8_t)wlen;
+        }
+
+        ad = &cur->win[cur->pos - cur->win_start];
+        len_field = udf_le32(&ad[0]);
+        etype = len_field >> 30;
+        elen  = len_field & UDF_EXT_LENGTH_MASK;
+        elba  = udf_le32(&ad[4]); /* LBA field, same offset for short/long */
+
+        if (etype == UDF_EXT_CONTINUATION) {
+            const uint8_t *aed;
+            uint32_t aed_lba = udf_phys_lba(cur->ctx, elba);
+            uint32_t alen;
+
+            if (++cur->guard > 4096)
+                return ODFS_ERR_CORRUPT; /* runaway AED chain */
+
+            err = odfs_cache_read(cur->cache, aed_lba, &aed);
+            if (err != ODFS_OK)
+                return err;
+            if (udf_tag_id(aed) != UDF_TAG_AED)
+                return ODFS_ERR_CORRUPT;
+
+            alen = udf_le32(&aed[20]); /* Length of Allocation Descriptors */
+            if (alen > UDF_BLOCK_SIZE - 24u)
+                return ODFS_ERR_CORRUPT;
+
+            cur->desc_lba = aed_lba;
+            cur->run_off = 24;
+            cur->run_len = alen;
+            cur->pos = 0;
+            cur->win_start = 0;
+            cur->win_len = 0;
+            continue;
+        }
+
+        cur->pos += cur->ad_size;
+        cur->etype = etype;
+        cur->elen = elen; /* 0: terminating descriptor */
+        cur->phys_lba = udf_phys_lba(cur->ctx, elba);
+        return ODFS_OK;
+    }
+}
+
 /*
  * Read up to *len bytes at file_offset from the object (file or directory)
  * whose File Entry ICB is at icb_phys. This follows the full
@@ -432,10 +557,6 @@ static odfs_err_t udf_parse_icb(odfs_cache_t *cache,
  * unrecorded extents (read as zeros), and allocation-extent continuation
  * (AED) blocks are all handled. On return *len holds the byte count
  * produced, which is short at end-of-file.
- *
- * The current allocation-descriptor run is copied into a local buffer
- * before any data read, because reading file data can evict the cached
- * ICB/AED block the descriptors live in.
  */
 static odfs_err_t udf_read_object(udf_context_t *ctx,
                                   odfs_cache_t *cache,
@@ -446,14 +567,11 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
 {
     const uint8_t *sector;
     udf_icb_info_t icb;
-    uint8_t ad_buf[2048];
+    udf_ad_cursor_t cur;
     uint8_t *out = buf;
     size_t want = *len;
     size_t done = 0;
     uint64_t cur_pos = 0;
-    uint32_t ad_run_len;
-    size_t ad_size, p;
-    int guard = 0;
     odfs_err_t err;
 
     *len = 0;
@@ -477,89 +595,52 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
         return ODFS_OK;
     }
 
-    if (icb.alloc_type == UDF_ICB_ALLOC_SHORT)
-        ad_size = 8;
-    else if (icb.alloc_type == UDF_ICB_ALLOC_LONG)
-        ad_size = 16;
-    else
-        return ODFS_ERR_UNSUPPORTED; /* extended ADs are not used on optical media */
-
-    /* copy the ICB's allocation-descriptor run before any data read */
-    memcpy(ad_buf, sector + icb.ad_offset, icb.ad_length);
-    ad_run_len = icb.ad_length;
-    p = 0;
+    err = udf_ad_init(&cur, ctx, cache, icb_phys, &icb);
+    if (err != ODFS_OK)
+        return err;
 
     while (done < want) {
-        uint32_t len_field, etype, elen, elba;
+        uint64_t ext_end, start_in_file;
 
-        if (p + ad_size > ad_run_len)
-            break; /* end of this run and no continuation */
-
-        len_field = udf_le32(&ad_buf[p]);
-        etype = len_field >> 30;
-        elen  = len_field & UDF_EXT_LENGTH_MASK;
-        elba  = udf_le32(&ad_buf[p + 4]); /* LBA field, same offset for short/long */
-
-        if (etype == UDF_EXT_CONTINUATION) {
-            const uint8_t *aed;
-            uint32_t alen;
-
-            if (++guard > 4096)
-                return ODFS_ERR_CORRUPT; /* runaway AED chain */
-
-            err = odfs_cache_read(cache, udf_phys_lba(ctx, elba), &aed);
-            if (err != ODFS_OK)
-                return err;
-            if (udf_tag_id(aed) != UDF_TAG_AED)
-                return ODFS_ERR_CORRUPT;
-
-            alen = udf_le32(&aed[20]); /* Length of Allocation Descriptors */
-            if (alen > UDF_BLOCK_SIZE - 24u)
-                return ODFS_ERR_CORRUPT;
-            memcpy(ad_buf, aed + 24, alen);
-            ad_run_len = alen;
-            p = 0;
-            continue;
+        err = udf_ad_next(&cur);
+        if (err != ODFS_OK) {
+            *len = done;
+            return err;
         }
+        if (cur.elen == 0)
+            break;
 
-        if (elen == 0)
-            break; /* terminating descriptor */
+        ext_end = cur_pos + cur.elen;
+        start_in_file = file_offset + done;
 
-        {
-            uint64_t ext_end = cur_pos + elen;
-            uint64_t start_in_file = file_offset + done;
+        if (start_in_file < ext_end) {
+            uint32_t skip = (uint32_t)(start_in_file - cur_pos);
+            size_t chunk = (size_t)(ext_end - start_in_file);
 
-            if (start_in_file < ext_end) {
-                uint32_t skip = (uint32_t)(start_in_file - cur_pos);
-                size_t chunk = (size_t)(ext_end - start_in_file);
+            if (chunk > want - done)
+                chunk = want - done;
 
-                if (chunk > want - done)
-                    chunk = want - done;
-
-                if (etype == UDF_EXT_RECORDED) {
-                    size_t n = chunk;
-                    err = odfs_cache_read_bytes(cache, udf_phys_lba(ctx, elba),
-                                                skip, out + done, &n);
-                    if (err != ODFS_OK) {
-                        *len = done;
-                        return err;
-                    }
-                    done += n;
-                    if (n < chunk) {
-                        *len = done; /* short device read */
-                        return ODFS_OK;
-                    }
-                } else {
-                    /* allocated-but-unrecorded or unallocated: reads as zeros */
-                    memset(out + done, 0, chunk);
-                    done += chunk;
+            if (cur.etype == UDF_EXT_RECORDED) {
+                size_t n = chunk;
+                err = odfs_cache_read_bytes(cache, cur.phys_lba,
+                                            skip, out + done, &n);
+                if (err != ODFS_OK) {
+                    *len = done;
+                    return err;
                 }
+                done += n;
+                if (n < chunk) {
+                    *len = done; /* short device read */
+                    return ODFS_OK;
+                }
+            } else {
+                /* allocated-but-unrecorded or unallocated: reads as zeros */
+                memset(out + done, 0, chunk);
+                done += chunk;
             }
-
-            cur_pos = ext_end;
         }
 
-        p += ad_size;
+        cur_pos = ext_end;
     }
 
     /*
