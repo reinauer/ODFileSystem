@@ -60,9 +60,16 @@ static inline int odfs_strcasecmp(const char *a, const char *b)
     unsigned char cb;
 
     for (;;) {
-        ca = odfs_ascii_tolower((unsigned char)*a++);
-        cb = odfs_ascii_tolower((unsigned char)*b++);
-        if (ca != cb || ca == '\0')
+        ca = (unsigned char)*a++;
+        cb = (unsigned char)*b++;
+        if (ca == cb) {
+            if (ca == '\0')
+                return 0;
+            continue;
+        }
+        ca = odfs_ascii_tolower(ca);
+        cb = odfs_ascii_tolower(cb);
+        if (ca != cb)
             return (int)ca - (int)cb;
     }
 }
