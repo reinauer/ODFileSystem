@@ -428,6 +428,10 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                        "forced session %d at LBA %" PRIu32,
                        mnt->opts.force_session, session_start);
+        } else if (mnt->opts.force_session > 0) {
+            /* not on the disc; without a TOC only session 0 is known */
+            fail_err = ODFS_ERR_RANGE;
+            goto fail;
         }
     } else {
         /* default: find and use last session */
@@ -464,11 +468,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     if (err != ODFS_OK) {
         ODFS_WARN(&mnt->log, ODFS_SUB_MOUNT,
                    "no recognized filesystem format found");
-#if ODFS_FEATURE_CACHE_META
-        odfs_meta_cache_destroy(&mnt->meta);
-#endif
-        odfs_cache_destroy(&mnt->cache);
-        return fail_err;
+        goto fail;
     }
 
     odfs_mount_register_backend(mnt, mnt->root.backend, mnt->backend_ops,
@@ -488,6 +488,13 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             mnt->backend_ops->get_volume_size(mnt->backend_ctx);
 
     return ODFS_OK;
+
+fail:
+#if ODFS_FEATURE_CACHE_META
+    odfs_meta_cache_destroy(&mnt->meta);
+#endif
+    odfs_cache_destroy(&mnt->cache);
+    return fail_err;
 }
 
 void odfs_unmount(odfs_mount_t *mnt)
