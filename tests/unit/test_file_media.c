@@ -291,4 +291,80 @@ TEST(cue_audio_wav_exposes_cdtext_comments)
     ASSERT(rmdir(dir_path) == 0);
 }
 
+#define TEST_MSF_FRAMES 152
+
+static odfs_err_t test_open_cue(const char *cue_path, const char *cue,
+                                odfs_media_t *media)
+{
+    if (!test_write_file(cue_path, cue, strlen(cue)))
+        return ODFS_ERR_IO;
+    return odfs_media_open_image(cue_path, media);
+}
+
+/*
+ * INDEX timestamps are MM:SS:FF with SS < 60 and FF < 75; one-digit
+ * fields are accepted. The rejected values below lie inside the bin, so
+ * only the parser can catch them.
+ */
+TEST(cue_index_msf_parsing)
+{
+    char dir_path[256];
+    char cue_path[320];
+    char bin_path[320];
+    uint8_t *bin;
+    odfs_media_t media;
+    odfs_toc_t toc;
+
+    ASSERT(test_make_temp_dir(dir_path, sizeof(dir_path)));
+    ASSERT(snprintf(cue_path, sizeof(cue_path), "%s/disc.cue", dir_path) <
+           (int)sizeof(cue_path));
+    ASSERT(snprintf(bin_path, sizeof(bin_path), "%s/disc.bin", dir_path) <
+           (int)sizeof(bin_path));
+
+    bin = calloc(TEST_MSF_FRAMES, TEST_AUDIO_FRAME_SIZE);
+    ASSERT(bin != NULL);
+    ASSERT(test_write_file(bin_path, bin,
+                           (size_t)TEST_MSF_FRAMES * TEST_AUDIO_FRAME_SIZE));
+    free(bin);
+
+    ASSERT_OK(test_open_cue(cue_path,
+                            "FILE \"disc.bin\" BINARY\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:00:00\n"
+                            "  TRACK 02 AUDIO\n"
+                            "    INDEX 01 0:02:00\n",
+                            &media));
+    ASSERT_OK(odfs_media_read_toc(&media, &toc));
+    ASSERT_EQ(toc.sessions[1].start_lba, 150);
+    odfs_media_close(&media);
+
+    ASSERT_OK(test_open_cue(cue_path,
+                            "FILE \"disc.bin\" BINARY\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:00:00\n"
+                            "  TRACK 02 AUDIO\n"
+                            "    INDEX 01 0:1:2\n",
+                            &media));
+    ASSERT_OK(odfs_media_read_toc(&media, &toc));
+    ASSERT_EQ(toc.sessions[1].start_lba, 77);
+    odfs_media_close(&media);
+
+    ASSERT_EQ(test_open_cue(cue_path,
+                            "FILE \"disc.bin\" BINARY\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:01:75\n",
+                            &media),
+              ODFS_ERR_BAD_FORMAT);
+    ASSERT_EQ(test_open_cue(cue_path,
+                            "FILE \"disc.bin\" BINARY\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:00:01x\n",
+                            &media),
+              ODFS_ERR_BAD_FORMAT);
+
+    ASSERT(remove(cue_path) == 0);
+    ASSERT(remove(bin_path) == 0);
+    ASSERT(rmdir(dir_path) == 0);
+}
+
 TEST_MAIN()
