@@ -3,7 +3,8 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Supports UDF-only images and ISO/UDF bridge discs.
+ * Supports UDF-only images and ISO/UDF bridge discs, including the
+ * metadata partitions of UDF 2.50 and later.
  * Reads AVDP, VDS, partition, FSD, and file entries.
  */
 
@@ -141,9 +142,57 @@ static void udf_parse_timestamp(const uint8_t *ts, odfs_timestamp_t *out)
 /* partition-relative LBA → physical LBA                              */
 /* ------------------------------------------------------------------ */
 
-static inline uint32_t udf_phys_lba(const udf_context_t *ctx, uint32_t part_lba)
+/*
+ * Translate block lba of partition reference part_ref to a media LBA.
+ * Every reference other than the metadata partition's addresses the
+ * one physical partition. If run_out is given, it receives the number
+ * of blocks that are contiguous on the media from there: the metadata
+ * partition is contiguous only within one Metadata File extent.
+ */
+static __attribute__((noinline)) odfs_err_t
+udf_part_to_phys(const udf_context_t *ctx,
+                 uint16_t part_ref,
+                 uint32_t lba,
+                 uint32_t *phys_out,
+                 uint32_t *run_out)
 {
-    return ctx->part_start + part_lba;
+    if (!ctx->has_meta_part || part_ref != ctx->meta_part_ref) {
+        *phys_out = ctx->part_start + lba;
+        if (run_out)
+            *run_out = UINT32_MAX;
+        return ODFS_OK;
+    }
+
+    for (uint32_t i = 0; i < ctx->meta_ext_count; i++) {
+        const udf_meta_extent_t *ext = &ctx->meta_extents[i];
+
+        if (lba < ext->blocks) {
+            if (ext->phys_lba == UDF_META_HOLE)
+                return ODFS_ERR_CORRUPT;
+            *phys_out = ext->phys_lba + lba;
+            if (run_out)
+                *run_out = ext->blocks - lba;
+            return ODFS_OK;
+        }
+        lba -= ext->blocks;
+    }
+    return ODFS_ERR_CORRUPT;
+}
+
+/*
+ * Partition reference that short allocation descriptors of the ICB at
+ * icb_phys refer to: the partition the ICB itself is recorded in.
+ */
+static uint16_t udf_icb_part(const udf_context_t *ctx, uint32_t icb_phys)
+{
+    for (uint32_t i = 0; ctx->has_meta_part && i < ctx->meta_ext_count; i++) {
+        const udf_meta_extent_t *ext = &ctx->meta_extents[i];
+
+        if (ext->phys_lba != UDF_META_HOLE && icb_phys >= ext->phys_lba &&
+            icb_phys - ext->phys_lba < ext->blocks)
+            return ctx->meta_part_ref;
+    }
+    return ctx->phys_part_ref;
 }
 
 /* ------------------------------------------------------------------ */
@@ -179,6 +228,14 @@ static odfs_err_t udf_probe(odfs_cache_t *cache,
 /* mount                                                               */
 /* ------------------------------------------------------------------ */
 
+#define UDF_MAX_PDS 4
+
+static odfs_err_t udf_load_meta_file(udf_context_t *ctx,
+                                     odfs_cache_t *cache,
+                                     odfs_log_state_t *log,
+                                     uint32_t file_lba,
+                                     uint32_t mirror_lba);
+
 static odfs_err_t udf_mount(odfs_cache_t *cache,
                               odfs_log_state_t *log,
                               uint32_t session_start,
@@ -188,6 +245,13 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     udf_context_t *ctx;
     const uint8_t *sector;
     uint32_t lv_block_size = 0;
+    uint16_t pd_numbers[UDF_MAX_PDS];
+    uint32_t pd_starts[UDF_MAX_PDS];
+    uint32_t pd_lengths[UDF_MAX_PDS];
+    int n_pds = 0, pick = -1;
+    int have_part_number = 0;
+    uint16_t part_number = 0;
+    uint32_t meta_file_lba = 0, meta_mirror_lba = 0;
     uint16_t tag;
     odfs_err_t err;
 
@@ -216,7 +280,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
         mvds_sectors = UDF_MAX_VDS_SECTORS;
 
     /* scan VDS for PVD, PD, LVD */
-    int found_pd = 0, found_lvd = 0;
+    int found_lvd = 0;
     udf_long_ad_t fsd_ad;
     memset(&fsd_ad, 0, sizeof(fsd_ad));
 
@@ -235,14 +299,16 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
             break;
 
         case UDF_TAG_PD:
-            /* Partition Descriptor */
-            ctx->part_number = udf_le16(&sector[22]);
-            ctx->part_start  = udf_le32(&sector[188]);
-            ctx->part_length = udf_le32(&sector[192]);
-            found_pd = 1;
+            /* Partition Descriptor; the LVD's maps say which one is used */
+            if (n_pds == UDF_MAX_PDS)
+                break;
+            pd_numbers[n_pds] = udf_le16(&sector[22]);
+            pd_starts[n_pds]  = udf_le32(&sector[188]);
+            pd_lengths[n_pds] = udf_le32(&sector[192]);
             ODFS_INFO(log, ODFS_SUB_UDF,
                        "partition %u: start LBA %" PRIu32 ", %" PRIu32 " sectors",
-                       ctx->part_number, ctx->part_start, ctx->part_length);
+                       pd_numbers[n_pds], pd_starts[n_pds], pd_lengths[n_pds]);
+            n_pds++;
             break;
 
         case UDF_TAG_LVD:
@@ -265,6 +331,54 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
             ODFS_INFO(log, ODFS_SUB_UDF,
                        "LVD block size: %" PRIu32 ", FSD at part LBA %" PRIu32,
                        lv_block_size, fsd_ad.lba);
+
+            /*
+             * Partition maps start at 440; a map's index is the
+             * partition reference that long_ads and FIDs use. Type 1
+             * maps a physical partition. A Type 2 "*UDF Metadata
+             * Partition" map (UDF 2.50+) maps a virtual partition onto
+             * the same physical one through the Metadata File.
+             */
+            {
+                uint32_t mt_len = udf_le32(&sector[264]);
+                uint32_t n_maps = udf_le32(&sector[268]);
+                uint32_t pm_off = 0;
+
+                if (mt_len > UDF_BLOCK_SIZE - 440u)
+                    mt_len = UDF_BLOCK_SIZE - 440u;
+
+                for (uint32_t ref = 0;
+                     ref < n_maps && pm_off + 2u <= mt_len; ref++) {
+                    const uint8_t *pm = &sector[440u + pm_off];
+                    uint8_t pm_len = pm[1];
+
+                    if (pm_len < 6u || pm_off + pm_len > mt_len)
+                        break;
+
+                    if (pm[0] == 1) {
+                        if (!have_part_number) {
+                            part_number = udf_le16(&pm[4]);
+                            have_part_number = 1;
+                            ctx->phys_part_ref = (uint16_t)ref;
+                        }
+                    } else if (pm[0] == 2 && pm_len >= 64u) {
+                        int is_meta = memcmp(&pm[5], "*UDF Metadata Partition",
+                                             23) == 0;
+
+                        if (is_meta || !have_part_number) {
+                            part_number = udf_le16(&pm[38]);
+                            have_part_number = 1;
+                        }
+                        if (is_meta) {
+                            ctx->has_meta_part = 1;
+                            ctx->meta_part_ref = (uint16_t)ref;
+                            meta_file_lba = udf_le32(&pm[40]);
+                            meta_mirror_lba = udf_le32(&pm[44]);
+                        }
+                    }
+                    pm_off += pm_len;
+                }
+            }
             break;
 
         case UDF_TAG_TD:
@@ -276,9 +390,9 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     }
 vds_done:
 
-    if (!found_pd || !found_lvd) {
+    if (n_pds == 0 || !found_lvd) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
-                    "incomplete VDS: PD=%d LVD=%d", found_pd, found_lvd);
+                    "incomplete VDS: PD=%d LVD=%d", n_pds > 0, found_lvd);
         odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
@@ -290,9 +404,41 @@ vds_done:
         return ODFS_ERR_UNSUPPORTED;
     }
 
+    /* the PD the partition maps refer to, or without maps the first */
+    for (int i = 0; i < n_pds; i++) {
+        if (!have_part_number || pd_numbers[i] == part_number) {
+            pick = i;
+            break;
+        }
+    }
+    if (pick < 0) {
+        ODFS_ERROR(log, ODFS_SUB_UDF,
+                    "no PD for partition %u", part_number);
+        odfs_free(ctx);
+        return ODFS_ERR_BAD_FORMAT;
+    }
+    ctx->part_number = pd_numbers[pick];
+    ctx->part_start  = pd_starts[pick];
+    ctx->part_length = pd_lengths[pick];
+
+    if (ctx->has_meta_part) {
+        err = udf_load_meta_file(ctx, cache, log,
+                                 meta_file_lba, meta_mirror_lba);
+        if (err != ODFS_OK) {
+            odfs_free(ctx);
+            return err;
+        }
+        ODFS_INFO(log, ODFS_SUB_UDF,
+                   "metadata partition %u: %u Metadata File extents",
+                   ctx->meta_part_ref, ctx->meta_ext_count);
+    }
+
     /* read File Set Descriptor */
-    uint32_t fsd_phys = udf_phys_lba(ctx, fsd_ad.lba);
-    err = odfs_cache_read(cache, fsd_phys, &sector);
+    uint32_t fsd_phys = 0;
+    err = udf_part_to_phys(ctx, fsd_ad.partition, fsd_ad.lba,
+                           &fsd_phys, NULL);
+    if (err == ODFS_OK)
+        err = odfs_cache_read(cache, fsd_phys, &sector);
     if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     if (udf_tag_id(sector) != UDF_TAG_FSD) {
@@ -310,8 +456,11 @@ vds_done:
                "root ICB at part LBA %" PRIu32, ctx->root_icb_lba);
 
     /* read root ICB (File Entry or Extended File Entry) */
-    uint32_t root_phys = udf_phys_lba(ctx, ctx->root_icb_lba);
-    err = odfs_cache_read(cache, root_phys, &sector);
+    uint32_t root_phys = 0;
+    err = udf_part_to_phys(ctx, ctx->root_icb_part, ctx->root_icb_lba,
+                           &root_phys, NULL);
+    if (err == ODFS_OK)
+        err = odfs_cache_read(cache, root_phys, &sector);
     if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
     tag = udf_tag_id(sector);
@@ -445,6 +594,10 @@ typedef struct udf_ad_cursor {
     uint32_t             etype;     /* current extent */
     uint32_t             elen;
     uint32_t             phys_lba;
+    uint32_t             rem_len;   /* rest of a split recorded extent */
+    uint32_t             rem_lba;
+    uint16_t             rem_part;
+    uint16_t             short_part; /* partition of short ADs */
     int                  guard;
     uint8_t              ad_size;
     uint8_t              win_len;
@@ -472,6 +625,8 @@ static odfs_err_t udf_ad_init(udf_ad_cursor_t *cur,
     cur->pos = 0;
     cur->win_start = 0;
     cur->win_len = 0;
+    cur->rem_len = 0;
+    cur->short_part = udf_icb_part(ctx, icb_phys);
     cur->guard = 0;
     return ODFS_OK;
 }
@@ -479,14 +634,27 @@ static odfs_err_t udf_ad_init(udf_ad_cursor_t *cur,
 /*
  * Advance to the next extent. On ODFS_OK, cur->elen > 0 describes it
  * (cur->phys_lba is valid for recorded extents), or cur->elen == 0
- * marks the end of the descriptors.
+ * marks the end of the descriptors. A recorded extent that is not
+ * contiguous on the media is returned in contiguous pieces.
  */
 static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
 {
+    uint32_t etype, elen, elba, run;
+    uint16_t epart;
+    odfs_err_t err;
+
+    if (cur->rem_len) {
+        etype = UDF_EXT_RECORDED;
+        elen = cur->rem_len;
+        elba = cur->rem_lba;
+        epart = cur->rem_part;
+        cur->rem_len = 0;
+        goto extent;
+    }
+
     for (;;) {
         const uint8_t *ad;
-        uint32_t len_field, etype, elen, elba;
-        odfs_err_t err;
+        uint32_t len_field;
 
         if (cur->pos + cur->ad_size > cur->run_len) {
             cur->elen = 0; /* end of this run and no continuation */
@@ -512,15 +680,19 @@ static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
         etype = len_field >> 30;
         elen  = len_field & UDF_EXT_LENGTH_MASK;
         elba  = udf_le32(&ad[4]); /* LBA field, same offset for short/long */
+        epart = (cur->ad_size == 16) ? udf_le16(&ad[8]) : cur->short_part;
 
         if (etype == UDF_EXT_CONTINUATION) {
             const uint8_t *aed;
-            uint32_t aed_lba = udf_phys_lba(cur->ctx, elba);
+            uint32_t aed_lba;
             uint32_t alen;
 
             if (++cur->guard > 4096)
                 return ODFS_ERR_CORRUPT; /* runaway AED chain */
 
+            err = udf_part_to_phys(cur->ctx, epart, elba, &aed_lba, NULL);
+            if (err != ODFS_OK)
+                return err;
             err = odfs_cache_read(cur->cache, aed_lba, &aed);
             if (err != ODFS_OK)
                 return err;
@@ -541,11 +713,26 @@ static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
         }
 
         cur->pos += cur->ad_size;
-        cur->etype = etype;
-        cur->elen = elen; /* 0: terminating descriptor */
-        cur->phys_lba = udf_phys_lba(cur->ctx, elba);
-        return ODFS_OK;
+        break;
     }
+
+extent:
+    cur->etype = etype;
+    cur->elen = elen; /* 0: terminating descriptor */
+    cur->phys_lba = 0;
+    if (elen == 0 || etype != UDF_EXT_RECORDED)
+        return ODFS_OK;
+
+    err = udf_part_to_phys(cur->ctx, epart, elba, &cur->phys_lba, &run);
+    if (err != ODFS_OK)
+        return err;
+    if (run < (elen + UDF_BLOCK_SIZE - 1) / UDF_BLOCK_SIZE) {
+        cur->elen = run * UDF_BLOCK_SIZE;
+        cur->rem_len = elen - cur->elen;
+        cur->rem_lba = elba + run;
+        cur->rem_part = epart;
+    }
+    return ODFS_OK;
 }
 
 /*
@@ -673,15 +860,84 @@ static odfs_err_t udf_read_dir_exact(udf_context_t *ctx,
     return ODFS_OK;
 }
 
+/*
+ * Load the extent list of the Metadata File, or failing that of its
+ * mirror, which maps the metadata partition onto the physical one. The
+ * Metadata File's own File Entry and extents are in the physical
+ * partition. Unrecorded extents still occupy metadata partition blocks
+ * and are kept as holes.
+ */
+static odfs_err_t udf_load_meta_file(udf_context_t *ctx,
+                                     odfs_cache_t *cache,
+                                     odfs_log_state_t *log,
+                                     uint32_t file_lba,
+                                     uint32_t mirror_lba)
+{
+    uint32_t cands[2] = { file_lba, mirror_lba };
+    odfs_err_t err = ODFS_ERR_BAD_FORMAT;
+
+    ctx->has_meta_part = 0; /* translate the descriptors as physical */
+
+    for (int m = 0; m < 2; m++) {
+        uint32_t icb_phys = ctx->part_start + cands[m];
+        udf_icb_info_t icb;
+        udf_ad_cursor_t cur;
+
+        if (cands[m] == 0xFFFFFFFFu || (m == 1 && cands[1] == cands[0]))
+            continue;
+
+        ctx->meta_ext_count = 0;
+        err = udf_parse_icb(cache, icb_phys, &icb, NULL, NULL);
+        if (err == ODFS_OK)
+            err = udf_ad_init(&cur, ctx, cache, icb_phys, &icb);
+
+        while (err == ODFS_OK) {
+            udf_meta_extent_t *ext;
+
+            err = udf_ad_next(&cur);
+            if (err != ODFS_OK || cur.elen == 0)
+                break;
+            if (ctx->meta_ext_count == UDF_MAX_META_EXTENTS) {
+                ODFS_ERROR(log, ODFS_SUB_UDF,
+                            "more than %u Metadata File extents",
+                            UDF_MAX_META_EXTENTS);
+                err = ODFS_ERR_UNSUPPORTED;
+                break;
+            }
+            ext = &ctx->meta_extents[ctx->meta_ext_count++];
+            ext->blocks = (cur.elen + UDF_BLOCK_SIZE - 1) / UDF_BLOCK_SIZE;
+            ext->phys_lba = (cur.etype == UDF_EXT_RECORDED)
+                            ? cur.phys_lba : UDF_META_HOLE;
+        }
+
+        if (err == ODFS_OK && ctx->meta_ext_count == 0)
+            err = ODFS_ERR_BAD_FORMAT;
+        if (err == ODFS_OK) {
+            ctx->has_meta_part = 1;
+            return ODFS_OK;
+        }
+        ODFS_ERROR(log, ODFS_SUB_UDF,
+                    "Metadata%s File at part LBA %" PRIu32 ": %s",
+                    m ? " Mirror" : "", cands[m], odfs_err_str(err));
+    }
+
+    return err;
+}
+
 static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
                                          odfs_cache_t *cache,
                                          uint8_t fid_flags,
+                                         uint16_t icb_part,
                                          uint32_t icb_lba,
                                          odfs_node_t *node)
 {
-    uint32_t icb_phys = udf_phys_lba(ctx, icb_lba);
+    uint32_t icb_phys;
     udf_icb_info_t icb;
     odfs_err_t err;
+
+    err = udf_part_to_phys(ctx, icb_part, icb_lba, &icb_phys, NULL);
+    if (err != ODFS_OK)
+        return err;
 
     err = udf_parse_icb(cache, icb_phys, &icb, &node->mtime, NULL);
     if (err != ODFS_OK)
@@ -719,6 +975,7 @@ typedef struct udf_fid_info {
     uint32_t       next;
     uint32_t       length;
     uint32_t       icb_lba;
+    uint16_t       icb_part;
     uint16_t       impl_len;
     uint8_t        flags;
     uint8_t        name_len;
@@ -877,6 +1134,7 @@ static odfs_err_t udf_walk_fids(udf_context_t *ctx,
         fid.flags = hdr[18];
         fid.name_len = hdr[19];
         fid.icb_lba = udf_le32(&hdr[20 + 4]);
+        fid.icb_part = udf_le16(&hdr[20 + 8]);
         fid.impl_len = udf_le16(&hdr[36]);
         fid.length =
             (38u + fid.impl_len + fid.name_len + 3u) & ~3u;
@@ -924,6 +1182,7 @@ typedef struct udf_dir_entry {
     uint32_t    start;
     uint32_t    next;
     uint32_t    icb_lba;
+    uint16_t    icb_part;
     uint8_t     flags;
 } udf_dir_entry_t;
 
@@ -966,6 +1225,7 @@ static odfs_err_t udf_decode_dir_entry(const udf_fid_info_t *fid, void *arg)
     entry.start = fid->start;
     entry.next = fid->next;
     entry.icb_lba = fid->icb_lba;
+    entry.icb_part = fid->icb_part;
     entry.flags = fid->flags;
 
     if (fid->name_len > 0)
@@ -1024,7 +1284,8 @@ static odfs_err_t udf_readdir_entry(udf_dir_entry_t *entry, void *arg)
         return ODFS_OK;
 
     err = udf_fill_node_from_icb(walk->ctx, walk->cache,
-                                 entry->flags, entry->icb_lba, &entry->node);
+                                 entry->flags, entry->icb_part,
+                                 entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
 
@@ -1113,17 +1374,21 @@ typedef struct udf_match_ctx {
 static odfs_err_t udf_match_entry(udf_dir_entry_t *entry, void *arg)
 {
     udf_match_ctx_t *m = arg;
+    uint32_t phys;
     odfs_err_t err;
 
     if (m->name) {
         if (odfs_strcasecmp(entry->node.name, m->name) != 0)
             return ODFS_OK;
-    } else if (udf_phys_lba(m->ctx, entry->icb_lba) != m->child_icb) {
+    } else if (udf_part_to_phys(m->ctx, entry->icb_part, entry->icb_lba,
+                                &phys, NULL) != ODFS_OK ||
+               phys != m->child_icb) {
         return ODFS_OK;
     }
 
     err = udf_fill_node_from_icb(m->ctx, m->cache,
-                                 entry->flags, entry->icb_lba, &entry->node);
+                                 entry->flags, entry->icb_part,
+                                 entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
     if (!m->name && entry->node.kind != ODFS_NODE_DIR)
@@ -1299,7 +1564,11 @@ static odfs_err_t udf_parent_fid(const udf_fid_info_t *fid, void *arg)
 
     if ((fid->flags & UDF_FID_FLAG_DELETED) == 0 &&
         (fid->flags & UDF_FID_FLAG_PARENT) != 0) {
-        *parent->parent_icb = udf_phys_lba(parent->ctx, fid->icb_lba);
+        odfs_err_t err = udf_part_to_phys(parent->ctx, fid->icb_part,
+                                          fid->icb_lba, parent->parent_icb,
+                                          NULL);
+        if (err != ODFS_OK)
+            return err;
         parent->found = 1;
         return ODFS_ERR_EOF;
     }

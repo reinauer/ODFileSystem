@@ -1380,4 +1380,255 @@ TEST(udf_mount_bounds_the_vds_scan)
     odfs_cache_destroy(&cache);
 }
 
+/* ---- UDF 2.50 metadata partition ---- */
+
+#define META_FILE_LBA 5 /* physical partition block of the Metadata File */
+
+/*
+ * Turn the minimal volume into a UDF 2.50 one: partition reference 0
+ * is the physical partition, reference 1 the metadata partition, the
+ * FSD is at metadata block fsd_meta_lba, and the Metadata File at
+ * physical block META_FILE_LBA has the given short ADs (lengths with
+ * type bits, physical partition blocks).
+ */
+static void udf_vol_make_meta(udf_vol_media_t *m, uint32_t fsd_meta_lba,
+                              const uint32_t *meta_ads, int n_ads,
+                              uint32_t mirror_lba)
+{
+    uint8_t *lvd = udf_vol_build(m);
+    uint8_t *pm = &lvd[446];
+
+    udf_write_le32(&lvd[252], fsd_meta_lba);
+    udf_write_le16(&lvd[256], 1);
+    udf_write_le32(&lvd[264], 6 + 64);
+    udf_write_le32(&lvd[268], 2);
+
+    pm[0] = 2;                    /* Type 2 map */
+    pm[1] = 64;
+    memcpy(&pm[5], "*UDF Metadata Partition", 23);
+    udf_write_le16(&pm[36], 1);   /* volume sequence number */
+    udf_write_le16(&pm[38], 7);   /* partition number */
+    udf_write_le32(&pm[40], META_FILE_LBA);
+    udf_write_le32(&pm[44], mirror_lba);
+
+    /* file type 250: Metadata File */
+    udf_make_fe_ads(m->sectors[VOL_PART_START + META_FILE_LBA], 250,
+                    0, meta_ads, n_ads);
+}
+
+/* FSD in sector fsd pointing at the root ICB in metadata block root */
+static void udf_meta_make_fsd(uint8_t *fsd, uint32_t root)
+{
+    udf_write_tag(fsd, UDF_TAG_FSD);
+    udf_write_le32(&fsd[400], MOCK_SECTOR_SIZE);
+    udf_write_le32(&fsd[404], root);
+    udf_write_le16(&fsd[408], 1);
+}
+
+/* FID naming the ICB at metadata block icb */
+static void udf_meta_make_fid(uint8_t *fid, const char *name, uint32_t icb)
+{
+    udf_make_fid(fid, name, icb);
+    udf_write_le16(&fid[28], 1);
+}
+
+/* File Entry with one long AD into the physical partition */
+static void udf_meta_make_file_fe(uint8_t *fe, uint32_t size,
+                                  uint32_t phys_block)
+{
+    memset(fe, 0, MOCK_SECTOR_SIZE);
+    udf_write_tag(fe, UDF_TAG_FE);
+    fe[16 + 11] = UDF_ICB_FILETYPE_FILE;
+    udf_write_le16(&fe[16 + 18], UDF_ICB_ALLOC_LONG);
+    udf_write_le64(&fe[56], size);
+    udf_write_le32(&fe[172], 16);
+    udf_write_le32(&fe[176], size);
+    udf_write_le32(&fe[180], phys_block);
+    udf_write_le16(&fe[184], 0);
+}
+
+TEST(udf_mount_metadata_partition)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, file;
+    void *ctx = NULL;
+    uint8_t fid[52];
+    char buf[32];
+    size_t len;
+    static const char payload[] = "BDMV-UDF-2.50-OK";
+
+    /* metadata blocks 0..3 are physical blocks 20..23 (media 120..123) */
+    static const uint32_t meta_ads[] = { 4 * MOCK_SECTOR_SIZE, 20 };
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    udf_vol_make_meta(&m, 0, meta_ads, 1, 0xFFFFFFFFu);
+
+    /* a second PD with another partition number after the one in use */
+    memcpy(m.sectors[37], m.sectors[36], MOCK_SECTOR_SIZE); /* TD */
+    memcpy(m.sectors[36], m.sectors[34], MOCK_SECTOR_SIZE);
+    udf_write_le16(&m.sectors[36][22], 3);
+    udf_write_le32(&m.sectors[36][188], 10);
+
+    udf_meta_make_fsd(m.sectors[120], 1);
+    /* root directory: short AD, hence in the metadata partition */
+    udf_make_fe(m.sectors[121], UDF_ICB_FILETYPE_DIR, sizeof(fid), 2);
+    memset(fid, 0, sizeof(fid));
+    udf_meta_make_fid(fid, "stream.m2ts", 3);
+    memcpy(m.sectors[122], fid, sizeof(fid));
+    udf_meta_make_file_fe(m.sectors[123], sizeof(payload) - 1, 60);
+    memcpy(m.sectors[VOL_PART_START + 60], payload, sizeof(payload) - 1);
+
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_EQ(root.extent.lba, 121);
+    ASSERT_OK(udf_backend_ops.lookup(ctx, &cache, &log, &root,
+                                     "stream.m2ts", &file));
+    ASSERT_EQ(file.extent.lba, 123);
+    ASSERT_EQ(file.size, sizeof(payload) - 1);
+
+    memset(buf, 0, sizeof(buf));
+    len = sizeof(buf);
+    ASSERT_OK(udf_backend_ops.read(ctx, &cache, &log, &file, 0, buf, &len));
+    ASSERT_EQ(len, sizeof(payload) - 1);
+    ASSERT(memcmp(buf, payload, len) == 0);
+
+    udf_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_metadata_directory_spans_metadata_file_extents)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, file;
+    collect_ctx_t collect;
+    void *ctx = NULL;
+    uint8_t fid[52];
+
+    /* metadata blocks 0..2 are media 120..122, blocks 3..4 media 150..151 */
+    static const uint32_t meta_ads[] = {
+        3 * MOCK_SECTOR_SIZE, 20,
+        2 * MOCK_SECTOR_SIZE, 50,
+    };
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    udf_vol_make_meta(&m, 0, meta_ads, 2, 0xFFFFFFFFu);
+    udf_meta_make_fsd(m.sectors[120], 1);
+
+    /*
+     * One 2112-byte directory extent from metadata block 2: a deleted
+     * FID, "stream.m2ts" with its header split between blocks 2 and 3,
+     * then "x" in block 3.
+     */
+    udf_make_fe(m.sectors[121], UDF_ICB_FILETYPE_DIR, 2112, 2);
+    udf_make_deleted_fid(m.sectors[122], 2020);
+    memset(fid, 0, sizeof(fid));
+    udf_meta_make_fid(fid, "stream.m2ts", 4);
+    memcpy(&m.sectors[122][2020], fid, 28);
+    memcpy(&m.sectors[150][0], fid + 28, 24);
+    udf_meta_make_fid(fid, "x", 4);
+    memcpy(&m.sectors[150][24], fid, 40);
+
+    udf_meta_make_file_fe(m.sectors[151], 5, 60);
+
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_OK(udf_backend_ops.lookup(ctx, &cache, &log, &root,
+                                     "stream.m2ts", &file));
+    ASSERT_EQ(file.extent.lba, 151);
+    ASSERT_OK(udf_backend_ops.lookup(ctx, &cache, &log, &root, "x", &file));
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(udf_backend_ops.readdir(ctx, &cache, &log, &root,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 2);
+    ASSERT_STR_EQ(collect.node.name, "x");
+
+    udf_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_metadata_file_hole_keeps_block_numbers)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, file;
+    void *ctx = NULL;
+    uint8_t fid[40];
+
+    /* metadata blocks 0..1 are not recorded, 2..5 are media 120..123 */
+    static const uint32_t meta_ads[] = {
+        (1u << 30) | (2 * MOCK_SECTOR_SIZE), 0,
+        4 * MOCK_SECTOR_SIZE, 20,
+    };
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    udf_vol_make_meta(&m, 2, meta_ads, 2, 0xFFFFFFFFu);
+    udf_meta_make_fsd(m.sectors[120], 3);
+    udf_make_fe(m.sectors[121], UDF_ICB_FILETYPE_DIR, sizeof(fid), 4);
+    udf_meta_make_fid(fid, "A", 5);
+    memcpy(m.sectors[122], fid, sizeof(fid));
+    udf_meta_make_file_fe(m.sectors[123], 5, 60);
+
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_OK(udf_backend_ops.lookup(ctx, &cache, &log, &root, "A", &file));
+    ASSERT_EQ(file.extent.lba, 123);
+
+    udf_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_metadata_file_too_fragmented_uses_mirror)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root;
+    void *ctx = NULL;
+    uint32_t meta_ads[2 * 17];
+    static const uint32_t mirror_ads[] = { 17 * MOCK_SECTOR_SIZE, 20 };
+
+    /* the Metadata File maps blocks 0..16 one block per extent, which
+     * is more than the mount keeps; the mirror maps them in one */
+    for (int i = 0; i < 17; i++) {
+        meta_ads[i * 2] = MOCK_SECTOR_SIZE;
+        meta_ads[i * 2 + 1] = 20u + (uint32_t)i;
+    }
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    udf_vol_make_meta(&m, 16, meta_ads, 17, META_FILE_LBA + 1);
+    udf_make_fe_ads(m.sectors[VOL_PART_START + META_FILE_LBA + 1], 251,
+                    0, mirror_ads, 1);
+    udf_meta_make_fsd(m.sectors[136], 15);
+    udf_make_fe(m.sectors[135], UDF_ICB_FILETYPE_DIR, 0, 0);
+
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_EQ(root.extent.lba, 135);
+
+    udf_backend_ops.unmount(ctx);
+
+    /* without a mirror the mount fails instead of losing block 16 */
+    udf_write_le32(&m.sectors[35][446 + 44], 0xFFFFFFFFu);
+    odfs_cache_flush(&cache);
+    ctx = NULL;
+    ASSERT_ERR(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx),
+               ODFS_ERR_UNSUPPORTED);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
