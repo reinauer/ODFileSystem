@@ -744,4 +744,69 @@ TEST(cdda_audio_reads_prefetch_one_second_on_small_reads)
     odfs_free(frames);
 }
 
+static odfs_err_t collect_single_entry(const odfs_node_t *entry, void *ctx)
+{
+    collect_ctx_t *collect = ctx;
+
+    if (collect->count < 8)
+        collect->entries[collect->count++] = *entry;
+    return ODFS_ERR_EOF;
+}
+
+TEST(cdda_readdir_resume_offset_steps_without_duplicates)
+{
+    static const uint8_t icon_data[] = { 0xe3, 0x10, 0x00, 0x01 };
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    cdda_context_t *cdda_ctx;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    collect_ctx_t collect;
+    uint32_t resume = 0;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 3;
+    toc.leadout_lba = 300;
+    for (int i = 0; i < 3; i++) {
+        toc.sessions[i].number = (uint8_t)(i + 1);
+        toc.sessions[i].start_lba = (uint32_t)i * 100u;
+        toc.sessions[i].length = 100u;
+    }
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    media_ops.read_cdtext = fake_read_cdtext;
+    media.ops = &media_ops;
+    media.ctx = NULL;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &media, &root, &backend_ctx));
+    cdda_ctx = backend_ctx;
+    cdda_ctx->disk_icon = odfs_malloc(sizeof(icon_data));
+    ASSERT(cdda_ctx->disk_icon != NULL);
+    memcpy(cdda_ctx->disk_icon, icon_data, sizeof(icon_data));
+    cdda_ctx->disk_icon_size = sizeof(icon_data);
+
+    memset(&collect, 0, sizeof(collect));
+    for (int step = 0; step < 6; step++) {
+        odfs_err_t err = cdda_backend_ops.readdir(
+            backend_ctx, NULL, NULL, &root,
+            collect_single_entry, &collect, &resume);
+        ASSERT_EQ(err, ODFS_ERR_EOF);
+        ASSERT_EQ(resume, (uint32_t)(step + 1));
+    }
+
+    ASSERT_OK(cdda_backend_ops.readdir(backend_ctx, NULL, NULL, &root,
+                                       collect_single_entry, &collect, &resume));
+    ASSERT_EQ(resume, 6u);
+    ASSERT_EQ(collect.count, 6);
+    ASSERT_STR_EQ(collect.entries[0].name, "Disk.info");
+    ASSERT_STR_EQ(collect.entries[1].name, "CDDB.txt");
+    ASSERT_STR_EQ(collect.entries[2].name, "CD-TEXT.txt");
+    ASSERT_STR_EQ(collect.entries[3].name, "Track01.wav");
+    ASSERT_STR_EQ(collect.entries[4].name, "Track02.wav");
+    ASSERT_STR_EQ(collect.entries[5].name, "Track03.wav");
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()
