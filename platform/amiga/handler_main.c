@@ -3841,8 +3841,8 @@ LONG odfs_handler_fill_info(handler_global_t *g,
     info->id_DiskType      = g->mounted ? (LONG)ODFS_AMIGA_DISK_TYPE
                                       : (LONG)ID_NO_DISK_PRESENT;
     info->id_VolumeNode    = MKBADDR(volume_node_ptr(g->current_volume));
-    info->id_InUse         = (g->current_volume && g->current_volume->volnode &&
-                              g->current_volume->volnode->dl_LockList) ?
+    info->id_InUse         = (g->current_volume &&
+                              g->current_volume->object_count != 0) ?
                              (__typeof__(info->id_InUse))DOSTRUE : 0;
     return 0;
 }
