@@ -205,7 +205,10 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     memset(cache, 0, sizeof(*cache));
     sector_size = odfs_media_sector_size(media);
-    if (sector_size == 0)
+    /* every supported medium uses power-of-two sectors; enforcing it
+     * here lets byte addressing use shifts instead of pulling the
+     * 64-bit division helpers out of libgcc */
+    if (sector_size == 0 || (sector_size & (sector_size - 1u)) != 0)
         return ODFS_ERR_INVAL;
 
     cache->entries = odfs_calloc(capacity, sizeof(odfs_cache_entry_t));
@@ -247,11 +250,6 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     cache->capacity = capacity;
     cache->sector_size = sector_size;
-    /* every supported medium uses power-of-two sectors; enforcing it
-     * here lets byte addressing use shifts instead of pulling the
-     * 64-bit division helpers out of libgcc */
-    if ((sector_size & (sector_size - 1u)) != 0)
-        return ODFS_ERR_INVAL;
     cache->sector_shift = 0;
     {
         uint32_t sz = sector_size;
