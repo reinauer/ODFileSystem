@@ -138,6 +138,8 @@ typedef struct handler_global {
                                              0: with CMD_READ */
     uintptr_t            direct_buf_blocked; /* ~Mask: buffer address bits
                                              that rule out a direct transfer */
+    uintptr_t            direct_buf_last; /* highest address the range
+                                             bits of de_Mask let it reach */
     ULONG                direct_mem_need; /* MEMF_ bits BufMemType asks of
                                              a direct-transfer buffer */
     uintptr_t            direct_mem_lo;   /* memory region [lo, hi) last */
