@@ -6,10 +6,20 @@
 
 #include "rock_ridge/rock_ridge.h"
 #include "iso9660/iso9660.h"
+#include "odfs/ancestry.h"
+#include "odfs/api.h"
 #include "odfs/cache.h"
 #include "test_harness.h"
 
 #include <string.h>
+
+static void wr_bb16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
 
 static void wr_bb32(uint8_t *p, uint32_t v)
 {
@@ -271,6 +281,185 @@ TEST(rr_detect_sp_after_cd_xa_record)
 
     ASSERT_EQ(rr_detect(xa_sua, sizeof(xa_sua), &skip), 1);
     ASSERT_EQ(skip, 14);
+}
+
+static size_t rr_dir_rec(uint8_t *p, uint32_t lba, uint32_t size,
+                         uint8_t flags, const char *name, size_t name_len,
+                         const uint8_t *sua, size_t sua_len)
+{
+    size_t name_end = 33 + name_len + ((name_len & 1) == 0 ? 1 : 0);
+    size_t rec_len = name_end + sua_len;
+    if (rec_len & 1)
+        rec_len++;
+    memset(p, 0, rec_len);
+    p[0] = (uint8_t)rec_len;
+    wr_bb32(&p[ISO_DR_EXTENT_LBA], lba);
+    wr_bb32(&p[ISO_DR_DATA_LENGTH], size);
+    p[ISO_DR_DATE + 0] = 126;
+    p[ISO_DR_DATE + 1] = 1;
+    p[ISO_DR_DATE + 2] = 1;
+    p[ISO_DR_FLAGS] = flags;
+    wr_bb16(&p[ISO_DR_VOLUME_SEQ_NUM], 1);
+    p[ISO_DR_NAME_LEN] = (uint8_t)name_len;
+    memcpy(&p[ISO_DR_NAME], name, name_len);
+    if (sua && sua_len > 0)
+        memcpy(&p[name_end], sua, sua_len);
+    return rec_len;
+}
+
+static size_t rr_put_nm(uint8_t *p, const char *name)
+{
+    size_t n = strlen(name);
+    p[0] = 'N'; p[1] = 'M'; p[2] = (uint8_t)(5 + n); p[3] = 1; p[4] = 0;
+    memcpy(&p[5], name, n);
+    return 5 + n;
+}
+
+static size_t rr_put_link(uint8_t *p, char a, char b, uint32_t lba)
+{
+    memset(p, 0, 12);
+    p[0] = (uint8_t)a; p[1] = (uint8_t)b; p[2] = 12; p[3] = 1;
+    wr_bb32(&p[4], lba);
+    return 12;
+}
+
+/*
+ * A directory relocated the way mkisofs -R does it: the placeholder in
+ * the real parent carries CL, the directory itself lives in rr_moved
+ * under an entry marked RE, and its ".." record points at rr_moved with
+ * PL naming the real parent. mkisofs marks rr_moved itself RE as well.
+ */
+TEST(rr_relocated_directory_cl_and_pl)
+{
+    static rr_media_t media_data;
+    odfs_media_t media;
+    odfs_mount_t mnt;
+    odfs_node_t rr_moved, deep_dir, sub, child_file, parent, grandparent, n;
+    char buf[16];
+    size_t len, off, k;
+    uint8_t sua[96];
+    static const uint8_t sp[] = { 'S', 'P', 7, 1, 0xBE, 0xEF, 0 };
+    static const uint8_t re[] = { 'R', 'E', 4, 1 };
+    const uint32_t root_lba = 20;
+    const uint32_t rr_moved_lba = 21;
+    const uint32_t relocated_lba = 22;
+    const uint32_t file_lba = 23;
+    const uint32_t sub_lba = 24;
+    uint8_t *pvd = media_data.sectors[ISO_VD_START_LBA];
+    uint8_t *term = media_data.sectors[ISO_VD_START_LBA + 1];
+    uint8_t *d;
+
+    memset(&media_data, 0, sizeof(media_data));
+
+    pvd[ISO_PVD_TYPE] = ISO_VD_TYPE_PRIMARY;
+    memcpy(&pvd[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    pvd[ISO_PVD_VERSION] = 1;
+    memset(&pvd[ISO_PVD_SYSTEM_ID], ' ', 32);
+    memset(&pvd[ISO_PVD_VOLUME_ID], ' ', 32);
+    memcpy(&pvd[ISO_PVD_VOLUME_ID], "RRCLPL", 6);
+    wr_bb32(&pvd[ISO_PVD_VOLUME_SPACE_SIZE], RR_TEST_SECTORS);
+    wr_bb16(&pvd[ISO_PVD_LOGICAL_BLK_SIZE], ISO_SECTOR_SIZE);
+    rr_dir_rec(&pvd[ISO_PVD_ROOT_DIR_RECORD], root_lba, ISO_SECTOR_SIZE,
+               ISO_DR_FLAG_DIRECTORY, "\x00", 1, NULL, 0);
+    term[ISO_PVD_TYPE] = ISO_VD_TYPE_TERM;
+    memcpy(&term[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    term[ISO_PVD_VERSION] = 1;
+
+    /* root: rr_moved (RE) and the placeholder for deep_dir (CL) */
+    d = media_data.sectors[root_lba];
+    off = 0;
+    off += rr_dir_rec(&d[off], root_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1, sp, sizeof(sp));
+    off += rr_dir_rec(&d[off], root_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1, NULL, 0);
+    k = rr_put_nm(sua, "rr_moved");
+    memcpy(&sua[k], re, sizeof(re));
+    k += sizeof(re);
+    off += rr_dir_rec(&d[off], rr_moved_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "RR_MOVED", 8, sua, k);
+    /* placeholder: a zero-length file whose PX even claims a file */
+    memset(sua, 0, sizeof(sua));
+    sua[0] = 'P'; sua[1] = 'X'; sua[2] = 36; sua[3] = 1;
+    wr_bb32(&sua[4], 0100555);
+    k = 36;
+    k += rr_put_nm(&sua[k], "deep_dir");
+    k += rr_put_link(&sua[k], 'C', 'L', relocated_lba);
+    off += rr_dir_rec(&d[off], 0, 0, 0, "DEEP_DIR.;1", 11, sua, k);
+
+    /* rr_moved: the relocated directory's own entry, marked RE */
+    d = media_data.sectors[rr_moved_lba];
+    off = 0;
+    off += rr_dir_rec(&d[off], rr_moved_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1, NULL, 0);
+    off += rr_dir_rec(&d[off], root_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1, NULL, 0);
+    k = rr_put_nm(sua, "deep_dir");
+    memcpy(&sua[k], re, sizeof(re));
+    k += sizeof(re);
+    off += rr_dir_rec(&d[off], relocated_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "DEEP_DIR", 8, sua, k);
+
+    /* deep_dir: ".." points at rr_moved, PL at the real parent */
+    d = media_data.sectors[relocated_lba];
+    off = 0;
+    off += rr_dir_rec(&d[off], relocated_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1, NULL, 0);
+    k = rr_put_link(sua, 'P', 'L', root_lba);
+    off += rr_dir_rec(&d[off], rr_moved_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1, sua, k);
+    k = rr_put_nm(sua, "inside.txt");
+    off += rr_dir_rec(&d[off], file_lba, 6, 0, "INSIDE.TXT;1", 12, sua, k);
+    k = rr_put_nm(sua, "sub");
+    off += rr_dir_rec(&d[off], sub_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "SUB", 3, sua, k);
+
+    /* deep_dir/sub */
+    d = media_data.sectors[sub_lba];
+    off = 0;
+    off += rr_dir_rec(&d[off], sub_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1, NULL, 0);
+    off += rr_dir_rec(&d[off], relocated_lba, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1, NULL, 0);
+
+    memcpy(media_data.sectors[file_lba], "Reloc!", 6);
+
+    media.ops = &rr_media_ops;
+    media.ctx = &media_data;
+    ASSERT_OK(odfs_mount(&media, NULL, NULL, &mnt));
+
+    /* rr_moved and the RE entry inside it stay hidden */
+    ASSERT_ERR(odfs_lookup(&mnt, &mnt.root, "rr_moved", &n),
+               ODFS_ERR_NOT_FOUND);
+    rr_moved = mnt.root;
+    rr_moved.extent.lba = rr_moved_lba;
+    ASSERT_ERR(odfs_lookup(&mnt, &rr_moved, "deep_dir", &n),
+               ODFS_ERR_NOT_FOUND);
+
+    /* the placeholder is the relocated directory, with its real size */
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "deep_dir", &deep_dir));
+    ASSERT_EQ(deep_dir.kind, ODFS_NODE_DIR);
+    ASSERT_EQ(deep_dir.extent.lba, relocated_lba);
+    ASSERT_EQ(deep_dir.extent.length, ISO_SECTOR_SIZE);
+
+    ASSERT_OK(odfs_lookup(&mnt, &deep_dir, "inside.txt", &child_file));
+    len = sizeof(buf);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_OK(odfs_read(&mnt, &child_file, 0, buf, &len));
+    ASSERT_EQ(len, 6);
+    ASSERT(memcmp(buf, "Reloc!", 6) == 0);
+
+    /* walking up follows PL back to the real parent */
+    ASSERT_OK(odfs_resolve_parent_node(&mnt, &deep_dir, &parent, NULL));
+    ASSERT_EQ(parent.extent.lba, root_lba);
+
+    ASSERT_OK(odfs_lookup(&mnt, &deep_dir, "sub", &sub));
+    ASSERT_OK(odfs_resolve_parent_node(&mnt, &sub, &parent, &grandparent));
+    ASSERT_EQ(parent.extent.lba, relocated_lba);
+    ASSERT_STR_EQ(parent.name, "deep_dir");
+    ASSERT_EQ(parent.id, deep_dir.id);
+    ASSERT_EQ(grandparent.extent.lba, root_lba);
+
+    odfs_unmount(&mnt);
 }
 
 TEST_MAIN()

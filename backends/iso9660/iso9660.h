@@ -184,18 +184,6 @@ typedef struct iso_context {
 /* --- shared ancestry helpers (used by iso9660 and joliet) --- */
 
 /*
- * Read the parent directory's extent location from the ".." record at the
- * start of the directory extent at dir_lba (a media LBA). On success returns
- * the parent's media LBA and on-disc data length. Both ISO9660 and Joliet
- * share the ECMA-119 directory-record layout, so this works for either.
- */
-odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
-                                       uint32_t session_start,
-                                       uint32_t dir_lba,
-                                       uint32_t *parent_lba_out,
-                                       uint32_t *parent_size_out);
-
-/*
  * Merge the continuation records of a multi-extent file (ISO 9660 Level 3,
  * ECMA-119 6.5.1). Called after parsing a directory record whose
  * multi-extent flag is set; first_rec must still point at that raw record.
