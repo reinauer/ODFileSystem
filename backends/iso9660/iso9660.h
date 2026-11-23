@@ -219,17 +219,22 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
 
 /* --- shared backend ops (used by the iso9660 and joliet ops tables) --- */
 
+/* odfs_iso_mount_vd() flags */
+#define ODFS_ISO_JOLIET     0x01u /* descriptor is a Joliet SVD */
+#define ODFS_ISO_NO_RR      0x02u /* ignore Rock Ridge extensions */
+#define ODFS_ISO_LOWERCASE  0x04u /* lowercase plain ISO 9660 names */
+
 /*
  * Mount the volume descriptor at vd_lba (a media LBA) into a fresh
- * iso_context_t. With joliet set, the descriptor is treated as a Joliet
- * SVD: the volume id is decoded from UCS-2 and High Sierra and Rock
- * Ridge handling are disabled.
+ * iso_context_t. With ODFS_ISO_JOLIET, the descriptor is treated as a
+ * Joliet SVD: the volume id is decoded from UCS-2 and High Sierra and
+ * Rock Ridge handling are disabled.
  */
 odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                              odfs_log_state_t *log,
                              uint32_t session_start,
                              uint32_t vd_lba,
-                             int joliet,
+                             unsigned int flags,
                              odfs_node_t *root_out,
                              void **backend_ctx);
 

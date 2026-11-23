@@ -244,10 +244,11 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                              odfs_log_state_t *log,
                              uint32_t session_start,
                              uint32_t vd_lba,
-                             int joliet,
+                             unsigned int flags,
                              odfs_node_t *root_out,
                              void **backend_ctx)
 {
+    const int joliet = (flags & ODFS_ISO_JOLIET) != 0;
     const uint8_t *sector;
     iso_context_t *ctx;
     odfs_err_t err;
@@ -258,7 +259,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
     ctx->session_start = session_start;
     ctx->next_node_id = 1;
-    ctx->lowercase = 0; /* preserve original case by default */
+    ctx->lowercase = (flags & ODFS_ISO_LOWERCASE) != 0;
     ctx->joliet = joliet;
 
     /* read the volume descriptor (PVD, or Joliet SVD) */
@@ -366,7 +367,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     /* detect Rock Ridge by reading the root directory's "." entry;
      * High Sierra predates SUSP and Joliet's UCS-2 tree never carries
      * Rock Ridge, so skip the probe for both */
-    if (!ctx->high_sierra && !joliet) {
+    if (!ctx->high_sierra && !joliet && !(flags & ODFS_ISO_NO_RR)) {
         const uint8_t *root_sector;
         err = odfs_cache_read(cache, ctx->pvd.root_dir_lba, &root_sector);
         if (err == ODFS_OK) {

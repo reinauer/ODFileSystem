@@ -12,7 +12,7 @@
 
 /* backend registrations */
 #if ODFS_FEATURE_ISO9660
-extern const odfs_backend_ops_t iso9660_backend_ops;
+#include "iso9660/iso9660.h"
 #endif
 #if ODFS_FEATURE_JOLIET
 extern const odfs_backend_ops_t joliet_backend_ops;
@@ -109,6 +109,28 @@ static int mount_is_fatal_err(odfs_err_t err)
            err == ODFS_ERR_MEDIA_CHANGED;
 }
 
+static odfs_err_t mount_backend(odfs_mount_t *mnt,
+                                const odfs_backend_ops_t *be,
+                                uint32_t session_start)
+{
+#if ODFS_FEATURE_ISO9660
+    /* backend ops carry no options; NORR and LOWERCASE are for ISO 9660 */
+    if (be == &iso9660_backend_ops) {
+        unsigned int flags = 0;
+
+        if (mnt->opts.disable_rr)
+            flags |= ODFS_ISO_NO_RR;
+        if (mnt->opts.lowercase_iso)
+            flags |= ODFS_ISO_LOWERCASE;
+        return odfs_iso_mount_vd(&mnt->cache, &mnt->log, session_start,
+                                 session_start + ISO_VD_START_LBA, flags,
+                                 &mnt->root, &mnt->backend_ctx);
+    }
+#endif
+    return be->mount(&mnt->cache, &mnt->log, session_start,
+                     &mnt->root, &mnt->backend_ctx);
+}
+
 /*
  * Mount be unless another backend was chosen already. The first fatal
  * error is kept in *last_err, so that a mount that fails on the media
@@ -124,8 +146,7 @@ static int mount_try_one(odfs_mount_t *mnt, const odfs_backend_ops_t *be,
     if (*chosen || !be)
         return 0;
 
-    err = be->mount(&mnt->cache, &mnt->log, session_start,
-                    &mnt->root, &mnt->backend_ctx);
+    err = mount_backend(mnt, be, session_start);
     if (err == ODFS_OK) {
         *chosen = be;
         return 1;
