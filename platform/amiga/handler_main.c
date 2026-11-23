@@ -1931,16 +1931,17 @@ static ULONG amiga_node_key(const odfs_node_t *node)
 
     /*
      * AmigaDOS exposes FileLock.fl_Key and FileInfoBlock.fib_DiskKey as
-     * object keys.  Use stable on-disc identity rather than transient ODFS
-     * node ids; ISO/Joliet nodes are regenerated during directory scans.
+     * object keys, and ExNext() finds its place again by them. Key an
+     * object by its on-disc start LBA. Empty files and soft links have no
+     * data of their own and may all share LBA 0 or one dummy LBA, so key
+     * them, and anything at LBA 0, by the node id the backend derives from
+     * the directory entry. Bit 31 keeps id keys apart from LBA keys; bits
+     * 28-30 hold the backend. A key is never 0.
      */
-    key = (((ULONG)node->backend & 0x7U) << 28) |
-          ((ULONG)node->extent.lba & 0x0fffffffU);
-    if ((key & 0x0fffffffU) == 0)
-        key |= ((ULONG)node->id + 1U) & 0x0fffffffU;
-    if (key == 0)
-        key = 1;
-    return key;
+    key = (ULONG)node->extent.lba & 0x0fffffffU;
+    if (key == 0 || node->size == 0 || node->kind == ODFS_NODE_SYMLINK)
+        key = 0x80000000U | ((ULONG)node->id & 0x0fffffffU);
+    return key | (((ULONG)node->backend & 0x7U) << 28);
 }
 
 static ULONG node_protection(const odfs_node_t *node)
