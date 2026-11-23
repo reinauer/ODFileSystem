@@ -579,12 +579,12 @@ $(HOST_BUILD)/tools/imgcat: tools/imgcat/imgcat.c tools/imgmount.h $(HOST_BUILD)
 	@echo "  HOSTCC $<"
 	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
-$(HOST_BUILD)/tools/imgstat: tools/imgstat/imgstat.c $(HOST_BUILD)/libodfs.a
+$(HOST_BUILD)/tools/imgstat: tools/imgstat/imgstat.c tools/imgmount.h $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
 	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs
 
-$(HOST_BUILD)/tools/imgbench: tools/imgbench/imgbench.c $(HOST_BUILD)/libodfs.a
+$(HOST_BUILD)/tools/imgbench: tools/imgbench/imgbench.c tools/imgmount.h $(HOST_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  HOSTCC $<"
 	@$(HOSTCC) $(CPPFLAGS) $(INCLUDES) $(HOSTCFLAGS) -o $@ $< $(HOSTLDFLAGS) -L$(HOST_BUILD) -lodfs

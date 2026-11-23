@@ -194,6 +194,20 @@ if [ -f "$IMAGES/test_hfsplus.iso" ]; then
     assert_eq "hfsplus: nested read" "Deep file" "$CONTENT"
 fi
 
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+# ---- pure-audio CUE image ----
+dd if=/dev/zero of="$WORK_DIR/audio.bin" bs=2352 count=4 2>/dev/null
+printf 'FILE "audio.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n' \
+    > "$WORK_DIR/audio.cue"
+
+STAT=$("$TOOLS/imgstat" "$WORK_DIR/audio.cue" /Track01.wav 2>/dev/null || true)
+assert_contains "audio cue: imgstat mounts" "backend: cdda" "$STAT"
+
+BENCH=$("$TOOLS/imgbench" "$WORK_DIR/audio.cue" 2>/dev/null || true)
+assert_contains "audio cue: imgbench mounts" "reads:" "$BENCH"
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"
