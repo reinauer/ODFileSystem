@@ -550,4 +550,28 @@ TEST(hfsplus_probe_rejects_stray_signatures)
     odfs_free(img);
 }
 
+/* ---- volume name ---- */
+
+TEST(hfs_volume_name_keeps_multibyte_characters)
+{
+    uint8_t *img = hfs_image(2);
+    uint8_t *mdb;
+    odfs_mount_t mnt;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    /* 27 x Mac Roman 0xAA (U+2122), three UTF-8 bytes each */
+    mdb = img + 1024;
+    mdb[HFS_MDB_VOLNAMELEN] = 27;
+    memset(&mdb[HFS_MDB_VOLNAME], 0xAA, 27);
+    bt_header(hfs_ab(img, 0), 512, 1, 2);
+    bt_init(&b, hfs_ab(img, 1), 512, HFS_NODE_LEAF, 0, 0);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_EQ(strlen(mnt.volume_name), 81u);
+    ASSERT(memcmp(&mnt.volume_name[78], "\xE2\x84\xA2", 3) == 0);
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()

@@ -39,9 +39,10 @@
 #define HFS_MDB_CTFLSIZE    146    /* uint32: catalog B-tree file size */
 #define HFS_MDB_CTEXTREC    150    /* 12 bytes: catalog B-tree extents */
 
-/* volume_name buffer size, NUL included */
+/* volume_name buffer size: 27 Mac Roman characters of up to three
+   UTF-8 bytes each, plus NUL */
 
-#define HFS_VOLNAME_SIZE      28
+#define HFS_VOLNAME_SIZE      82
 
 extern const odfs_backend_ops_t hfs_backend_ops;
 
