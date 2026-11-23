@@ -700,31 +700,37 @@ static LONG changeint_signal(APTR data)
 }
 
 /*
- * Days from 1978-01-01 (the AmigaDOS epoch) for a civil date, computed
- * in closed form. A per-year loop here costs ~150 divisions per
- * conversion, and a conversion runs for every FileInfoBlock filled by
- * Examine, ExNext, and ExAll.
+ * Days from 1978-01-01 (the AmigaDOS epoch) for a civil date in years
+ * [1978, 65535], computed in closed form. A per-year loop here costs
+ * ~150 divisions per conversion, and a conversion runs for every
+ * FileInfoBlock filled by Examine, ExNext, and ExAll. Only 16x16->32
+ * multiplies and shifts are used, so the 68000 build calls no software
+ * division routine.
  */
 static LONG days_since_1978(int year, int month, int day)
 {
-    LONG y = year;
-    LONG era, yoe, doy, doe;
-
+    /* day of the March-based year on which each month starts */
+    static const uint16_t month_doy[12] = {
+        306, 337, 0, 31, 61, 92, 122, 153, 184, 214, 245, 275
+    };
     /* shift so the year starts in March; Jan/Feb belong to y-1 */
-    y -= month <= 2;
-    era = (y >= 0 ? y : y - 399) / 400;
-    yoe = y - era * 400;                          /* [0, 399] */
-    doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;  /* [0, 146096] */
+    uint16_t y = (uint16_t)(year - (month <= 2));
+    uint16_t q = (uint16_t)(y >> 2);
+    /* q * 5243 >> 17 == q / 25 == y / 100 for every q below 16384 */
+    uint32_t c = ((uint32_t)q * (uint16_t)5243U) >> 17;
+    uint32_t days = (uint32_t)y * (uint16_t)365U + q - c + (c >> 2) +
+                    month_doy[month - 1] + (uint32_t)day;
 
-    /* 719468 days from 0000-03-01 to 1970-01-01, 2922 more to 1978 */
-    return era * 146097 + doe - 719468 - 2922;
+    /* 719468 days from 0000-03-01 to 1970-01-01, 2922 more to 1978,
+     * and 1 because day counts from 1 */
+    return (LONG)(days - 722391U);
 }
 
 static int odfs_timestamp_to_datestamp(const odfs_timestamp_t *ts,
                                        struct DateStamp *stamp)
 {
-    if (!ts || !stamp || ts->year < 1978 || ts->month < 1 || ts->month > 12 ||
+    if (!ts || !stamp || ts->year < 1978 || ts->year > 65535 ||
+        ts->month < 1 || ts->month > 12 ||
         ts->day < 1 || ts->day > 31 || ts->hour > 23 || ts->minute > 59 ||
         ts->second > 59)
         return 0;
@@ -2086,7 +2092,7 @@ static void node_date(const odfs_node_t *node, struct DateStamp *ds)
         return;
 
     memset(ds, 0, sizeof(*ds));
-    if (!node || node->mtime.year < 1978)
+    if (!node || node->mtime.year < 1978 || node->mtime.year > 65535)
         return;
 
     if (node->mtime.month < 1 || node->mtime.month > 12 ||
