@@ -512,4 +512,26 @@ TEST(mount_force_backend_selects_rock_ridge)
     odfs_unmount(&mnt);
 }
 
+TEST(mount_rejects_missing_forced_session)
+{
+    odfs_media_t media;
+    odfs_mount_opts_t opts;
+    odfs_mount_t mnt;
+    int rc;
+
+    /* test_plain.iso has no TOC: session 0 is the whole image */
+    odfs_mount_opts_default(&opts);
+    opts.force_session = 0;
+    rc = mount_image(IMG_PLAIN, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    odfs_unmount(&mnt);
+
+    opts.force_session = 1;
+    ASSERT_OK(odfs_media_open_image(IMG_PLAIN, &media));
+    ASSERT_ERR(odfs_mount(&media, &opts, NULL, &mnt), ODFS_ERR_RANGE);
+    odfs_media_close(&media);
+}
+
 TEST_MAIN()
