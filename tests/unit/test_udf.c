@@ -17,6 +17,7 @@
 typedef struct udf_mock_media {
     uint8_t sectors[MOCK_SECTOR_COUNT][MOCK_SECTOR_SIZE];
     int     read_counts[MOCK_SECTOR_COUNT];
+    int     fail_io_lba;
 } udf_mock_media_t;
 
 static odfs_err_t udf_mock_read_sectors(void *ctx, uint32_t lba,
@@ -27,8 +28,11 @@ static odfs_err_t udf_mock_read_sectors(void *ctx, uint32_t lba,
     if (lba + count > MOCK_SECTOR_COUNT)
         return ODFS_ERR_RANGE;
 
-    for (uint32_t i = 0; i < count; i++)
+    for (uint32_t i = 0; i < count; i++) {
+        if ((int)(lba + i) == media->fail_io_lba)
+            return ODFS_ERR_IO;
         media->read_counts[lba + i]++;
+    }
 
     memcpy(buf, &media->sectors[lba][0], (size_t)count * MOCK_SECTOR_SIZE);
     return ODFS_OK;
@@ -57,6 +61,7 @@ static const odfs_media_ops_t udf_mock_ops = {
 
 static void udf_make_media(odfs_media_t *media, udf_mock_media_t *ctx)
 {
+    ctx->fail_io_lba = -1;
     media->ops = &udf_mock_ops;
     media->ctx = ctx;
 }
@@ -677,6 +682,97 @@ TEST(udf_readdir_multi_extent_directory)
     ASSERT_EQ(collect.count, 2);
     ASSERT_STR_EQ(collect.node.name, "B"); /* last collected */
     ASSERT_EQ(collect.node.size, 7);
+
+    odfs_cache_destroy(&cache);
+}
+
+/*
+ * Directory in sector 0 with FIDs in sector 1: "A" -> FE in sector 3
+ * (a corrupt FE that must be skipped), "B" -> FE in sector 4.
+ */
+static void udf_setup_two_entry_dir(udf_mock_media_t *mock,
+                                    odfs_media_t *media,
+                                    odfs_cache_t *cache,
+                                    odfs_log_state_t *log,
+                                    udf_context_t *ctx,
+                                    odfs_node_t *dir)
+{
+    uint8_t fid[40];
+
+    memset(mock, 0, sizeof(*mock));
+    memset(ctx, 0, sizeof(*ctx));
+    memset(dir, 0, sizeof(*dir));
+
+    ctx->next_node_id = 1;
+
+    udf_make_media(media, mock);
+    odfs_cache_init(cache, media, 4);
+    odfs_log_init(log);
+
+    udf_make_fe(mock->sectors[0], UDF_ICB_FILETYPE_DIR, 80, 1);
+    udf_make_fe(mock->sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+    mock->sectors[3][4] ^= 0xFF; /* break the tag checksum */
+    udf_make_fe(mock->sectors[4], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    udf_make_fid(fid, "A", 3);
+    memcpy(&mock->sectors[1][0], fid, sizeof(fid));
+    udf_make_fid(fid, "B", 4);
+    memcpy(&mock->sectors[1][sizeof(fid)], fid, sizeof(fid));
+
+    dir->backend = ODFS_BACKEND_UDF;
+    dir->kind = ODFS_NODE_DIR;
+    dir->extent.lba = 0;
+}
+
+TEST(udf_readdir_propagates_child_fe_io_error)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+
+    udf_setup_two_entry_dir(&mock, &media, &cache, &log, &ctx, &dir);
+
+    /* a corrupt child FE is skipped */
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 1);
+    ASSERT_STR_EQ(collect.node.name, "B");
+
+    /* a media error on a child FE is not */
+    odfs_cache_flush(&cache);
+    mock.fail_io_lba = 4;
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_ERR(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                       collect_one, &collect, NULL),
+               ODFS_ERR_IO);
+    ASSERT_EQ(collect.count, 0);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_lookup_propagates_child_fe_io_error)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t out;
+
+    udf_setup_two_entry_dir(&mock, &media, &cache, &log, &ctx, &dir);
+
+    ASSERT_ERR(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "A", &out),
+               ODFS_ERR_NOT_FOUND);
+
+    mock.fail_io_lba = 4;
+    ASSERT_ERR(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "B", &out),
+               ODFS_ERR_IO);
 
     odfs_cache_destroy(&cache);
 }
