@@ -5838,7 +5838,7 @@ static void parse_control_string(handler_global_t *g __attribute__((unused)),
 
             memcpy(&blocks, (const void *)args[CTRL_FILEBUFFERS],
                    sizeof(blocks));
-            opts->cache_blocks = (uint32_t)blocks;
+            opts->cache_blocks = (blocks > 0) ? (uint32_t)blocks : 0;
         }
         if (args[CTRL_METACACHE]) {
             LONG kib;
