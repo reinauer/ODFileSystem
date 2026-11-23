@@ -51,10 +51,14 @@ TEST(ucs2be_odd_length)
 {
     const uint8_t src[] = { 0x00, 'A', 0x00 }; /* odd byte count */
     char dst[64];
-    size_t len;
+    size_t len = 99;
 
+    /* callers use the length and name even when conversion fails */
+    memset(dst, 'X', sizeof(dst));
     ASSERT_ERR(odfs_ucs2be_to_utf8(src, 3, dst, sizeof(dst), &len),
                ODFS_ERR_INVAL);
+    ASSERT_EQ(dst[0], '\0');
+    ASSERT_EQ(len, 0);
 }
 
 TEST(ucs2be_surrogate_pairs)
