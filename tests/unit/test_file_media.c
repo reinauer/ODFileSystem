@@ -413,4 +413,39 @@ TEST(cue_wav_rejects_chunk_past_eof)
     ASSERT(rmdir(dir_path) == 0);
 }
 
+/* like a real drive, refuse cooked 2048-byte reads of audio frames */
+TEST(cue_audio_track_rejects_cooked_reads)
+{
+    char dir_path[256];
+    char cue_path[320];
+    char bin_path[320];
+    uint8_t bin[2 * TEST_AUDIO_FRAME_SIZE];
+    uint8_t sector[2048];
+    uint8_t frame[TEST_AUDIO_FRAME_SIZE];
+    odfs_media_t media;
+
+    ASSERT(test_make_temp_dir(dir_path, sizeof(dir_path)));
+    ASSERT(snprintf(cue_path, sizeof(cue_path), "%s/disc.cue", dir_path) <
+           (int)sizeof(cue_path));
+    ASSERT(snprintf(bin_path, sizeof(bin_path), "%s/disc.bin", dir_path) <
+           (int)sizeof(bin_path));
+
+    memset(bin, 0x55, sizeof(bin));
+    ASSERT(test_write_file(bin_path, bin, sizeof(bin)));
+
+    ASSERT_OK(test_open_cue(cue_path,
+                            "FILE \"disc.bin\" BINARY\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:00:00\n",
+                            &media));
+    ASSERT_EQ(odfs_media_read(&media, 0, 1, sector), ODFS_ERR_IO);
+    ASSERT_OK(odfs_media_read_audio(&media, 0, 1, frame));
+    ASSERT_EQ(frame[0], 0x55);
+    odfs_media_close(&media);
+
+    ASSERT(remove(cue_path) == 0);
+    ASSERT(remove(bin_path) == 0);
+    ASSERT(rmdir(dir_path) == 0);
+}
+
 TEST_MAIN()

@@ -570,6 +570,8 @@ static odfs_err_t file_read_sectors(void *ctx, uint32_t lba,
         }
         if (!track)
             return ODFS_ERR_EOF;
+        if (track->is_audio)
+            return ODFS_ERR_IO;
 
         sector_in_track = lba - track->start_lba;
         raw_offset = track->file_offset +
