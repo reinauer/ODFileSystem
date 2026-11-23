@@ -1065,70 +1065,104 @@ static odfs_err_t amiga_read_last_session_lba(void *ctx, uint32_t *lba_out)
  *
  * Each audio frame is 2352 bytes of 16-bit stereo PCM at 44100Hz.
  * The Read CD command reads raw sectors without error correction
- * headers, giving us the audio data directly.
+ * headers, giving us the audio data directly. A buffer the device may
+ * not transfer into, or a read larger than MaxTransfer, goes through
+ * the DMA bounce buffer in pieces.
  */
 static odfs_err_t amiga_read_audio(void *ctx, uint32_t lba,
                                      uint32_t count, void *buf)
 {
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
+    uint8_t *out = buf;
+    uint32_t max_frames;
     uint8_t cmd[12];
     uint8_t sense[32];
     struct SCSICmd scsi;
-    BYTE io_err;
-    LONG io_rc;
-
-    memset(cmd, 0, sizeof(cmd));
-    memset(sense, 0, sizeof(sense));
+    int direct;
 
     if (g->read_cd_audio == 0)
         return ODFS_ERR_UNSUPPORTED;
 
+    direct = count * 2352 <= g->max_transfer &&
+             amiga_buf_mask_ok(g, buf, count * 2352)
+#if !ODFS_AMIGA_OS4
+             && amiga_direct_memtype_ok(g, buf, count * 2352)
+#endif
+             ;
+    if (direct) {
+        max_frames = count;
+    } else {
+        uint32_t limit = g->dma_buf_size < g->max_transfer ?
+                         g->dma_buf_size : g->max_transfer;
+
+        if (!g->dma_buf || limit < 2352)
+            return ODFS_ERR_NOMEM;
+        max_frames = limit / 2352;
+    }
+
+    memset(cmd, 0, sizeof(cmd));
+
     /* READ CD (0xBE) CDB */
     cmd[0] = 0xBE;
     cmd[1] = 0x01 << 2;  /* expected sector type: CD-DA (audio) */
-    /* starting LBA (big-endian) */
-    cmd[2] = (uint8_t)(lba >> 24);
-    cmd[3] = (uint8_t)(lba >> 16);
-    cmd[4] = (uint8_t)(lba >> 8);
-    cmd[5] = (uint8_t)(lba);
-    /* transfer length in frames (big-endian, 3 bytes) */
-    cmd[6] = (uint8_t)(count >> 16);
-    cmd[7] = (uint8_t)(count >> 8);
-    cmd[8] = (uint8_t)(count);
     cmd[9] = 0x10;  /* flags: read user data (2352 bytes per frame) */
 
-    scsi_init_read(&scsi, buf, count * 2352, cmd, sizeof(cmd),
-                   sense, sizeof(sense));
+    while (count > 0) {
+        uint32_t chunk = count < max_frames ? count : max_frames;
+        BYTE io_err;
+        LONG io_rc;
 
-    io_rc = scsi_do(g, &scsi, &io_err);
-    if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
-        scsi.scsi_Actual != scsi.scsi_Length) {
-        if (scsi_is_unsupported_command(sense)) {
-            if (g->read_cd_audio != 0) {
-                g->read_cd_audio = 0;
-                ODFS_WARN(&g->log, ODFS_SUB_CDDA,
-                          "READ CD (0xBE) unsupported on this device path; "
-                          "disabling CDDA audio reads");
+        memset(sense, 0, sizeof(sense));
+        /* starting LBA (big-endian) */
+        cmd[2] = (uint8_t)(lba >> 24);
+        cmd[3] = (uint8_t)(lba >> 16);
+        cmd[4] = (uint8_t)(lba >> 8);
+        cmd[5] = (uint8_t)(lba);
+        /* transfer length in frames (big-endian, 3 bytes) */
+        cmd[6] = (uint8_t)(chunk >> 16);
+        cmd[7] = (uint8_t)(chunk >> 8);
+        cmd[8] = (uint8_t)(chunk);
+
+        scsi_init_read(&scsi, direct ? out : g->dma_buf, chunk * 2352,
+                       cmd, sizeof(cmd), sense, sizeof(sense));
+
+        io_rc = scsi_do(g, &scsi, &io_err);
+        if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
+            scsi.scsi_Actual != scsi.scsi_Length) {
+            if (scsi_is_unsupported_command(sense)) {
+                if (g->read_cd_audio != 0) {
+                    g->read_cd_audio = 0;
+                    ODFS_WARN(&g->log, ODFS_SUB_CDDA,
+                              "READ CD (0xBE) unsupported on this device "
+                              "path; disabling CDDA audio reads");
+                }
+                return ODFS_ERR_UNSUPPORTED;
             }
-            return ODFS_ERR_UNSUPPORTED;
+            ODFS_ERROR(&g->log, ODFS_SUB_CDDA,
+                       "READ CD (0xBE) failed io_rc=%ld io_Error=%ld "
+                       "scsi_Status=%lu scsi_Actual=%lu scsi_Length=%lu "
+                       "lba=%lu count=%lu sense=%02x/%02x/%02x "
+                       "sense_actual=%u",
+                       (long)io_rc,
+                       (long)io_err,
+                       (unsigned long)scsi.scsi_Status,
+                       (unsigned long)scsi.scsi_Actual,
+                       (unsigned long)scsi.scsi_Length,
+                       (unsigned long)lba,
+                       (unsigned long)chunk,
+                       (unsigned int)(sense[2] & 0x0f),
+                       (unsigned int)sense[12],
+                       (unsigned int)sense[13],
+                       (unsigned int)scsi.scsi_SenseActual);
+            return ODFS_ERR_IO;
         }
-        ODFS_ERROR(&g->log, ODFS_SUB_CDDA,
-                   "READ CD (0xBE) failed io_rc=%ld io_Error=%ld "
-                   "scsi_Status=%lu scsi_Actual=%lu scsi_Length=%lu "
-                   "lba=%lu count=%lu sense=%02x/%02x/%02x sense_actual=%u",
-                   (long)io_rc,
-                   (long)io_err,
-                   (unsigned long)scsi.scsi_Status,
-                   (unsigned long)scsi.scsi_Actual,
-                   (unsigned long)scsi.scsi_Length,
-                   (unsigned long)lba,
-                   (unsigned long)count,
-                   (unsigned int)(sense[2] & 0x0f),
-                   (unsigned int)sense[12],
-                   (unsigned int)sense[13],
-                   (unsigned int)scsi.scsi_SenseActual);
-        return ODFS_ERR_IO;
+
+        if (!direct)
+            memcpy(out, g->dma_buf, chunk * 2352);
+        out += chunk * 2352;
+        lba += chunk;
+        count -= chunk;
     }
 
     if (g->read_cd_audio < 1)
@@ -1312,9 +1346,9 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     amiga_media_ctx_t *am = ctx;
     handler_global_t *g = am->g;
     uint8_t cmd[10];
-    uint8_t hdr[4];
     uint8_t sense[32];
     uint8_t *buf;
+    uint8_t *xfer;
     struct SCSICmd scsi;
     uint16_t data_len;
     size_t total_len;
@@ -1329,18 +1363,21 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 
     if (g->cdtext_passthrough == 0)
         return ODFS_ERR_UNSUPPORTED;
+    if (!g->dma_buf)
+        return ODFS_ERR_NOMEM;
 
+    /* the 4-byte header goes through the DMA-safe bounce buffer */
     memset(cmd, 0, sizeof(cmd));
-    memset(hdr, 0, sizeof(hdr));
+    memset(g->dma_buf, 0, 4);
     memset(sense, 0, sizeof(sense));
 
     cmd[0] = 0x43;  /* READ TOC/PMA/ATIP */
     cmd[1] = 0x00;  /* MSF=0 */
     cmd[2] = 0x05;  /* format: CD-Text */
     cmd[7] = 0x00;
-    cmd[8] = sizeof(hdr);
+    cmd[8] = 4;
 
-    scsi_init_read(&scsi, hdr, sizeof(hdr), cmd, sizeof(cmd),
+    scsi_init_read(&scsi, g->dma_buf, 4, cmd, sizeof(cmd),
                    sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
@@ -1366,9 +1403,9 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
         return ODFS_ERR_UNSUPPORTED;
     }
 
-    data_len = (uint16_t)(((uint16_t)hdr[0] << 8) | hdr[1]);
+    data_len = (uint16_t)(((uint16_t)g->dma_buf[0] << 8) | g->dma_buf[1]);
     total_len = (size_t)data_len + 2u;
-    if (total_len <= sizeof(hdr))
+    if (total_len <= 4u)
         return ODFS_ERR_BAD_FORMAT;
     if (total_len > 65535u)
         return ODFS_ERR_BAD_FORMAT;
@@ -1386,12 +1423,15 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
     cmd[7] = (uint8_t)(total_len >> 8);
     cmd[8] = (uint8_t)(total_len);
 
-    scsi_init_read(&scsi, buf, (ULONG)total_len, cmd, sizeof(cmd),
+    /* bounce it as well when it fits in one transfer there */
+    xfer = (total_len <= g->dma_buf_size && total_len <= g->max_transfer) ?
+           g->dma_buf : buf;
+    scsi_init_read(&scsi, xfer, (ULONG)total_len, cmd, sizeof(cmd),
                    sense, sizeof(sense));
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0 ||
-        scsi.scsi_Actual < sizeof(hdr)) {
+        scsi.scsi_Actual < 4u) {
         if (scsi_is_unsupported_command(sense)) {
             if (g->cdtext_passthrough != 0) {
                 g->cdtext_passthrough = 0;
@@ -1415,6 +1455,9 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
         odfs_free(buf);
         return ODFS_ERR_UNSUPPORTED;
     }
+
+    if (xfer != buf)
+        memcpy(buf, xfer, (size_t)scsi.scsi_Actual);
 
     if (g->cdtext_passthrough < 1)
         g->cdtext_passthrough = 1;
