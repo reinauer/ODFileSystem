@@ -62,4 +62,33 @@ TEST(namefix_is_case_insensitive)
     odfs_namefix_destroy(&state);
 }
 
+/* a duplicate name shortened for its suffix keeps whole characters */
+TEST(namefix_truncates_at_utf8_boundaries)
+{
+    /* "ab" U+00E9, "a" U+4E16, "x" U+1F600: each ends in a multi-byte
+     * character that would straddle the cut before "~2" */
+    static const char *const names[3] = {
+        "ab\xC3\xA9", "a\xE4\xB8\x96", "x\xF0\x9F\x98\x80"
+    };
+    static const size_t sizes[3] = { 6, 6, 7 };
+    static const char *const want[3] = { "ab~2", "a~2", "x~2" };
+    unsigned int i;
+
+    for (i = 0; i < 3; i++) {
+        odfs_namefix_state_t state;
+        char a[8];
+        char b[8];
+
+        memset(a, 0, sizeof(a));
+        strcpy(a, names[i]);
+        memcpy(b, a, sizeof(b));
+
+        odfs_namefix_init(&state);
+        ASSERT_OK(odfs_namefix_apply(&state, a, sizes[i]));
+        ASSERT_OK(odfs_namefix_apply(&state, b, sizes[i]));
+        ASSERT_STR_EQ(b, want[i]);
+        odfs_namefix_destroy(&state);
+    }
+}
+
 TEST_MAIN()
