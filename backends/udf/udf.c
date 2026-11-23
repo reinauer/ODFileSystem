@@ -1108,8 +1108,10 @@ static odfs_err_t udf_readlink(void *backend_ctx,
             comp[1] = '.';
             comp[2] = '\0';
             goto append;
-        case 4: /* current directory — no-op */
-            break;
+        case 4: /* current directory */
+            comp[0] = '.';
+            comp[1] = '\0';
+            goto append;
         case 5: /* named component */
             udf_decode_cs0(&data[pos + 4], clen, comp, sizeof(comp));
             if (comp[0] == '\0')

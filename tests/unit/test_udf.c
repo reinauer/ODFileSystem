@@ -777,4 +777,51 @@ TEST(udf_lookup_propagates_child_fe_io_error)
     odfs_cache_destroy(&cache);
 }
 
+TEST(udf_readlink_current_directory_component)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    char target[32];
+    uint8_t fid[44];
+    uint8_t *fe;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+
+    ctx.next_node_id = 1;
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, sizeof(fid), 1);
+    memset(fid, 0, sizeof(fid));
+    udf_make_fid(fid, "dot", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+
+    /* symlink with embedded data: one path component of type 4 (".") */
+    fe = mock.sectors[3];
+    udf_write_tag(fe, UDF_TAG_FE);
+    fe[16 + 11] = UDF_ICB_FILETYPE_SYMLINK;
+    udf_write_le16(&fe[16 + 18], UDF_ICB_ALLOC_EMBEDDED);
+    udf_write_le64(&fe[56], 4);
+    udf_write_le32(&fe[172], 4); /* ad_length = embedded data length */
+    fe[176] = 4;
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.readlink(&ctx, &cache, &log, &dir, "dot",
+                                       target, sizeof(target)));
+    ASSERT_STR_EQ(target, ".");
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
