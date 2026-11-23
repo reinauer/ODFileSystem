@@ -291,6 +291,10 @@ TEST(mount_dispatches_virtual_backend_by_node_type)
     ASSERT_EQ(dir.backend, ODFS_BACKEND_CDDA);
     ASSERT_STR_EQ(dir.name, "CDDA");
 
+    ASSERT_ERR(odfs_readdir(NULL, &root, NULL, NULL, NULL), ODFS_ERR_INVAL);
+    ASSERT_ERR(odfs_read(&mnt, NULL, 0, buf, &len), ODFS_ERR_INVAL);
+    ASSERT_ERR(odfs_lookup(&mnt, NULL, "CDDA", &dir), ODFS_ERR_INVAL);
+
     /* registering the mount root keeps the CDDA directory */
     odfs_mount_register_backend(&mnt, ODFS_BACKEND_ISO9660,
                                 &fake_main_backend_ops, &main_ctx, &root);
