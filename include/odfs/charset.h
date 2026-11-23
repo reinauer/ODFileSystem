@@ -12,15 +12,15 @@
 #include <stddef.h>
 
 /*
- * Convert UCS-2 big-endian to UTF-8.
- *   src      — UCS-2BE input buffer
+ * Convert UCS-2 / UTF-16 big-endian to UTF-8.
+ *   src      — UCS-2BE / UTF-16BE input buffer
  *   src_len  — input length in bytes (must be even)
  *   dst      — UTF-8 output buffer
  *   dst_size — size of dst buffer
  *   out_len  — receives number of bytes written (excluding NUL)
  *
  * Output is always NUL-terminated if dst_size > 0.
- * Unmappable characters are replaced with '?'.
+ * Unpaired surrogates and unmappable characters are replaced with '?'.
  */
 odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
                                   char *dst, size_t dst_size,
