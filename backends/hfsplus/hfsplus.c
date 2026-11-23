@@ -12,6 +12,7 @@
  */
 
 #include "hfsplus.h"
+#include "hfs/hfs.h"
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
@@ -51,6 +52,21 @@ static int hfsp_check_part(odfs_cache_t *cache, uint64_t part_byte, void *ctx)
     if (!vh)
         return 0;
     sig = hfs_be16(vh);
+
+    /*
+     * An HFS wrapper: an HFS volume whose MDB points at an HFS+ volume
+     * embedded in its allocation blocks (drEmbedExtent).
+     */
+    if (sig == HFS_MDB_SIG && hfs_be16(&vh[HFS_MDB_EMBEDSIG]) == HFSPLUS_SIG) {
+        part_byte += (uint64_t)hfs_be16(&vh[HFS_MDB_ALBLST]) * 512 +
+                     (uint64_t)hfs_be16(&vh[HFS_MDB_EMBEDEXT]) *
+                     hfs_be32(&vh[HFS_MDB_ALBLKSIZ]);
+        vh = odfs_hfs_read_block(cache, part_byte + HFSPLUS_VH_OFFSET);
+        if (!vh)
+            return 0;
+        sig = hfs_be16(vh);
+    }
+
     if (sig != HFSPLUS_SIG && sig != HFSX_SIG)
         return 0;
     *(uint64_t *)ctx = part_byte + HFSPLUS_VH_OFFSET;
@@ -63,7 +79,7 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
 {
     /*
      * Try common locations for the Volume Header:
-     * 1. Byte 1024 from image start (bare HFS+ volume)
+     * 1. Byte 1024 from image start (bare or HFS-wrapped HFS+ volume)
      * 2. An Apple_HFS or Apple_HFSX partition in an Apple Partition Map
      * 3. Scan 512-byte boundaries in first 256K for 'H+' or 'HX'
      *    (handles GPT and other partitioned images)

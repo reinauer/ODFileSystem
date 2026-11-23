@@ -474,4 +474,45 @@ TEST(hfsplus_in_apm_partition_past_scan_window)
     odfs_free(img);
 }
 
+/* ---- HFS wrapper ---- */
+
+TEST(hfsplus_mounts_volume_embedded_in_hfs_wrapper)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *mdb;
+    uint8_t *part;
+    uint8_t *cat;
+    odfs_mount_t mnt;
+    entry_list_t list;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    /* wrapper MDB with 4 KiB allocation blocks; the HFS+ volume starts
+     * at allocation block 64, past the 256 KiB signature scan */
+    mdb = img + 1024;
+    put_be16(&mdb[HFS_MDB_SIGWORD], HFS_MDB_SIG);
+    put_be16(&mdb[HFS_MDB_NMALBLKS], 78);
+    put_be32(&mdb[HFS_MDB_ALBLKSIZ], 4096);
+    put_be16(&mdb[HFS_MDB_ALBLST], 4);
+    put_be16(&mdb[HFS_MDB_EMBEDSIG], HFSPLUS_SIG);
+    put_be16(&mdb[HFS_MDB_EMBEDEXT], 64);
+    put_be16(&mdb[HFS_MDB_EMBEDEXT + 2], 14);
+
+    part = img + 2048 + 64 * 4096;
+    cat = hfsp_volume(part, 2);
+    bt_header(cat, 512, 1, 2);
+    bt_init(&b, cat + 512, 512, HFS_NODE_LEAF, 0, 0);
+    hfsp_add_thread(&b, HFS_CNID_ROOT_DIR, 1, "Wrapped");
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "inner.txt", 16, 0, 0, 0);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_HFSPLUS);
+    ASSERT_STR_EQ(mnt.volume_name, "Wrapped");
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 1);
+    ASSERT_STR_EQ(list.nodes[0].name, "inner.txt");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()
