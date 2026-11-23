@@ -33,7 +33,7 @@ static void cache_reset_indices(odfs_cache_t *cache)
         return;
 
     if (cache->buckets) {
-        for (i = 0; i < cache->hash_size; i++)
+        for (i = 0; i <= cache->hash_mask; i++)
             cache->buckets[i] = -1;
     }
     if (cache->next) {
@@ -54,14 +54,14 @@ static void cache_reset_indices(odfs_cache_t *cache)
 
 static uint32_t cache_hash_lba(const odfs_cache_t *cache, uint32_t lba)
 {
-    return cache->hash_size ? (lba % cache->hash_size) : 0;
+    return (lba ^ (lba >> 8)) & cache->hash_mask;
 }
 
 static int32_t cache_find_index(const odfs_cache_t *cache, uint32_t lba)
 {
     int32_t idx;
 
-    if (!cache || !cache->buckets || !cache->next || cache->hash_size == 0)
+    if (!cache || !cache->buckets || !cache->next)
         return -1;
 
     idx = cache->buckets[cache_hash_lba(cache, lba)];
@@ -187,6 +187,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
                              uint32_t capacity)
 {
     uint32_t sector_size;
+    uint32_t hash_size = 4u;
     uint32_t i;
     size_t entries_bytes;
     size_t next_bytes;
@@ -215,9 +216,11 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     if (!cache->entries)
         return ODFS_ERR_NOMEM;
 
-    cache->hash_size = capacity * 2u + 1u;
-    bucket_bytes = (size_t)cache->hash_size * sizeof(cache->buckets[0]);
-    if (bucket_bytes / sizeof(cache->buckets[0]) != cache->hash_size) {
+    while (hash_size < capacity * 2u && hash_size <= (UINT32_MAX >> 1))
+        hash_size <<= 1;
+    cache->hash_mask = hash_size - 1u;
+    bucket_bytes = (size_t)hash_size * sizeof(cache->buckets[0]);
+    if (bucket_bytes / sizeof(cache->buckets[0]) != hash_size) {
         odfs_free(cache->entries);
         memset(cache, 0, sizeof(*cache));
         return ODFS_ERR_OVERFLOW;
@@ -264,8 +267,8 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->stream_buf = NULL;
     if (capacity >= 4u * ODFS_CACHE_READAHEAD) {
         /* optional: read-ahead is skipped when this allocation fails */
-        cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD *
-                                        sector_size);
+        cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD <<
+                                        cache->sector_shift);
     }
     cache_reset_indices(cache);
 
@@ -444,7 +447,7 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
             for (i = run; i-- > 0; ) {
                 idx = cache_install(cache, lba + i,
                                     cache->stream_buf +
-                                    (size_t)i * cache->sector_size);
+                                    ((size_t)i << cache->sector_shift));
                 if (idx < 0)
                     break;
             }
@@ -550,7 +553,7 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
     }
 
     while (want - done >= sector_size) {
-        size_t full_sectors = (want - done) / sector_size;
+        size_t full_sectors = (want - done) >> cache->sector_shift;
         uint64_t next_lba;
         uint32_t count;
         size_t bytes;
@@ -562,8 +565,8 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
         if ((uint64_t)full_sectors < (uint64_t)count)
             count = (uint32_t)full_sectors;
 
-        if ((size_t)count > ((size_t)-1) / sector_size)
-            count = (uint32_t)(((size_t)-1) / sector_size);
+        if ((size_t)count > (((size_t)-1) >> cache->sector_shift))
+            count = (uint32_t)(((size_t)-1) >> cache->sector_shift);
         if (count == 0)
             return ODFS_ERR_OVERFLOW;
         if ((uint64_t)count > (uint64_t)UINT32_MAX - lba + 1u)
@@ -575,7 +578,7 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
             return err;
         }
 
-        bytes = (size_t)count * sector_size;
+        bytes = (size_t)count << cache->sector_shift;
         done += bytes;
         out += bytes;
         next_lba = (uint64_t)lba + count;

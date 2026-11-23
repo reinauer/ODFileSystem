@@ -220,8 +220,10 @@ TEST(cache_read_cached_hit_and_collision)
     make_mock_media(&media, &reads);
     ASSERT_OK(odfs_cache_init(&cache, &media, 2));
     /* Both LBAs use the same bucket; the older one is behind the newer. */
+    ASSERT_EQ(((10u ^ (10u >> 8)) & cache.hash_mask),
+              ((22u ^ (22u >> 8)) & cache.hash_mask));
     ASSERT_OK(odfs_cache_read(&cache, 10, &first));
-    ASSERT_OK(odfs_cache_read(&cache, 20, &data));
+    ASSERT_OK(odfs_cache_read(&cache, 22, &data));
     generation = cache.generation;
     data = odfs_cache_read_cached(&cache, 10);
     ASSERT(data == first);
@@ -238,8 +240,8 @@ TEST(cache_read_cached_hit_and_collision)
     /* A cached-only read protects the hit from the next eviction. */
     ASSERT_OK(odfs_cache_read(&cache, 30, &data));
     ASSERT(odfs_cache_contains(&cache, 10));
-    ASSERT_EQ(odfs_cache_contains(&cache, 20), 0);
-    ASSERT(odfs_cache_read_cached(&cache, 20) == NULL);
+    ASSERT_EQ(odfs_cache_contains(&cache, 22), 0);
+    ASSERT(odfs_cache_read_cached(&cache, 22) == NULL);
     ASSERT_EQ(reads, 3);
     odfs_cache_destroy(&cache);
 }
