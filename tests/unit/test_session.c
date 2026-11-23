@@ -203,6 +203,31 @@ TEST(find_last_session_keeps_lba_zero_for_audio_only_toc)
     ASSERT_EQ(lba, 0);
 }
 
+TEST(find_last_session_falls_back_when_explicit_session_is_audio_only)
+{
+    fake_session_media_t fake;
+    odfs_media_t media;
+    uint32_t lba = 999;
+
+    memset(&fake, 0, sizeof(fake));
+    fake.toc_err = ODFS_OK;
+    fake.last_session_err = ODFS_OK;
+    fake.last_session_lba = 5678;
+    fake.toc.session_count = 2;
+    fake.toc.sessions[0].number = 1;
+    fake.toc.sessions[0].control = 0x04;
+    fake.toc.sessions[0].start_lba = 150;
+    fake.toc.sessions[1].number = 2;
+    fake.toc.sessions[1].control = 0x00;
+    fake.toc.sessions[1].start_lba = 5678;
+
+    media.ops = &fake_media_ops;
+    media.ctx = &fake;
+
+    ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
+    ASSERT_EQ(lba, 150);
+}
+
 typedef struct pvd_scan_media {
     uint32_t total_sectors;
     uint32_t pvd_lba[2];
