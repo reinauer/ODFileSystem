@@ -237,9 +237,26 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
         return ODFS_ERR_NOMEM;
     }
 
-    /* allocate data buffers for each entry */
+    cache->sector_shift = 0;
+    {
+        uint32_t sz = sector_size;
+
+        while (sz > 1u) {
+            sz >>= 1;
+            cache->sector_shift++;
+        }
+    }
+
+    /* one slab for all sector buffers saves the per-allocation overhead;
+     * fall back to a buffer per entry when it cannot be had */
+    if ((size_t)capacity <= ((size_t)-1 >> cache->sector_shift))
+        cache->data_slab = odfs_malloc_fast((size_t)capacity <<
+                                            cache->sector_shift);
+
     for (i = 0; i < capacity; i++) {
-        cache->entries[i].data = odfs_malloc(sector_size);
+        cache->entries[i].data = cache->data_slab
+            ? cache->data_slab + ((size_t)i << cache->sector_shift)
+            : odfs_malloc(sector_size);
         if (!cache->entries[i].data) {
             /* roll back */
             for (uint32_t j = 0; j < i; j++)
@@ -255,15 +272,6 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     cache->capacity = capacity;
     cache->sector_size = sector_size;
-    cache->sector_shift = 0;
-    {
-        uint32_t sz = sector_size;
-
-        while (sz > 1u) {
-            sz >>= 1;
-            cache->sector_shift++;
-        }
-    }
     cache->media = media;
 #if ODFS_FEATURE_CACHE_STREAM
     cache->stream_buf = NULL;
@@ -284,8 +292,12 @@ void odfs_cache_destroy(odfs_cache_t *cache)
     if (!cache || !cache->entries)
         return;
 
-    for (uint32_t i = 0; i < cache->capacity; i++)
-        odfs_free(cache->entries[i].data);
+    if (cache->data_slab) {
+        odfs_free(cache->data_slab);
+    } else {
+        for (uint32_t i = 0; i < cache->capacity; i++)
+            odfs_free(cache->entries[i].data);
+    }
 #if ODFS_FEATURE_CACHE_STREAM
     odfs_free(cache->stream_buf);
 #endif

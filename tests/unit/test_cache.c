@@ -137,6 +137,9 @@ TEST(cache_init_destroy)
     make_mock_media(&media, &reads);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     ASSERT_EQ(cache.capacity, 4);
+    ASSERT(cache.data_slab != NULL);
+    ASSERT(cache.entries[0].data == cache.data_slab);
+    ASSERT(cache.entries[3].data == cache.data_slab + 3 * MOCK_SECTOR_SIZE);
     odfs_cache_destroy(&cache);
 }
 

@@ -63,6 +63,8 @@ typedef struct odfs_cache {
                                          replaced or dropped, so a caller
                                          holding a data pointer can tell
                                          it still holds the same sector */
+    uint8_t            *data_slab;   /* all sector buffers, or NULL when
+                                        each entry has its own */
 } odfs_cache_t;
 
 /* lifecycle */
