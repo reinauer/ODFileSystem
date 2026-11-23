@@ -317,4 +317,56 @@ TEST(iso_extent_skips_extended_attribute_record)
     odfs_cache_destroy(&cache);
 }
 
+TEST(iso_node_ids_are_stable_across_scans)
+{
+    static iso_test_media_t m;
+    odfs_media_t media = { .ops = &iso_test_media_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, a1, a2, b, parent;
+    void *ctx = NULL;
+    size_t off;
+
+    /* root (20) -> A (21) -> B (22) */
+    iso_init_pvd(&m, ISO_SECTOR_SIZE, 20, 0);
+    off = 0;
+    off += iso_wr_rec(&m.sectors[20][off], 20, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    off += iso_wr_rec(&m.sectors[20][off], 20, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1);
+    off += iso_wr_rec(&m.sectors[20][off], 21, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "A", 1);
+    off = 0;
+    off += iso_wr_rec(&m.sectors[21][off], 21, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    off += iso_wr_rec(&m.sectors[21][off], 20, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1);
+    off += iso_wr_rec(&m.sectors[21][off], 22, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "B", 1);
+    off = 0;
+    off += iso_wr_rec(&m.sectors[22][off], 22, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    off += iso_wr_rec(&m.sectors[22][off], 21, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1);
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 8));
+    ASSERT_OK(iso9660_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+
+    ASSERT_OK(iso9660_backend_ops.lookup(ctx, &cache, &log, &root, "A", &a1));
+    ASSERT_OK(iso9660_backend_ops.lookup(ctx, &cache, &log, &root, "A", &a2));
+    ASSERT(a1.id != 0);
+    ASSERT_EQ(a1.id, a2.id);
+
+    /* the parent found by walking up is the same node */
+    ASSERT_OK(iso9660_backend_ops.lookup(ctx, &cache, &log, &a1, "B", &b));
+    ASSERT_OK(iso9660_backend_ops.resolve_parent(ctx, &cache, &log, &b,
+                                                 &parent, NULL));
+    ASSERT_EQ(parent.extent.lba, 21);
+    ASSERT_EQ(parent.id, a1.id);
+
+    iso9660_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()

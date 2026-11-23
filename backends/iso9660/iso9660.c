@@ -161,7 +161,6 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->amiga_as.has_protection = 0;
     node->amiga_as.has_comment = 0;
 
-    node->id = ctx->next_node_id++;
     node->backend = ctx->joliet ? ODFS_BACKEND_JOLIET : ODFS_BACKEND_ISO9660;
 
     /* extent and size */
@@ -286,7 +285,6 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
         return ODFS_ERR_NOMEM;
 
     ctx->session_start = session_start;
-    ctx->next_node_id = 1;
     ctx->lowercase = (flags & ODFS_ISO_LOWERCASE) != 0;
     ctx->joliet = joliet;
 
@@ -516,6 +514,14 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
             continue;
         }
 
+        /*
+         * Derive the id from the record's position so that every scan
+         * reports the same id for the same entry. Records are at least
+         * 33 bytes long, so no two start in the same 32-byte slot of a
+         * sector. The id wraps for LBAs from 2^26 (128 GiB) on, which no
+         * optical disc reaches.
+         */
+        node.id = ((sector_lba << 6) | (sector_off >> 5)) + 1;
         node.parent_id = dir->id;
 
         uint32_t next_offset = offset + (uint32_t)consumed;
