@@ -208,4 +208,75 @@ TEST(mount_keeps_later_data_session_when_it_is_mountable)
     odfs_unmount(&mount);
 }
 
+TEST(mount_offsets_session_relative_file_extents)
+{
+    static multisession_media_t media_data;
+    odfs_media_t media;
+    odfs_mount_t mount;
+    odfs_mount_opts_t opts;
+    odfs_node_t file;
+    char buf[32];
+    size_t len;
+    uint8_t dot = 0, dotdot = 1;
+    const uint32_t session_start = 100;
+    const uint32_t pvd_lba = session_start + ISO_VD_START_LBA;
+    const uint32_t root_rel_lba = 20;
+    const uint32_t file_rel_lba = 25;
+    uint8_t *root;
+    static const char expected[] = "Session2Relative";
+
+    memset(&media_data, 0, sizeof(media_data));
+    build_iso_session(&media_data, 0, "TRACK1");
+    init_photo_cd_like_toc(&media_data, session_start);
+
+    /* session 2 mastered with LBAs relative to its own start */
+    media_data.sectors[pvd_lba][ISO_PVD_TYPE] = ISO_VD_TYPE_PRIMARY;
+    memcpy(&media_data.sectors[pvd_lba][ISO_PVD_ID],
+           ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    media_data.sectors[pvd_lba][6] = 1;
+    memset(&media_data.sectors[pvd_lba][ISO_PVD_VOLUME_ID], ' ', 32);
+    memcpy(&media_data.sectors[pvd_lba][ISO_PVD_VOLUME_ID], "REL_SESS2", 9);
+    write_le32(&media_data.sectors[pvd_lba][ISO_PVD_VOLUME_SPACE_SIZE], 40);
+    write_le16(&media_data.sectors[pvd_lba][ISO_PVD_LOGICAL_BLK_SIZE],
+               TEST_SECTOR_SIZE);
+    write_dir_record(&media_data.sectors[pvd_lba][ISO_PVD_ROOT_DIR_RECORD],
+                     root_rel_lba, TEST_SECTOR_SIZE, ISO_DR_FLAG_DIRECTORY,
+                     &dot, 1);
+    media_data.sectors[pvd_lba + 1][ISO_PVD_TYPE] = ISO_VD_TYPE_TERM;
+    memcpy(&media_data.sectors[pvd_lba + 1][ISO_PVD_ID],
+           ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+
+    root = media_data.sectors[session_start + root_rel_lba];
+    write_dir_record(&root[0], root_rel_lba, TEST_SECTOR_SIZE,
+                     ISO_DR_FLAG_DIRECTORY, &dot, 1);
+    write_dir_record(&root[34], root_rel_lba, TEST_SECTOR_SIZE,
+                     ISO_DR_FLAG_DIRECTORY, &dotdot, 1);
+    write_dir_record(&root[68], file_rel_lba, sizeof(expected) - 1, 0,
+                     (const uint8_t *)"REL.TXT;1", 9);
+
+    /* decoy at the unrelocated LBA in session 1 */
+    memcpy(media_data.sectors[file_rel_lba], "WRONG_SESSION_1!", 16);
+    memcpy(media_data.sectors[session_start + file_rel_lba],
+           expected, sizeof(expected) - 1);
+
+    media.ops = &multisession_media_ops;
+    media.ctx = &media_data;
+    odfs_mount_opts_default(&opts);
+
+    ASSERT_OK(odfs_mount(&media, &opts, NULL, &mount));
+    ASSERT_STR_EQ(mount.volume_name, "REL_SESS2");
+    ASSERT_EQ(mount.root.extent.lba, session_start + root_rel_lba);
+
+    ASSERT_OK(odfs_resolve_path(&mount, "/REL.TXT", &file));
+    ASSERT_EQ(file.extent.lba, session_start + file_rel_lba);
+
+    memset(buf, 0, sizeof(buf));
+    len = sizeof(buf);
+    ASSERT_OK(odfs_read(&mount, &file, 0, buf, &len));
+    ASSERT_EQ(len, sizeof(expected) - 1);
+    ASSERT(memcmp(buf, expected, len) == 0);
+
+    odfs_unmount(&mount);
+}
+
 TEST_MAIN()
