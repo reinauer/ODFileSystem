@@ -33,17 +33,7 @@ static void hfs_name_to_utf8(const uint8_t *src, uint8_t src_len,
     size_t out_len = 0;
 
     odfs_mac_roman_to_utf8(src, src_len, dst, dst_size, &out_len);
-
-    for (size_t i = 0; i < out_len && dst[i] != '\0'; i++) {
-        unsigned char c = (unsigned char)dst[i];
-
-        if (c == ':')
-            dst[i] = '.';
-        else if (c == '/')
-            dst[i] = '-';
-        else if (c < 0x20 || c == 0x7F)
-            dst[i] = '?';
-    }
+    odfs_hfs_fix_name(dst, out_len);
 }
 
 /* ------------------------------------------------------------------ */

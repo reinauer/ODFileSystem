@@ -102,6 +102,8 @@ typedef odfs_err_t (*hfs_record_fn)(const uint8_t *key, size_t key_len,
                                     const uint8_t *data, size_t data_len,
                                     void *cb_ctx);
 
+void odfs_hfs_fix_name(char *name, size_t len);
+
 const uint8_t *odfs_hfs_read_block(odfs_cache_t *cache, uint64_t byte_off);
 int odfs_hfs_scan_apm(odfs_cache_t *cache, uint32_t session_start,
                       hfs_part_fn check, void *ctx);

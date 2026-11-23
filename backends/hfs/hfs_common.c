@@ -23,6 +23,25 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
+/* names                                                               */
+/* ------------------------------------------------------------------ */
+
+/* Normalize a few Amiga-problematic bytes in a UTF-8 name. */
+void odfs_hfs_fix_name(char *name, size_t len)
+{
+    for (size_t i = 0; i < len && name[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)name[i];
+
+        if (c == ':')
+            name[i] = '.';
+        else if (c == '/')
+            name[i] = '-';
+        else if (c < 0x20 || c == 0x7F)
+            name[i] = '?';
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* partition map                                                       */
 /* ------------------------------------------------------------------ */
 

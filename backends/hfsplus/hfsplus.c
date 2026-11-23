@@ -35,9 +35,7 @@ static void hfsp_decode_name(const uint8_t *uname, uint16_t ulen,
     size_t byte_len = (size_t)ulen * 2;
     size_t out_len;
     odfs_ucs2be_to_utf8(uname, byte_len, dst, dst_size, &out_len);
-    /* replace ':' with '.' (Mac path separator) */
-    for (size_t i = 0; i < out_len; i++)
-        if (dst[i] == ':') dst[i] = '.';
+    odfs_hfs_fix_name(dst, out_len);
 }
 
 /* ------------------------------------------------------------------ */
