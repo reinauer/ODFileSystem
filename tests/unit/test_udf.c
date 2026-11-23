@@ -1631,4 +1631,43 @@ TEST(udf_metadata_file_too_fragmented_uses_mirror)
     odfs_cache_destroy(&cache);
 }
 
+TEST(udf_cs0_8bit_name_decodes_latin1_to_utf8)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t out;
+    uint8_t fid[44];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&out, 0, sizeof(out));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, sizeof(fid), 1);
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+
+    /* 8-bit CS0 "caf\xE9" (Latin-1 e-acute) */
+    memset(fid, 0, sizeof(fid));
+    udf_make_fid(fid, "caf\xE9", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir,
+                                     "caf\xC3\xA9", &out));
+    ASSERT_STR_EQ(out.name, "caf\xC3\xA9");
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
