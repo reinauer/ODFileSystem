@@ -137,6 +137,27 @@ static odfs_err_t hfsp_probe(odfs_cache_t *cache,
 /* catalog records                                                     */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Files the system keeps in the root folder: the journal and the
+ * directory hard link store. They are normally flagged invisible as
+ * well. The file hard link store, "\0\0\0\0HFS+ Private Data", has
+ * no printable name and is skipped as an empty name.
+ */
+static const char *const hfsp_root_private[] = {
+    ".journal",
+    ".journal_info_block",
+    ".HFS+ Private Directory Data\r",
+};
+
+static int hfsp_name_is(const uint8_t *uname, uint16_t ulen, const char *s)
+{
+    for (uint16_t i = 0; i < ulen; i++, s++) {
+        if (*s == '\0' || uname[i * 2] != 0 || uname[i * 2 + 1] != (uint8_t)*s)
+            return 0;
+    }
+    return *s == '\0';
+}
+
 static int hfsp_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
                             const uint8_t *key, size_t key_len,
                             const uint8_t *data, size_t data_len,
@@ -162,19 +183,30 @@ static int hfsp_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
     }
 
     key_namelen = hfs_be16(&key[6]);
-    if (key_namelen == 0)
+    if (key_namelen == 0 || key_namelen > (key_len - 8) / 2)
         return 0;
-    if (key_namelen >= 4 && key_len >= 10 &&
-        key[8] == 0x00 && key[9] == 0x2E)
+
+    /*
+     * Show what the Finder shows, but keep dotfiles: AmigaOS keeps its
+     * icons in .info files and window layouts in .backdrop. Hide
+     * Finder-invisible entries (finderFlags in userInfo) and the
+     * system files of the root folder.
+     */
+    if (data_len >= 58 && (hfs_be16(&data[56]) & HFS_FINDER_INVISIBLE))
         return 0;
+    if (dir->extent.lba == HFS_CNID_ROOT_DIR) {
+        for (size_t i = 0; i < sizeof(hfsp_root_private) /
+                                sizeof(hfsp_root_private[0]); i++) {
+            if (hfsp_name_is(&key[8], key_namelen, hfsp_root_private[i]))
+                return 0;
+        }
+    }
 
     memset(fnode, 0, sizeof(*fnode));
     fnode->parent_id = dir->id;
     fnode->backend = ODFS_BACKEND_HFSPLUS;
 
-    if (key_namelen <= (key_len - 8) / 2)
-        hfsp_decode_name(&key[8], key_namelen,
-                         fnode->name, sizeof(fnode->name));
+    hfsp_decode_name(&key[8], key_namelen, fnode->name, sizeof(fnode->name));
 
     if (fnode->name[0] == '\0')
         return 0;
