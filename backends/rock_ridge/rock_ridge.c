@@ -156,6 +156,7 @@ typedef struct rr_state {
     size_t   sl_size;
     size_t   sl_pos;    /* SL target bytes written so far */
     uint8_t  sl_cont;   /* last SL component continues in the next one */
+    unsigned blk_shift; /* log2(2048 / logical block size) */
     uint32_t ce_lba;    /* continuation area named by the current area */
     uint32_t ce_off;
     uint32_t ce_len;
@@ -164,12 +165,22 @@ typedef struct rr_state {
 /* note the continuation area of CE entry e in *st; 0 if out of bounds */
 static int rr_set_ce(const uint8_t *e, rr_state_t *st)
 {
+    uint32_t lba = rr_read_le32(&e[4]);
     uint32_t off = rr_read_le32(&e[12]);
     uint32_t len = rr_read_le32(&e[20]);
 
+    if (off >= ISO_SECTOR_SIZE)
+        return 0;
+    if (st->blk_shift) {
+        /* a smaller logical block may start inside a 2048-byte sector */
+        uint32_t mask = (1u << st->blk_shift) - 1;
+
+        off += (lba & mask) << (11 - st->blk_shift);
+        lba >>= st->blk_shift;
+    }
     if (off >= ISO_SECTOR_SIZE || len == 0 || len > ISO_SECTOR_SIZE - off)
         return 0;
-    st->ce_lba = rr_read_le32(&e[4]);
+    st->ce_lba = lba;
     st->ce_off = off;
     st->ce_len = len;
     return 1;
@@ -385,7 +396,7 @@ out:
 }
 
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
-              uint32_t session_start, rr_info_t *info,
+              uint32_t session_start, unsigned blk_shift, rr_info_t *info,
               char *symlink_out, size_t symlink_size,
               struct odfs_cache *cache)
 {
@@ -399,6 +410,7 @@ void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
     st.sl_size = symlink_size;
     st.sl_pos = 0;
     st.sl_cont = 0;
+    st.blk_shift = blk_shift;
     if (st.sl_out)
         st.sl_out[0] = '\0';
 
@@ -416,12 +428,14 @@ void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
 }
 
 int rr_find_parent_link(const uint8_t *sua, size_t sua_len, int skip,
-                        uint32_t session_start, struct odfs_cache *cache,
-                        uint32_t *lba_out)
+                        uint32_t session_start, unsigned blk_shift,
+                        struct odfs_cache *cache, uint32_t *lba_out)
 {
     size_t pos = (size_t)skip;
     rr_state_t st;
     int hop;
+
+    st.blk_shift = blk_shift;
 
     for (hop = 0; ; hop++) {
         int has_ce = 0;

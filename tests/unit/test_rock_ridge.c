@@ -44,7 +44,7 @@ TEST(rr_parse_sl_basic)
     rr_info_t info;
     char target[64];
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, target, sizeof(target), NULL);
 
     ASSERT_EQ(info.is_symlink, 1);
     ASSERT_EQ(info.sl_truncated, 0);
@@ -61,7 +61,7 @@ TEST(rr_parse_sl_truncated_component)
     rr_info_t info;
     char target[64];
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, target, sizeof(target), NULL);
 
     ASSERT_EQ(info.is_symlink, 1);
     ASSERT_STR_EQ(target, "");
@@ -81,12 +81,12 @@ TEST(rr_parse_sl_component_continue_and_overflow)
     char target[64];
     char tiny[8];
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, target, sizeof(target), NULL);
     ASSERT_EQ(info.is_symlink, 1);
     ASSERT_EQ(info.sl_truncated, 0);
     ASSERT_STR_EQ(target, "verylong/leaf");
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, tiny, sizeof(tiny), NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, tiny, sizeof(tiny), NULL);
     ASSERT_EQ(info.is_symlink, 1);
     ASSERT_EQ(info.sl_truncated, 1);
 }
@@ -101,7 +101,7 @@ TEST(rr_parse_as_basic)
     };
     rr_info_t info;
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL, 0, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, NULL, 0, NULL);
 
     ASSERT_EQ(info.has_amiga_protection, 1);
     ASSERT_EQ(info.amiga_protection[0], 0x00);
@@ -124,7 +124,7 @@ TEST(rr_parse_as_comment_continue)
     };
     rr_info_t info;
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL, 0, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, 0, &info, NULL, 0, NULL);
 
     ASSERT_EQ(info.has_amiga_protection, 1);
     ASSERT_EQ(info.amiga_protection[3], 0x10);
@@ -150,11 +150,11 @@ TEST(rr_parse_tf_short_entry_and_single_timestamps)
     };
     rr_info_t info;
 
-    rr_parse(short_tf, 4, 0, 0, &info, NULL, 0, NULL);
+    rr_parse(short_tf, 4, 0, 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 0);
     ASSERT_EQ(info.has_ctime, 0);
 
-    rr_parse(tf7, sizeof(tf7), 0, 0, &info, NULL, 0, NULL);
+    rr_parse(tf7, sizeof(tf7), 0, 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 1);
     ASSERT_EQ(info.has_ctime, 0);
     ASSERT_EQ(info.mtime.year, 2026);
@@ -162,7 +162,7 @@ TEST(rr_parse_tf_short_entry_and_single_timestamps)
     ASSERT_EQ(info.mtime.day, 19);
     ASSERT_EQ(info.mtime.tz_offset, 60);
 
-    rr_parse(tf17, sizeof(tf17), 0, 0, &info, NULL, 0, NULL);
+    rr_parse(tf17, sizeof(tf17), 0, 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 0);
     ASSERT_EQ(info.has_ctime, 1);
     ASSERT_EQ(info.ctime.year, 2026);
@@ -260,7 +260,7 @@ TEST(rr_parse_ce_continues_name_in_session_and_finishes_area)
     memcpy(&ce[5], "world.txt", 9);
 
     ASSERT_OK(odfs_cache_read(&cache, 10, &sec));
-    rr_parse(sec, p, 0, session_start, &info, NULL, 0, &cache);
+    rr_parse(sec, p, 0, session_start, 0, &info, NULL, 0, &cache);
 
     ASSERT_EQ(info.has_name, 1);
     ASSERT_STR_EQ(info.name, "hello_world.txt");
@@ -321,6 +321,33 @@ static size_t rr_put_link(uint8_t *p, char a, char b, uint32_t lba)
     p[0] = (uint8_t)a; p[1] = (uint8_t)b; p[2] = 12; p[3] = 1;
     wr_bb32(&p[4], lba);
     return 12;
+}
+
+TEST(rr_parse_ce_in_small_logical_block)
+{
+    static rr_media_t media_data;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    rr_info_t info;
+    uint8_t sua[28];
+    uint8_t *ce;
+
+    memset(&media_data, 0, sizeof(media_data));
+    media.ops = &rr_media_ops;
+    media.ctx = &media_data;
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+
+    /* 512-byte block 4 * 45 + 1 starts 512 bytes into sector 45 */
+    rr_put_ce(sua, 4 * 45 + 1, 64, 14);
+    ce = &media_data.sectors[45][512 + 64];
+    ce[0] = 'N'; ce[1] = 'M'; ce[2] = 14; ce[3] = 1; ce[4] = 0;
+    memcpy(&ce[5], "world.txt", 9);
+
+    rr_parse(sua, sizeof(sua), 0, 0, 2, &info, NULL, 0, &cache);
+    ASSERT_EQ(info.has_name, 1);
+    ASSERT_STR_EQ(info.name, "world.txt");
+
+    odfs_cache_destroy(&cache);
 }
 
 /*

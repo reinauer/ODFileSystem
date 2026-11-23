@@ -113,6 +113,22 @@ static inline uint32_t iso_rec_lba(const uint8_t *rec)
     return iso_read_le32(&rec[ISO_DR_EXTENT_LBA]) + rec[ISO_DR_EXT_ATTR_LENGTH];
 }
 
+/*
+ * Convert a logical block number to a 2048-byte sector number for volumes
+ * with 512- or 1024-byte logical blocks. Returns 0 if the block does not
+ * start a sector: nodes carry no byte offset within a sector, so such an
+ * extent cannot be represented.
+ */
+static inline int iso_blk_to_sector(const iso_context_t *ctx, uint32_t *blk)
+{
+    if (ctx->blk_shift) {
+        if (*blk & ((1u << ctx->blk_shift) - 1))
+            return 0;
+        *blk >>= ctx->blk_shift;
+    }
+    return 1;
+}
+
 /* iso_copy_strfield is now in iso9660.h as static inline */
 
 /*
@@ -145,6 +161,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     uint8_t name_len;
     uint8_t flags;
     size_t name_end;
+    uint32_t lba;
 
     if (sua_out) *sua_out = NULL;
     if (sua_len_out) *sua_len_out = 0;
@@ -175,7 +192,10 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->backend = ctx->joliet ? ODFS_BACKEND_JOLIET : ODFS_BACKEND_ISO9660;
 
     /* extent and size */
-    node->extent.lba    = iso_rec_lba(data) + ctx->session_start;
+    lba = iso_rec_lba(data);
+    if (!iso_blk_to_sector(ctx, &lba))
+        return -(int)rec_len;
+    node->extent.lba    = lba + ctx->session_start;
     node->extent.length = iso_read_le32(&data[ISO_DR_DATA_LENGTH]);
     node->size          = node->extent.length;
 
@@ -348,9 +368,25 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
         memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
     }
+    /* logical blocks of 512 or 1024 bytes pack into 2048-byte sectors */
+    if (ctx->pvd.logical_block_size == 1024)
+        ctx->blk_shift = 1;
+    else if (ctx->pvd.logical_block_size == 512)
+        ctx->blk_shift = 2;
+    else if (ctx->pvd.logical_block_size != ISO_SECTOR_SIZE)
+        ODFS_WARN(log, ODFS_SUB_ISO,
+                   "unusual block size %" PRIu16 " (expected %d)",
+                   ctx->pvd.logical_block_size, ISO_SECTOR_SIZE);
+    ctx->pvd.volume_space_size >>= ctx->blk_shift;
+
     /* extent and length offsets inside the record match in both variants */
     ctx->pvd.root_dir_lba  = iso_rec_lba(ctx->pvd.root_dir_record);
     ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
+    if (!iso_blk_to_sector(ctx, &ctx->pvd.root_dir_lba)) {
+        ODFS_WARN(log, ODFS_SUB_ISO, "root directory not sector-aligned");
+        odfs_free(ctx);
+        return ODFS_ERR_BAD_FORMAT;
+    }
 
     /*
      * Multisession: if the descriptor's root LBA is already >= session_start,
@@ -371,12 +407,6 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     ODFS_INFO(log, ODFS_SUB_ISO,
                "root dir: LBA %" PRIu32 ", size %" PRIu32,
                ctx->pvd.root_dir_lba, ctx->pvd.root_dir_size);
-
-    if (ctx->pvd.logical_block_size != ISO_SECTOR_SIZE) {
-        ODFS_WARN(log, ODFS_SUB_ISO,
-                   "unusual block size %" PRIu16 " (expected %d)",
-                   ctx->pvd.logical_block_size, ISO_SECTOR_SIZE);
-    }
 
     /* build root node */
     memset(root_out, 0, sizeof(*root_out));
@@ -423,7 +453,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                                    rr_skip);
 
                         rr_parse(sua, sua_len, rr_skip, ctx->session_start,
-                                 &rr, NULL, 0, cache);
+                                 ctx->blk_shift, &rr, NULL, 0, cache);
                         iso_apply_rr(root_out, &rr, 0);
                     }
                 }
@@ -544,9 +574,9 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
              ISO_DR_FLAG_MULTI_EXTENT) != 0) {
             size_t sua_off = (sua && sua_len > 0) ? (size_t)(sua - rec) : 0;
 
-            err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
+            err = odfs_iso_merge_multi_extent(ctx, cache, log,
                                               dir_lba, dir_size, &next_offset,
-                                              ctx->high_sierra, rec, &node);
+                                              rec, &node);
             if (err != ODFS_OK) {
                 odfs_namefix_destroy(&namefix);
                 return err;
@@ -572,7 +602,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
             rr_info_t rr;
             rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
-                     &rr, NULL, 0, cache);
+                     ctx->blk_shift, &rr, NULL, 0, cache);
 
             /* skip relocated entries (RE) */
             if (rr.is_relocated) {
@@ -583,7 +613,8 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
 
             /* a relocated directory (RRIP 4.1.5): the record is a file
              * placeholder, the directory is at the CL location */
-            if (rr.has_child_link) {
+            if (rr.has_child_link &&
+                iso_blk_to_sector(ctx, &rr.child_link_lba)) {
                 node.kind = ODFS_NODE_DIR;
                 if (node.mode != 0)
                     node.mode = (node.mode & ~0170000u) | 0040000u;
@@ -776,7 +807,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         memset(&rr, 0, sizeof(rr));
         if (sua && sua_len > 0) {
             rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
-                     &rr, buf, buf_size, cache);
+                     ctx->blk_shift, &rr, buf, buf_size, cache);
             if (rr.is_relocated)
                 continue;
             if (rr.has_name && rr.name[0] != '\0') {
@@ -857,6 +888,7 @@ static odfs_err_t iso_read_parent_extent(const iso_context_t *ctx,
     const uint8_t *self_rec;
     const uint8_t *dotdot_rec;
     uint8_t self_len;
+    uint32_t lba;
     odfs_err_t err;
 
     err = odfs_cache_read(cache, dir_lba, &sector);
@@ -875,19 +907,21 @@ static odfs_err_t iso_read_parent_extent(const iso_context_t *ctx,
         dotdot_rec[ISO_DR_NAME] != 0x01)
         return ODFS_ERR_BAD_FORMAT;
 
-    *parent_lba_out  = iso_rec_lba(dotdot_rec) +
-                       ctx->session_start;
+    lba = iso_rec_lba(dotdot_rec);
+    if (!iso_blk_to_sector(ctx, &lba))
+        return ODFS_ERR_BAD_FORMAT;
+    *parent_lba_out  = lba + ctx->session_start;
     *parent_size_out = iso_read_le32(&dotdot_rec[ISO_DR_DATA_LENGTH]);
 
 #if ODFS_FEATURE_ROCK_RIDGE
     if (ctx->has_rock_ridge && dotdot_rec[ISO_DR_LENGTH] > 34) {
-        uint32_t pl_lba;
-
         if (rr_find_parent_link(dotdot_rec + 34,
                                 dotdot_rec[ISO_DR_LENGTH] - 34u,
-                                ctx->rr_skip, ctx->session_start, cache,
-                                &pl_lba)) {
-            *parent_lba_out = pl_lba + ctx->session_start;
+                                ctx->rr_skip, ctx->session_start,
+                                ctx->blk_shift, cache, &lba)) {
+            if (!iso_blk_to_sector(ctx, &lba))
+                return ODFS_ERR_BAD_FORMAT;
+            *parent_lba_out = lba + ctx->session_start;
             iso_read_dot_size(cache, *parent_lba_out, parent_size_out);
         }
     }
@@ -940,19 +974,18 @@ static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
     return err;
 }
 
-odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+odfs_err_t odfs_iso_merge_multi_extent(const iso_context_t *ctx,
+                                       odfs_cache_t *cache,
                                        odfs_log_state_t *log,
-                                       uint32_t session_start,
                                        uint32_t dir_lba,
                                        uint32_t dir_size,
                                        uint32_t *offset,
-                                       int high_sierra,
                                        const uint8_t *first_rec,
                                        odfs_node_t *node)
 {
     uint8_t ident[255];
     uint8_t ident_len;
-    size_t flags_off = high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
+    size_t flags_off = ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
     int more = (first_rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
     uint64_t merged = node->extent.length;
     int contiguous = 1;
@@ -1002,14 +1035,16 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
             break;
         }
 
-        part_lba = iso_rec_lba(rec) + session_start;
+        part_lba = iso_rec_lba(rec);
         part_len = iso_read_le32(&rec[ISO_DR_DATA_LENGTH]);
 
         /* A part continues the byte stream only if the merged length so
          * far is sector-aligned and the part starts in the next sector. */
         if (contiguous &&
+            iso_blk_to_sector(ctx, &part_lba) &&
             (merged % ISO_SECTOR_SIZE) == 0 &&
-            part_lba == node->extent.lba + (uint32_t)(merged / ISO_SECTOR_SIZE)) {
+            part_lba + ctx->session_start ==
+                node->extent.lba + (uint32_t)(merged / ISO_SECTOR_SIZE)) {
             merged += part_len;
         } else if (contiguous) {
             contiguous = 0;
