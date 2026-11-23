@@ -97,6 +97,7 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
 /*
  * Parse a directory record at the given pointer into an odfs_node_t.
  * Returns the total record length consumed, or 0 on error / end of records.
+ * A negative value is the length of a record that must be skipped.
  * If sua_out/sua_len_out are non-NULL, returns a pointer to and length of
  * the System Use Area (for Rock Ridge parsing).
  */
@@ -163,12 +164,17 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
         node->name[1] = '.';
         node->name[2] = '\0';
     } else if (ctx->joliet) {
-        /* Joliet: UCS-2 BE → UTF-8, then strip a ";1" version suffix */
-        size_t out_len;
-        odfs_ucs2be_to_utf8(&data[ISO_DR_NAME], name_len,
-                              node->name, sizeof(node->name), &out_len);
-        if (out_len >= 2 && node->name[out_len - 2] == ';')
-            node->name[out_len - 2] = '\0';
+        /* Joliet: UCS-2 BE → UTF-8, then strip a ";digits" version suffix */
+        size_t out_len, p;
+        if (odfs_ucs2be_to_utf8(&data[ISO_DR_NAME], name_len,
+                                node->name, sizeof(node->name),
+                                &out_len) != ODFS_OK)
+            return -(int)rec_len; /* odd-length UCS-2 identifier */
+        p = out_len;
+        while (p > 0 && node->name[p - 1] >= '0' && node->name[p - 1] <= '9')
+            p--;
+        if (p < out_len && p > 0 && node->name[p - 1] == ';')
+            node->name[p - 1] = '\0';
     } else {
         odfs_iso_name_to_display((const char *)&data[ISO_DR_NAME], name_len,
                                   node->name, sizeof(node->name),
@@ -480,8 +486,11 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
         size_t sua_len = 0;
         int consumed = iso_parse_dir_record(rec, avail, ctx,
                                             &node, &sua, &sua_len);
-        if (consumed == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+        if (consumed <= 0) {
+            if (consumed < 0)
+                offset += (uint32_t)-consumed;
+            else
+                offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
 
@@ -702,8 +711,11 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         size_t sua_len = 0;
         int consumed = iso_parse_dir_record(rec, avail, ctx,
                                             &node, &sua, &sua_len);
-        if (consumed == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+        if (consumed <= 0) {
+            if (consumed < 0)
+                offset += (uint32_t)-consumed;
+            else
+                offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
         offset += (uint32_t)consumed;
