@@ -2396,12 +2396,14 @@ static void swap_node_ptrs(odfs_node_t **a, odfs_node_t **b)
 /*
  * Details of the symbolic link that stopped a path walk, for
  * ACTION_READ_LINK: the directory holding the link, the link's name,
- * and the unconsumed remainder of the path (pointing into the caller's
- * path string, beginning with '/' or empty).
+ * where the link's name begins in the caller's path string, and the
+ * unconsumed remainder of the path (pointing into the caller's path
+ * string, beginning with '/' or empty).
  */
 typedef struct odfs_link_hit {
     odfs_node_t parent;
     char        name[256];
+    const char *comp_start;
     const char *rest;
 } odfs_link_hit_t;
 
@@ -2548,6 +2550,7 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
                 memcpy(link_hit->name, comp, nlen);
                 link_hit->name[nlen] = '\0';
                 link_hit->parent = *parent;
+                link_hit->comp_start = p;
                 link_hit->rest = end;
             }
             return ODFS_ERR_IS_SYMLINK;
@@ -3981,6 +3984,7 @@ LONG odfs_handler_read_soft_link(handler_global_t *g,
     const odfs_node_t *start_parent;
     const odfs_node_t *start_grandparent;
     readlink_scratch_t *s;
+    size_t plen = 0;
     size_t alen;
     odfs_err_t err;
     LONG ret = -1;
@@ -4051,12 +4055,28 @@ LONG odfs_handler_read_soft_link(handler_global_t *g,
         goto out;
     }
 
-    if (odfs_posix_to_amiga_path(s->target, s->apath,
-                                 sizeof(s->apath)) != ODFS_OK) {
+    /*
+     * A relative target is relative to the directory holding the link,
+     * but DOS reissues the request relative to parent_lock: keep the
+     * part of the path that led from there to that directory.
+     */
+    if (s->target[0] != '/') {
+        const char *colon = strchr(path, ':');
+
+        plen = (size_t)(s->hit.comp_start - (colon ? colon + 1 : path));
+        if (plen >= sizeof(s->apath)) {
+            rerr = ERROR_LINE_TOO_LONG;
+            goto out;
+        }
+        memcpy(s->apath, s->hit.comp_start - plen, plen);
+    }
+
+    if (odfs_posix_to_amiga_path(s->target, s->apath + plen,
+                                 sizeof(s->apath) - plen) != ODFS_OK) {
         rerr = ERROR_LINE_TOO_LONG;
         goto out;
     }
-    alen = strlen(s->apath);
+    alen = plen + strlen(s->apath + plen);
 
     /* re-append what followed the link in the original path */
     if (s->hit.rest && *s->hit.rest) {
