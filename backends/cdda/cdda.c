@@ -805,11 +805,24 @@ static int cdda_fill_metadata_node(const cdda_context_t *ctx, int index,
     return 0;
 }
 
+typedef uint32_t __attribute__((__may_alias__)) cdda_word_t;
+
 static void cdda_byteswap_samples(uint8_t *buf, size_t len)
 {
-    size_t i;
+    size_t i = 0;
 
-    for (i = 0; i + 1 < len; i += 2) {
+    /* swap two samples per 32-bit word when the buffer is aligned */
+    if (((uintptr_t)buf & 3u) == 0) {
+        cdda_word_t *w = (cdda_word_t *)(void *)buf;
+
+        for (; i + 4 <= len; i += 4, w++) {
+            uint32_t v = *w;
+
+            *w = ((v & 0x00ff00ffu) << 8) | ((v >> 8) & 0x00ff00ffu);
+        }
+    }
+
+    for (; i + 1 < len; i += 2) {
         uint8_t tmp = buf[i];
         buf[i] = buf[i + 1];
         buf[i + 1] = tmp;
