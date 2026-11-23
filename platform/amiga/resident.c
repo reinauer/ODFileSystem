@@ -89,7 +89,6 @@ static int rt_init(BPTR seglist asm("a0"), struct ExecBase *SysBase asm("a6")) {
                 fse->fse_Version      =
                     ODFS_VERSION_MAJOR << 16 | ODFS_VERSION_MINOR;
                 fse->fse_SegList      = (BPTR)seglist;
-                fse->fse_Priority     = 10;
 
                 Forbid();
                 AddHead(&fsr->fsr_FileSysEntries,(struct Node *)fse);
