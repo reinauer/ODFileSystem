@@ -8,6 +8,7 @@
 
 #include "handler.h"
 #include "vector_guard.h"
+#include "odfs/charset.h"
 
 #include <dos/dos.h>
 #include <dos/dostags.h>
@@ -164,7 +165,8 @@ static odfs_fh_t *fh_from_vector(struct FileHandle *fh)
 static struct ExamineData *take_stale_examine_data(
     struct PRIVATE_ExamineDirContext *ctx,
     size_t name_len,
-    size_t comment_len)
+    size_t comment_len,
+    size_t link_len)
 {
     struct ExamineData *ed;
 
@@ -176,7 +178,7 @@ static struct ExamineData *take_stale_examine_data(
             (struct List *)&ctx->StaleNodeList);
         if (ed->NameSize >= name_len &&
             ed->CommentSize >= comment_len &&
-            ed->LinkSize >= 1)
+            ed->LinkSize >= link_len)
             return ed;
 
         FreeDosObject(DOS_EXAMINEDATA, ed);
@@ -185,16 +187,36 @@ static struct ExamineData *take_stale_examine_data(
     return NULL;
 }
 
+/* soft link target buffers, allocated on the first link examined */
+typedef struct examine_link_scratch {
+    char target[512];
+    char apath[512];
+} examine_link_scratch_t;
+
+static void free_link_scratch(examine_link_scratch_t *lnk)
+{
+    if (lnk)
+        odfs_amiga_free_mem(lnk, sizeof(*lnk));
+}
+
+/*
+ * dir is the directory holding node; with lnk, a soft link's target is
+ * read into ExamineData Link, through *lnk.
+ */
 static struct ExamineData *alloc_examine_data_from_context(
     handler_global_t *g,
+    const odfs_node_t *dir,
     const odfs_node_t *node,
-    struct PRIVATE_ExamineDirContext *ctx)
+    struct PRIVATE_ExamineDirContext *ctx,
+    examine_link_scratch_t **lnk)
 {
     const char *name;
     const char *comment = "";
+    const char *link_str = "";
     odfs_handler_node_info_t info;
     size_t name_len;
     size_t comment_len;
+    size_t link_len = 1u;
     struct ExamineData *ed;
 
     if (!node)
@@ -207,7 +229,20 @@ static struct ExamineData *alloc_examine_data_from_context(
     name_len = strlen(name) + 1u;
     comment_len = strlen(comment) + 1u;
 
-    ed = take_stale_examine_data(ctx, name_len, comment_len);
+    if (node->kind == ODFS_NODE_SYMLINK && lnk) {
+        if (!*lnk)
+            *lnk = odfs_amiga_alloc_mem(sizeof(**lnk), MEMF_PRIVATE);
+        if (*lnk &&
+            odfs_readlink(&g->mount, dir, node->name, (*lnk)->target,
+                          sizeof((*lnk)->target)) == ODFS_OK &&
+            odfs_posix_to_amiga_path((*lnk)->target, (*lnk)->apath,
+                                     sizeof((*lnk)->apath)) == ODFS_OK) {
+            link_str = (*lnk)->apath;
+            link_len = strlen(link_str) + 1u;
+        }
+    }
+
+    ed = take_stale_examine_data(ctx, name_len, comment_len, link_len);
     if (!ed) {
         /*
          * For the FSExamineDir() path the ExamineData entries must be
@@ -223,7 +258,7 @@ static struct ExamineData *alloc_examine_data_from_context(
                                 ADO_ExamineData_CommentSize,
                                 (ULONG)comment_len,
                                 ADO_ExamineData_LinkSize,
-                                1UL,
+                                (ULONG)link_len,
                                 ADO_ExamineDir_Context,
                                 (ULONG)ctx,
                                 TAG_END);
@@ -256,8 +291,8 @@ static struct ExamineData *alloc_examine_data_from_context(
         strncpy(ed->Comment, comment, ed->CommentSize - 1);
         ed->Comment[ed->CommentSize - 1] = '\0';
     }
-    if (ed->Link && ed->LinkSize > 0)
-        ed->Link[0] = '\0';
+    if (ed->Link && ed->LinkSize >= link_len)
+        memcpy(ed->Link, link_str, link_len);
 
     return ed;
 }
@@ -265,7 +300,7 @@ static struct ExamineData *alloc_examine_data_from_context(
 static struct ExamineData *alloc_examine_data(handler_global_t *g,
                                               const odfs_node_t *node)
 {
-    return alloc_examine_data_from_context(g, node, NULL);
+    return alloc_examine_data_from_context(g, NULL, node, NULL, NULL);
 }
 
 static struct Lock *vp_lock(struct FSVP *vp,
@@ -1005,14 +1040,18 @@ static struct ExamineData *vp_examine_file(struct FSVP *vp,
 typedef struct examine_dir_batch {
     handler_global_t *g;
     struct PRIVATE_ExamineDirContext *ctx;
+    examine_link_scratch_t *lnk;
+    examine_link_scratch_t **want_link; /* &lnk if EXF_LINK, else NULL */
 } examine_dir_batch_t;
 
-static LONG examine_dir_deliver(const odfs_node_t *entry, void *user)
+static LONG examine_dir_deliver(const odfs_node_t *dir,
+                                const odfs_node_t *entry, void *user)
 {
     examine_dir_batch_t *b = user;
     struct ExamineData *ed;
 
-    ed = alloc_examine_data_from_context(b->g, entry, b->ctx);
+    ed = alloc_examine_data_from_context(b->g, dir, entry, b->ctx,
+                                         b->want_link);
     if (!ed)
         return ERROR_NO_FREE_STORE;
     AddTail((struct List *)&b->ctx->FreshNodeList, (struct Node *)&ed->EXDnode);
@@ -1041,6 +1080,8 @@ static int32 vp_examine_dir(struct FSVP *vp,
 
     batch.g = g;
     batch.ctx = ctx;
+    batch.lnk = NULL;
+    batch.want_link = (ctx->DataRequestFlags & EXF_LINK) ? &batch.lnk : NULL;
     key = ctx->FSPrivate[0];
     resume = (uint32_t)ctx->FSPrivate[1];
     max = (uint32_t)ctx->FSPrivate[2];
@@ -1058,6 +1099,7 @@ static int32 vp_examine_dir(struct FSVP *vp,
                (long)err, (unsigned long)key,
                (unsigned long)resume, done);
     fs_unlock(g);
+    free_link_scratch(batch.lnk);
     if (err != 0)
         return return_dos_status(res2, err);
 

@@ -495,8 +495,9 @@ LONG odfs_handler_get_lock_node(handler_global_t *g,
 LONG odfs_handler_get_fh_node(handler_global_t *g,
                               odfs_fh_t *fh,
                               const odfs_node_t **node_out);
-/* Receives one directory entry; a nonzero DOS error stops the scan. */
-typedef LONG (*odfs_dir_deliver_fn)(const odfs_node_t *entry, void *user);
+/* Receives one entry of dir; a nonzero DOS error stops the scan. */
+typedef LONG (*odfs_dir_deliver_fn)(const odfs_node_t *dir,
+                                    const odfs_node_t *entry, void *user);
 LONG odfs_handler_scan_dir(handler_global_t *g,
                            odfs_lock_t *ol,
                            ULONG *previous_key,
