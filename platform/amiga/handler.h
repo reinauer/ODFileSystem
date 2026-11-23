@@ -74,6 +74,7 @@ typedef struct handler_global {
     struct IOStdReq     *vector_io_req;  /* caller-task I/O request */
     struct FileSystemVectorPort *vector_port; /* native OS4 vector port */
     LONG                 vector_sigbit; /* signal bit used by vector port */
+    int                  publish_retry_needed; /* retry asked off-task */
     /*
      * OS4 vector callbacks run in the calling process context, so all
      * access to handler state from the vectors and from the handler
