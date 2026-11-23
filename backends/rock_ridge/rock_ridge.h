@@ -107,4 +107,13 @@ void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
               char *symlink_out, size_t symlink_size,
               struct odfs_cache *cache);
 
+/*
+ * Find the PL (parent link) entry in the System Use Area of a relocated
+ * directory's ".." record. Returns 1 and the PL block number in *lba_out,
+ * 0 if there is none. Much cheaper than rr_parse() for the parent walk.
+ */
+int rr_find_parent_link(const uint8_t *sua, size_t sua_len, int skip,
+                        uint32_t session_start, struct odfs_cache *cache,
+                        uint32_t *lba_out);
+
 #endif /* ODFS_ROCK_RIDGE_H */

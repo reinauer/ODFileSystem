@@ -45,8 +45,19 @@ static void iso_parse_dir_date(const uint8_t *d, int high_sierra,
 }
 
 #if ODFS_FEATURE_ROCK_RIDGE
+/* data length from the "." record of the directory at lba */
+static void iso_read_dot_size(odfs_cache_t *cache, uint32_t lba,
+                              uint32_t *size_out)
+{
+    const uint8_t *sector;
+
+    if (odfs_cache_read(cache, lba, &sector) == ODFS_OK &&
+        sector[ISO_DR_LENGTH] >= 34)
+        *size_out = iso_read_le32(&sector[ISO_DR_DATA_LENGTH]);
+}
+
 static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
-                         uint32_t session_start, int allow_name)
+                         int allow_name)
 {
     if (allow_name && rr->has_name && rr->name[0] != '\0') {
         size_t nlen = strlen(rr->name);
@@ -73,9 +84,6 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
     }
     if (rr->has_ctime)
         node->ctime = rr->ctime;
-
-    if (rr->has_child_link)
-        node->extent.lba = rr->child_link_lba + session_start;
 
     if (rr->has_amiga_protection) {
         memcpy(node->amiga_as.protection, rr->amiga_protection, 4);
@@ -416,7 +424,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
                         rr_parse(sua, sua_len, rr_skip, ctx->session_start,
                                  &rr, NULL, 0, cache);
-                        iso_apply_rr(root_out, &rr, ctx->session_start, 0);
+                        iso_apply_rr(root_out, &rr, 0);
                     }
                 }
             }
@@ -571,7 +579,18 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
                 offset = next_offset;
                 continue;
             }
-            iso_apply_rr(&node, &rr, ctx->session_start, 1);
+            iso_apply_rr(&node, &rr, 1);
+
+            /* a relocated directory (RRIP 4.1.5): the record is a file
+             * placeholder, the directory is at the CL location */
+            if (rr.has_child_link) {
+                node.kind = ODFS_NODE_DIR;
+                if (node.mode != 0)
+                    node.mode = (node.mode & ~0170000u) | 0040000u;
+                node.extent.lba = rr.child_link_lba + ctx->session_start;
+                iso_read_dot_size(cache, node.extent.lba, &node.extent.length);
+                node.size = node.extent.length;
+            }
         }
 #endif
 
@@ -824,12 +843,15 @@ uint32_t odfs_iso_get_volume_size(void *backend_ctx)
  * directory's extent LBA and data length, so we recover the parent's location
  * without enumerating anything. dir_lba/parent_lba are media LBAs (session
  * offset already applied).
+ *
+ * A Rock Ridge directory relocated into rr_moved has a ".." record pointing
+ * at rr_moved; its PL entry names the real parent (RRIP 4.1.5.2).
  */
-odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
-                                       uint32_t session_start,
-                                       uint32_t dir_lba,
-                                       uint32_t *parent_lba_out,
-                                       uint32_t *parent_size_out)
+static odfs_err_t iso_read_parent_extent(const iso_context_t *ctx,
+                                         odfs_cache_t *cache,
+                                         uint32_t dir_lba,
+                                         uint32_t *parent_lba_out,
+                                         uint32_t *parent_size_out)
 {
     const uint8_t *sector;
     const uint8_t *self_rec;
@@ -854,8 +876,22 @@ odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
         return ODFS_ERR_BAD_FORMAT;
 
     *parent_lba_out  = iso_rec_lba(dotdot_rec) +
-                       session_start;
+                       ctx->session_start;
     *parent_size_out = iso_read_le32(&dotdot_rec[ISO_DR_DATA_LENGTH]);
+
+#if ODFS_FEATURE_ROCK_RIDGE
+    if (ctx->has_rock_ridge && dotdot_rec[ISO_DR_LENGTH] > 34) {
+        uint32_t pl_lba;
+
+        if (rr_find_parent_link(dotdot_rec + 34,
+                                dotdot_rec[ISO_DR_LENGTH] - 34u,
+                                ctx->rr_skip, ctx->session_start, cache,
+                                &pl_lba)) {
+            *parent_lba_out = pl_lba + ctx->session_start;
+            iso_read_dot_size(cache, *parent_lba_out, parent_size_out);
+        }
+    }
+#endif
     return ODFS_OK;
 }
 
@@ -1015,7 +1051,6 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
                                    odfs_node_t *grandparent_out)
 {
     iso_context_t *ctx = backend_ctx;
-    uint32_t ss = ctx->session_start;
     uint32_t root_lba = ctx->pvd.root_dir_lba;
     uint32_t parent_lba, parent_size;
     uint32_t gp_lba, gp_size;
@@ -1026,8 +1061,8 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
         return ODFS_ERR_NOT_DIR;
 
     /* dir's own ".." → parent location */
-    err = odfs_iso_read_parent_extent(cache, ss, dir->extent.lba,
-                                      &parent_lba, &parent_size);
+    err = iso_read_parent_extent(ctx, cache, dir->extent.lba,
+                                 &parent_lba, &parent_size);
     if (err != ODFS_OK)
         return err;
 
@@ -1048,7 +1083,7 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
     }
 
     /* parent's own ".." → grandparent location, needed to enumerate parent */
-    err = odfs_iso_read_parent_extent(cache, ss, parent_lba, &gp_lba, &gp_size);
+    err = iso_read_parent_extent(ctx, cache, parent_lba, &gp_lba, &gp_size);
     if (err != ODFS_OK)
         return err;
 
@@ -1076,7 +1111,7 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
         uint32_t ggp_lba, ggp_size;
         odfs_node_t great;
 
-        err = odfs_iso_read_parent_extent(cache, ss, gp_lba, &ggp_lba, &ggp_size);
+        err = iso_read_parent_extent(ctx, cache, gp_lba, &ggp_lba, &ggp_size);
         if (err != ODFS_OK)
             return err;
 
