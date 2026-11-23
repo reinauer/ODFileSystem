@@ -960,6 +960,210 @@ TEST(udf_readdir_lists_empty_file_without_descriptors)
     odfs_cache_destroy(&cache);
 }
 
+/* deleted FID of the given total length (a multiple of 4, >= 40) */
+static void udf_make_deleted_fid(uint8_t *fid, uint32_t length)
+{
+    memset(fid, 0, 38);
+    udf_write_tag(fid, UDF_TAG_FID);
+    udf_write_le16(&fid[16], 1);
+    fid[18] = UDF_FID_FLAG_DELETED;
+    udf_write_le16(&fid[36], (uint16_t)(length - 38u)); /* impl_len */
+}
+
+TEST(udf_readdir_name_straddles_sector_after_impl_use)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint8_t fid[60];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    /* a deleted FID up to 8 bytes before the end of sector 1, then a
+     * 60-byte FID with 8 bytes of implementation use whose header and
+     * name continue in sector 2 */
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 2040 + 60, 1);
+    udf_make_deleted_fid(mock.sectors[1], 2040);
+
+    memset(fid, 0, sizeof(fid));
+    udf_write_tag(fid, UDF_TAG_FID);
+    udf_write_le16(&fid[16], 1);
+    fid[19] = 11;                 /* CS0 name length */
+    udf_write_le32(&fid[24], 3);
+    udf_write_le16(&fid[36], 8);  /* impl_len */
+    memset(&fid[38], 0xAA, 8);
+    fid[46] = 8;
+    memcpy(&fid[47], "LONGNAME10", 10);
+    memcpy(&mock.sectors[1][2040], fid, 8);
+    memcpy(&mock.sectors[2][0], fid + 8, 52);
+
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 4);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 1);
+    ASSERT_STR_EQ(collect.node.name, "LONGNAME10");
+    ASSERT_EQ(collect.node.size, 5);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_readdir_header_straddles_odd_sized_extents)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t out;
+    collect_ctx_t collect;
+    uint8_t fid[40];
+
+    /* a 2000-byte extent in sector 1, then 80 bytes in sector 4 */
+    static const uint32_t dir_ads[] = { 2000, 1, 80, 4 };
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 2080, dir_ads, 2);
+    udf_make_deleted_fid(mock.sectors[1], 1980);
+
+    /* "A" has its first 20 bytes at the end of the first extent */
+    udf_make_fid(fid, "A", 5);
+    memcpy(&mock.sectors[1][1980], fid, 20);
+    memcpy(&mock.sectors[4][0], fid + 20, 20);
+    udf_make_fid(fid, "B", 5);
+    memcpy(&mock.sectors[4][20], fid, 40);
+
+    udf_make_fe(mock.sectors[5], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 2);
+    ASSERT_STR_EQ(collect.node.name, "B");
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "A", &out));
+    ASSERT_EQ(out.size, 7);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_readdir_embedded_directory)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint8_t fid[40];
+    uint8_t *fe;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    /* FIDs stored inside the directory's FE, after 4 bytes of EAs */
+    fe = mock.sectors[0];
+    udf_write_tag(fe, UDF_TAG_FE);
+    fe[16 + 11] = UDF_ICB_FILETYPE_DIR;
+    udf_write_le16(&fe[16 + 18], UDF_ICB_ALLOC_EMBEDDED);
+    udf_write_le64(&fe[56], 80);
+    udf_write_le32(&fe[168], 4);   /* ea_len */
+    udf_write_le32(&fe[172], 80);  /* embedded data length */
+    udf_make_fid(fid, "A", 3);
+    memcpy(&fe[180], fid, sizeof(fid));
+    udf_make_fid(fid, "B", 4);
+    memcpy(&fe[220], fid, sizeof(fid));
+
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+    udf_make_fe(mock.sectors[4], UDF_ICB_FILETYPE_FILE, 7, 6);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 2);
+    ASSERT_STR_EQ(collect.node.name, "B");
+    ASSERT_EQ(collect.node.size, 7);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_readdir_reports_truncated_deleted_fid)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint8_t fid[40];
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    /* Information Length 2100, but only one sector is recorded: the
+     * deleted FID at offset 40 runs past the recorded data */
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 2100, 1);
+    udf_write_le32(&mock.sectors[0][176], 2048);
+    udf_make_fid(fid, "A", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    udf_make_deleted_fid(&mock.sectors[1][40], 2060);
+
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 5);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_ERR(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                       collect_one, &collect, NULL),
+               ODFS_ERR_EOF);
+
+    odfs_cache_destroy(&cache);
+}
+
 /* ---- mounting a whole volume ---- */
 
 #define VOL_SECTOR_COUNT 300

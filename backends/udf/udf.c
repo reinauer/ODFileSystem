@@ -550,7 +550,7 @@ static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
 
 /*
  * Read up to *len bytes at file_offset from the object (file or directory)
- * whose File Entry ICB is at icb_phys. This follows the full
+ * whose File Entry ICB at icb_phys parses to *icb. This follows the full
  * allocation-descriptor chain, so files and directories that span
  * several extents — the normal case for anything larger than ~1 GiB, and
  * for fragmented media — are read correctly. Embedded data, sparse and
@@ -558,15 +558,14 @@ static odfs_err_t udf_ad_next(udf_ad_cursor_t *cur)
  * (AED) blocks are all handled. On return *len holds the byte count
  * produced, which is short at end-of-file.
  */
-static odfs_err_t udf_read_object(udf_context_t *ctx,
+static odfs_err_t udf_read_parsed(udf_context_t *ctx,
                                   odfs_cache_t *cache,
                                   uint32_t icb_phys,
+                                  const udf_icb_info_t *icb,
                                   uint64_t file_offset,
                                   void *buf,
                                   size_t *len)
 {
-    const uint8_t *sector;
-    udf_icb_info_t icb;
     udf_ad_cursor_t cur;
     uint8_t *out = buf;
     size_t want = *len;
@@ -576,26 +575,23 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
 
     *len = 0;
 
-    err = udf_parse_icb(cache, icb_phys, &icb, NULL, &sector);
-    if (err != ODFS_OK)
-        return err;
-
-    if (file_offset >= icb.data_size)
+    if (file_offset >= icb->data_size)
         return ODFS_OK;
-    if (want > icb.data_size - file_offset)
-        want = (size_t)(icb.data_size - file_offset);
+    if (want > icb->data_size - file_offset)
+        want = (size_t)(icb->data_size - file_offset);
     if (want == 0)
         return ODFS_OK;
 
-    if (icb.alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
-        if ((uint64_t)icb.ad_offset + icb.data_size > UDF_BLOCK_SIZE)
+    if (icb->alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
+        if ((uint64_t)icb->ad_offset + icb->data_size > UDF_BLOCK_SIZE)
             return ODFS_ERR_CORRUPT;
-        memcpy(out, sector + icb.ad_offset + (size_t)file_offset, want);
         *len = want;
-        return ODFS_OK;
+        return odfs_cache_read_bytes(cache, icb_phys,
+                                     icb->ad_offset + (uint32_t)file_offset,
+                                     out, len);
     }
 
-    err = udf_ad_init(&cur, ctx, cache, icb_phys, &icb);
+    err = udf_ad_init(&cur, ctx, cache, icb_phys, icb);
     if (err != ODFS_OK)
         return err;
 
@@ -648,7 +644,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
      * of a file is unallocated and reads as zeros. A directory that
      * ends early is truncated, and its short read reports that.
      */
-    if (done < want && icb.file_type != UDF_ICB_FILETYPE_DIR) {
+    if (done < want && icb->file_type != UDF_ICB_FILETYPE_DIR) {
         memset(out + done, 0, want - done);
         done = want;
     }
@@ -658,15 +654,17 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
 }
 
 /* Read exactly len bytes at offset; ODFS_ERR_EOF if fewer are available. */
-static odfs_err_t udf_read_exact(udf_context_t *ctx,
-                                 odfs_cache_t *cache,
-                                 uint32_t icb_phys,
-                                 uint32_t offset,
-                                 void *buf,
-                                 size_t len)
+static odfs_err_t udf_read_dir_exact(udf_context_t *ctx,
+                                     odfs_cache_t *cache,
+                                     uint32_t icb_phys,
+                                     const udf_icb_info_t *icb,
+                                     uint32_t offset,
+                                     void *buf,
+                                     size_t len)
 {
     size_t got = len;
-    odfs_err_t err = udf_read_object(ctx, cache, icb_phys, offset, buf, &got);
+    odfs_err_t err = udf_read_parsed(ctx, cache, icb_phys, icb,
+                                     offset, buf, &got);
 
     if (err != ODFS_OK)
         return err;
@@ -716,7 +714,7 @@ static inline int udf_is_fatal_err(odfs_err_t err)
 }
 
 typedef struct udf_fid_info {
-    const uint8_t *header;
+    const uint8_t *name;     /* CS0 name, name_len bytes */
     uint32_t       start;
     uint32_t       next;
     uint32_t       length;
@@ -728,6 +726,86 @@ typedef struct udf_fid_info {
 
 typedef odfs_err_t (*udf_fid_fn)(const udf_fid_info_t *fid, void *arg);
 
+/*
+ * Position in a directory's FID stream. The current directory sector
+ * is reused for consecutive FIDs as long as the cache generation shows
+ * that it has not been replaced in between.
+ */
+typedef struct udf_dir_stream {
+    udf_context_t  *ctx;
+    odfs_cache_t   *cache;
+    const uint8_t  *sec;
+    uint32_t        icb_phys;
+    uint32_t        sec_lba;
+    uint32_t        sec_gen;
+    uint32_t        ext_start;  /* stream offset of the current extent */
+    uint32_t        ext_len;
+    uint32_t        ext_phys;
+    udf_icb_info_t  icb;
+    udf_ad_cursor_t cur;
+} udf_dir_stream_t;
+
+/*
+ * Return the 38-byte FID header at stream offset raw_pos (directory
+ * offset log_pos): a pointer into the cached sector, with the number
+ * of contiguous bytes available there, or a copy in scratch when the
+ * header straddles a sector or extent boundary.
+ */
+static odfs_err_t udf_stream_hdr(udf_dir_stream_t *st,
+                                 uint32_t raw_pos,
+                                 uint32_t log_pos,
+                                 uint8_t *scratch,
+                                 const uint8_t **out,
+                                 uint32_t *avail_out)
+{
+    uint32_t in_ext, lba, off, av_sec, av_ext, avail;
+    odfs_err_t err;
+
+    while (raw_pos - st->ext_start >= st->ext_len) {
+        st->ext_start += st->ext_len;
+        st->ext_len = 0;
+        err = udf_ad_next(&st->cur);
+        if (err != ODFS_OK)
+            return err;
+        if (st->cur.elen == 0)
+            return ODFS_ERR_EOF;
+        if (st->cur.etype != UDF_EXT_RECORDED)
+            return ODFS_ERR_CORRUPT;
+        st->ext_len = (st->cur.elen > UINT32_MAX - st->ext_start)
+                      ? (UINT32_MAX - st->ext_start) : st->cur.elen;
+        st->ext_phys = st->cur.phys_lba;
+    }
+
+    in_ext = raw_pos - st->ext_start;
+    lba = st->ext_phys + in_ext / UDF_BLOCK_SIZE;
+    off = in_ext % UDF_BLOCK_SIZE;
+    av_sec = UDF_BLOCK_SIZE - off;
+    av_ext = st->ext_len - in_ext;
+    avail = (av_sec < av_ext) ? av_sec : av_ext;
+
+    if (avail >= 38u) {
+        if (!st->sec || st->sec_lba != lba ||
+            st->cache->generation != st->sec_gen) {
+            err = odfs_cache_read(st->cache, lba, &st->sec);
+            if (err != ODFS_OK)
+                return err;
+            st->sec_lba = lba;
+            st->sec_gen = st->cache->generation;
+        }
+        *out = st->sec + off;
+        *avail_out = avail;
+        return ODFS_OK;
+    }
+
+    err = udf_read_dir_exact(st->ctx, st->cache, st->icb_phys, &st->icb,
+                             log_pos, scratch, 38u);
+    if (err != ODFS_OK)
+        return err;
+    *out = scratch;
+    *avail_out = 38u;
+    return ODFS_OK;
+}
+
 static odfs_err_t udf_walk_fids(udf_context_t *ctx,
                                 odfs_cache_t *cache,
                                 const odfs_node_t *dir,
@@ -735,49 +813,101 @@ static odfs_err_t udf_walk_fids(udf_context_t *ctx,
                                 void *arg,
                                 uint32_t *dir_size_out)
 {
-    udf_icb_info_t icb;
-    uint32_t dir_size32;
-    uint32_t offset = 0;
+    udf_dir_stream_t st;
+    uint8_t fid_buf[320]; /* header + impl use + name, when straddling */
+    uint32_t dir_size, bias = 0, offset = 0;
     odfs_err_t err;
 
-    err = udf_parse_icb(cache, dir->extent.lba, &icb, NULL, NULL);
+    st.ctx = ctx;
+    st.cache = cache;
+    st.sec = NULL;
+    st.icb_phys = dir->extent.lba;
+    st.sec_lba = 0;
+    st.sec_gen = 0;
+    st.ext_start = 0;
+    st.ext_len = 0;
+    st.ext_phys = 0;
+
+    err = udf_parse_icb(cache, st.icb_phys, &st.icb, NULL, &st.sec);
     if (err != ODFS_OK)
         return err;
-    if (icb.data_size > UINT32_MAX)
+    if (st.icb.data_size > UINT32_MAX)
         return ODFS_ERR_CORRUPT;
 
-    dir_size32 = (uint32_t)icb.data_size;
+    /* a directory read must stop at the recorded data, not zero-fill */
+    st.icb.file_type = UDF_ICB_FILETYPE_DIR;
+    dir_size = (uint32_t)st.icb.data_size;
     if (dir_size_out)
-        *dir_size_out = dir_size32;
+        *dir_size_out = dir_size;
 
-    while (offset < dir_size32) {
-        uint8_t header[38];
-        uint32_t remaining = dir_size32 - offset;
+    if (st.icb.alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
+        /* the FIDs follow the EAs inside the ICB sector itself */
+        if ((uint64_t)st.icb.ad_offset + dir_size > UDF_BLOCK_SIZE)
+            return ODFS_ERR_CORRUPT;
+        bias = st.icb.ad_offset;
+        st.ext_len = bias + dir_size;
+        st.ext_phys = st.icb_phys;
+        st.sec_lba = st.icb_phys;
+        st.sec_gen = cache->generation;
+    } else if (dir_size > 0) {
+        err = udf_ad_init(&st.cur, ctx, cache, st.icb_phys, &st.icb);
+        if (err != ODFS_OK)
+            return err;
+        st.sec = NULL;
+    }
+
+    while (offset < dir_size) {
+        uint32_t remaining = dir_size - offset;
+        const uint8_t *hdr;
+        uint32_t avail;
         udf_fid_info_t fid;
 
-        if (remaining < sizeof(header))
+        if (remaining < 38u)
             break;
 
-        err = udf_read_exact(ctx, cache, dir->extent.lba, offset,
-                             header, sizeof(header));
+        err = udf_stream_hdr(&st, bias + offset, offset, fid_buf,
+                             &hdr, &avail);
         if (err != ODFS_OK)
             return err;
 
-        if (udf_tag_id(header) != UDF_TAG_FID)
+        if (udf_tag_id(hdr) != UDF_TAG_FID)
             break;
 
-        fid.header = header;
         fid.start = offset;
-        fid.flags = header[18];
-        fid.name_len = header[19];
-        fid.icb_lba = udf_le32(&header[20 + 4]);
-        fid.impl_len = udf_le16(&header[36]);
+        fid.flags = hdr[18];
+        fid.name_len = hdr[19];
+        fid.icb_lba = udf_le32(&hdr[20 + 4]);
+        fid.impl_len = udf_le16(&hdr[36]);
         fid.length =
             (38u + fid.impl_len + fid.name_len + 3u) & ~3u;
 
-        if (fid.length < sizeof(header) ||
-            (uint64_t)fid.length > remaining)
+        if (fid.length > remaining)
             return ODFS_ERR_CORRUPT;
+
+        if (fid.length <= avail) {
+            fid.name = hdr + 38u + fid.impl_len;
+        } else {
+            /*
+             * The FID continues past this sector or extent. Fetch the
+             * name for live entries; deleted and parent FIDs have no
+             * name we use, but read their last byte anyway, so that a
+             * FID cut off by the end of the recorded data is still
+             * reported as a truncated directory.
+             */
+            int need_name = !(fid.flags & (UDF_FID_FLAG_DELETED |
+                                           UDF_FID_FLAG_PARENT)) &&
+                            fid.name_len > 0;
+            uint32_t body = 38u + fid.impl_len;
+            uint32_t tail_off = need_name ? offset + body
+                                          : offset + fid.length - 1u;
+            size_t tail_len = need_name ? (size_t)(fid.length - body) : 1u;
+
+            err = udf_read_dir_exact(ctx, cache, st.icb_phys, &st.icb,
+                                     tail_off, fid_buf + 38u, tail_len);
+            if (err != ODFS_OK)
+                return err;
+            fid.name = fid_buf + 38u;
+        }
 
         fid.next = offset + fid.length;
         err = callback(&fid, arg);
@@ -797,8 +927,7 @@ typedef struct udf_dir_entry {
     uint8_t     flags;
 } udf_dir_entry_t;
 
-typedef odfs_err_t (*udf_dir_entry_fn)(const udf_dir_entry_t *entry,
-                                       void *arg);
+typedef odfs_err_t (*udf_dir_entry_fn)(udf_dir_entry_t *entry, void *arg);
 
 typedef struct udf_dir_walk_ctx {
     udf_context_t       *ctx;
@@ -812,55 +941,39 @@ typedef struct udf_dir_walk_ctx {
 static odfs_err_t udf_decode_dir_entry(const udf_fid_info_t *fid, void *arg)
 {
     udf_dir_walk_ctx_t *walk = arg;
-    const uint8_t *data = fid->header;
-    uint8_t *allocated = NULL;
-    uint32_t name_off;
     udf_dir_entry_t entry;
     odfs_err_t err;
 
-    if (fid->length > 38u) {
-        allocated = odfs_malloc(fid->length);
-        if (!allocated)
-            return ODFS_ERR_NOMEM;
-
-        err = udf_read_exact(walk->ctx, walk->cache,
-                             walk->dir->extent.lba, fid->start,
-                             allocated, fid->length);
-        if (err != ODFS_OK) {
-            odfs_free(allocated);
-            return err;
-        }
-        data = allocated;
-    }
-
-    if (fid->flags & (UDF_FID_FLAG_DELETED | UDF_FID_FLAG_PARENT)) {
-        odfs_free(allocated);
+    if (fid->flags & (UDF_FID_FLAG_DELETED | UDF_FID_FLAG_PARENT))
         return ODFS_OK;
-    }
 
-    memset(&entry, 0, sizeof(entry));
+    /* field by field: a memset would clear the whole name buffer for
+     * every FID; the amiga_as payload is unused while its flags are 0 */
     entry.node.id = fid->icb_lba + 1u; /* 0 is the root */
     entry.node.parent_id = walk->dir->id;
     entry.node.backend = ODFS_BACKEND_UDF;
+    entry.node.kind = ODFS_NODE_FILE;
+    entry.node.name[0] = '\0';
+    entry.node.size = 0;
+    memset(&entry.node.mtime, 0, sizeof(entry.node.mtime));
+    entry.node.ctime = entry.node.mtime;
+    entry.node.mode = 0;
+    entry.node.amiga_as.has_protection = 0;
+    entry.node.amiga_as.has_comment = 0;
+    entry.node.extent.lba = 0;
+    entry.node.extent.length = 0;
+    entry.node.backend_data = NULL;
     entry.start = fid->start;
     entry.next = fid->next;
     entry.icb_lba = fid->icb_lba;
     entry.flags = fid->flags;
 
-    name_off = 38u + fid->impl_len;
-    if (name_off > fid->length ||
-        fid->name_len > fid->length - name_off) {
-        odfs_free(allocated);
-        return ODFS_ERR_CORRUPT;
-    }
-
     if (fid->name_len > 0)
-        udf_decode_cs0(data + name_off, fid->name_len,
+        udf_decode_cs0(fid->name, fid->name_len,
                        entry.node.name, sizeof(entry.node.name));
 
     err = odfs_namefix_apply(&walk->namefix, entry.node.name,
                              sizeof(entry.node.name));
-    odfs_free(allocated);
     if (err != ODFS_OK)
         return err;
 
@@ -902,22 +1015,20 @@ typedef struct udf_readdir_ctx {
     uint32_t       *resume;
 } udf_readdir_ctx_t;
 
-static odfs_err_t udf_readdir_entry(const udf_dir_entry_t *entry, void *arg)
+static odfs_err_t udf_readdir_entry(udf_dir_entry_t *entry, void *arg)
 {
     udf_readdir_ctx_t *walk = arg;
-    odfs_node_t node;
     odfs_err_t err;
 
     if (entry->start < walk->target)
         return ODFS_OK;
 
-    node = entry->node;
     err = udf_fill_node_from_icb(walk->ctx, walk->cache,
-                                 entry->flags, entry->icb_lba, &node);
+                                 entry->flags, entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
 
-    err = walk->callback(&node, walk->arg);
+    err = walk->callback(&entry->node, walk->arg);
     if (err != ODFS_OK && walk->resume)
         *walk->resume = entry->next;
     return err;
@@ -969,11 +1080,21 @@ static odfs_err_t udf_read(void *backend_ctx,
                              size_t *len)
 {
     udf_context_t *ctx = backend_ctx;
+    udf_icb_info_t icb;
+    odfs_err_t err;
+
     (void)log;
+
+    err = udf_parse_icb(cache, file->extent.lba, &icb, NULL, NULL);
+    if (err != ODFS_OK) {
+        *len = 0;
+        return err;
+    }
 
     /* the object walker handles embedded data, sparse extents, and
      * allocation-descriptor chains spanning AED continuation blocks */
-    return udf_read_object(ctx, cache, file->extent.lba, offset, buf, len);
+    return udf_read_parsed(ctx, cache, file->extent.lba, &icb,
+                           offset, buf, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -988,22 +1109,20 @@ typedef struct udf_lookup_ctx {
     int            found;
 } udf_lookup_ctx_t;
 
-static odfs_err_t udf_lookup_entry(const udf_dir_entry_t *entry, void *arg)
+static odfs_err_t udf_lookup_entry(udf_dir_entry_t *entry, void *arg)
 {
     udf_lookup_ctx_t *lookup = arg;
-    odfs_node_t node;
     odfs_err_t err;
 
     if (odfs_strcasecmp(entry->node.name, lookup->name) != 0)
         return ODFS_OK;
 
-    node = entry->node;
     err = udf_fill_node_from_icb(lookup->ctx, lookup->cache,
-                                 entry->flags, entry->icb_lba, &node);
+                                 entry->flags, entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
 
-    *lookup->out = node;
+    *lookup->out = entry->node;
     lookup->found = 1;
     return ODFS_ERR_EOF;
 }
@@ -1199,24 +1318,22 @@ typedef struct udf_child_icb_ctx {
     int            found;
 } udf_child_icb_ctx_t;
 
-static odfs_err_t udf_child_icb_entry(const udf_dir_entry_t *entry, void *arg)
+static odfs_err_t udf_child_icb_entry(udf_dir_entry_t *entry, void *arg)
 {
     udf_child_icb_ctx_t *child = arg;
-    odfs_node_t node;
     odfs_err_t err;
 
     if (udf_phys_lba(child->ctx, entry->icb_lba) != child->child_icb)
         return ODFS_OK;
 
-    node = entry->node;
     err = udf_fill_node_from_icb(child->ctx, child->cache,
-                                 entry->flags, entry->icb_lba, &node);
+                                 entry->flags, entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
-    if (node.kind != ODFS_NODE_DIR)
+    if (entry->node.kind != ODFS_NODE_DIR)
         return ODFS_OK;
 
-    *child->out = node;
+    *child->out = entry->node;
     child->found = 1;
     return ODFS_ERR_EOF;
 }
