@@ -117,7 +117,12 @@ static int meta_dir_cacheable(const odfs_meta_cache_t *mc,
         return 0;
     if (dir->backend == ODFS_BACKEND_CDDA)
         return 0;
-    if (dir->extent.length == 0)
+    /* HFS and HFS+ directories live in the catalog B-tree: their
+     * extent holds the folder's CNID and a length of 0 */
+    if (dir->extent.length == 0 &&
+        !((dir->backend == ODFS_BACKEND_HFS ||
+           dir->backend == ODFS_BACKEND_HFSPLUS) &&
+          dir->extent.lba != 0))
         return 0;
     return 1;
 }
