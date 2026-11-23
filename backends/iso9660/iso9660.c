@@ -92,6 +92,16 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
 }
 #endif
 
+/*
+ * Start of the file data or directory described by a directory record:
+ * an Extended Attribute Record of the given number of blocks precedes
+ * the data in the extent (ECMA-119 6.4.3, 9.1.2).
+ */
+static inline uint32_t iso_rec_lba(const uint8_t *rec)
+{
+    return iso_read_le32(&rec[ISO_DR_EXTENT_LBA]) + rec[ISO_DR_EXT_ATTR_LENGTH];
+}
+
 /* iso_copy_strfield is now in iso9660.h as static inline */
 
 /*
@@ -155,7 +165,7 @@ static int iso_parse_dir_record(const uint8_t *data, size_t avail,
     node->backend = ctx->joliet ? ODFS_BACKEND_JOLIET : ODFS_BACKEND_ISO9660;
 
     /* extent and size */
-    node->extent.lba    = iso_read_le32(&data[ISO_DR_EXTENT_LBA]) + ctx->session_start;
+    node->extent.lba    = iso_rec_lba(data) + ctx->session_start;
     node->extent.length = iso_read_le32(&data[ISO_DR_DATA_LENGTH]);
     node->size          = node->extent.length;
 
@@ -330,7 +340,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
         memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
     }
     /* extent and length offsets inside the record match in both variants */
-    ctx->pvd.root_dir_lba  = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_EXTENT_LBA]);
+    ctx->pvd.root_dir_lba  = iso_rec_lba(ctx->pvd.root_dir_record);
     ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
 
     /*
@@ -832,7 +842,7 @@ odfs_err_t odfs_iso_read_parent_extent(odfs_cache_t *cache,
         dotdot_rec[ISO_DR_NAME] != 0x01)
         return ODFS_ERR_BAD_FORMAT;
 
-    *parent_lba_out  = iso_read_le32(&dotdot_rec[ISO_DR_EXTENT_LBA]) +
+    *parent_lba_out  = iso_rec_lba(dotdot_rec) +
                        session_start;
     *parent_size_out = iso_read_le32(&dotdot_rec[ISO_DR_DATA_LENGTH]);
     return ODFS_OK;
@@ -945,7 +955,7 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
             break;
         }
 
-        part_lba = iso_read_le32(&rec[ISO_DR_EXTENT_LBA]) + session_start;
+        part_lba = iso_rec_lba(rec) + session_start;
         part_len = iso_read_le32(&rec[ISO_DR_DATA_LENGTH]);
 
         /* A part continues the byte stream only if the merged length so
