@@ -321,6 +321,8 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 {
     const int joliet = (flags & ODFS_ISO_JOLIET) != 0;
     const uint8_t *sector;
+    const uint8_t *root_rec;
+    size_t hs_off = 0;
     iso_context_t *ctx;
     odfs_err_t err;
 
@@ -330,7 +332,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
     ctx->session_start = session_start;
     ctx->lowercase = (flags & ODFS_ISO_LOWERCASE) != 0;
-    ctx->joliet = joliet;
+    ctx->joliet = (uint8_t)joliet;
 
     /* read the volume descriptor (PVD, or Joliet SVD) */
     err = odfs_cache_read(cache, vd_lba, &sector);
@@ -342,48 +344,39 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 #if ODFS_FEATURE_HIGH_SIERRA
     if (!joliet &&
         memcmp(&sector[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0 &&
-        memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0)
+        memcmp(&sector[HS_VD_ID], HS_STANDARD_ID, HS_STANDARD_ID_LEN) == 0) {
         ctx->high_sierra = 1;
-#endif
-
-    /* parse PVD fields — High Sierra fields sit 8+ bytes later */
-    if (ISO_IS_HS(ctx)) {
-        iso_copy_strfield(&sector[HS_PVD_SYSTEM_ID], 32,
-                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
-        iso_copy_strfield(&sector[HS_PVD_VOLUME_ID], 32,
-                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
-
-        ctx->pvd.volume_space_size = iso_read_le32(&sector[HS_PVD_VOLUME_SPACE_SIZE]);
-        ctx->pvd.logical_block_size = iso_read_le16(&sector[HS_PVD_LOGICAL_BLK_SIZE]);
-        ctx->pvd.path_table_size = iso_read_le32(&sector[HS_PVD_PATH_TABLE_SIZE]);
-
-        memcpy(ctx->pvd.root_dir_record, &sector[HS_PVD_ROOT_DIR_RECORD], 34);
-    } else {
-        iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID], 32,
-                          ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
-#if ODFS_FEATURE_JOLIET
-        if (joliet) {
-            /* Joliet SVD: volume id is UCS-2; trim trailing spaces */
-            size_t vname_len;
-            odfs_ucs2be_to_utf8(&sector[ISO_PVD_VOLUME_ID], 32,
-                                  ctx->pvd.volume_id,
-                                  sizeof(ctx->pvd.volume_id), &vname_len);
-            while (vname_len > 0 &&
-                   ctx->pvd.volume_id[vname_len - 1] == ' ')
-                ctx->pvd.volume_id[--vname_len] = '\0';
-        } else
-#endif
-        {
-            iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID], 32,
-                              ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
-        }
-
-        ctx->pvd.volume_space_size = iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE]);
-        ctx->pvd.logical_block_size = iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE]);
-        ctx->pvd.path_table_size = iso_read_le32(&sector[ISO_PVD_PATH_TABLE_SIZE]);
-
-        memcpy(ctx->pvd.root_dir_record, &sector[ISO_PVD_ROOT_DIR_RECORD], 34);
+        hs_off = 8;
     }
+#endif
+
+    /* parse PVD fields — High Sierra fields sit 8 bytes later */
+    iso_copy_strfield(&sector[ISO_PVD_SYSTEM_ID + hs_off], 32,
+                      ctx->pvd.system_id, sizeof(ctx->pvd.system_id));
+#if ODFS_FEATURE_JOLIET
+    if (joliet) {
+        /* Joliet SVD: volume id is UCS-2; trim trailing spaces */
+        size_t vname_len;
+        odfs_ucs2be_to_utf8(&sector[ISO_PVD_VOLUME_ID], 32,
+                              ctx->pvd.volume_id,
+                              sizeof(ctx->pvd.volume_id), &vname_len);
+        while (vname_len > 0 &&
+               ctx->pvd.volume_id[vname_len - 1] == ' ')
+            ctx->pvd.volume_id[--vname_len] = '\0';
+    } else
+#endif
+    {
+        iso_copy_strfield(&sector[ISO_PVD_VOLUME_ID + hs_off], 32,
+                          ctx->pvd.volume_id, sizeof(ctx->pvd.volume_id));
+    }
+
+    ctx->pvd.volume_space_size =
+        iso_read_le32(&sector[ISO_PVD_VOLUME_SPACE_SIZE + hs_off]);
+    ctx->pvd.logical_block_size =
+        iso_read_le16(&sector[ISO_PVD_LOGICAL_BLK_SIZE + hs_off]);
+    root_rec = &sector[ISO_IS_HS(ctx) ? HS_PVD_ROOT_DIR_RECORD
+                                      : ISO_PVD_ROOT_DIR_RECORD];
+
     /* logical blocks of 512 or 1024 bytes pack into 2048-byte sectors */
     if (ctx->pvd.logical_block_size == 1024)
         ctx->blk_shift = 1;
@@ -396,8 +389,8 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     ctx->pvd.volume_space_size >>= ctx->blk_shift;
 
     /* extent and length offsets inside the record match in both variants */
-    ctx->pvd.root_dir_lba  = iso_rec_lba(ctx->pvd.root_dir_record);
-    ctx->pvd.root_dir_size = iso_read_le32(&ctx->pvd.root_dir_record[ISO_DR_DATA_LENGTH]);
+    ctx->pvd.root_dir_lba  = iso_rec_lba(root_rec);
+    ctx->pvd.root_dir_size = iso_read_le32(&root_rec[ISO_DR_DATA_LENGTH]);
     if (!iso_blk_to_sector(ctx, &ctx->pvd.root_dir_lba)) {
         ODFS_WARN(log, ODFS_SUB_ISO, "root directory not sector-aligned");
         odfs_free(ctx);
@@ -436,8 +429,8 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
     root_out->extent.length = ctx->pvd.root_dir_size;
     root_out->size          = ctx->pvd.root_dir_size;
 
-    /* parse timestamps from root dir record */
-    iso_parse_dir_date(&ctx->pvd.root_dir_record[ISO_DR_DATE],
+    /* parse timestamps from root dir record; the VD sector is still held */
+    iso_parse_dir_date(&root_rec[ISO_DR_DATE],
                        ISO_IS_HS(ctx), &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
@@ -462,7 +455,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                         rr_info_t rr;
 
                         ctx->has_rock_ridge = 1;
-                        ctx->rr_skip = rr_skip;
+                        ctx->rr_skip = (uint8_t)rr_skip;
                         root_out->backend = ODFS_BACKEND_ROCK_RIDGE;
                         ODFS_INFO(log, ODFS_SUB_RR,
                                    "Rock Ridge extensions detected (skip=%d)",
