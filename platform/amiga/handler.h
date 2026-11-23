@@ -110,9 +110,7 @@ typedef struct handler_global {
     void                *fh_pool;
 
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
-#ifdef __AROS__
     ULONG                dma_buf_raw_size;
-#endif
     uint8_t             *dma_buf;       /* 16-byte aligned bounce buffer */
     ULONG                dma_buf_size;  /* usable size in bytes */
 #if !ODFS_AMIGA_OS4
