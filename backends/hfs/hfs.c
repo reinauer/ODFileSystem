@@ -50,51 +50,37 @@ static void hfs_name_to_utf8(const uint8_t *src, uint8_t src_len,
 /* probe: look for MDB at block 2 (with or without partition map)      */
 /* ------------------------------------------------------------------ */
 
+static int hfs_check_part(odfs_cache_t *cache, uint64_t part_byte, void *ctx)
+{
+    const uint8_t *mdb = odfs_hfs_read_block(cache, part_byte + 1024);
+
+    if (!mdb || hfs_be16(mdb) != HFS_MDB_SIG)
+        return 0;
+    *(uint64_t *)ctx = part_byte;
+    return 1;
+}
+
+/* find the byte offset of the HFS volume: at the session start or in
+ * an Apple_HFS partition */
+static int hfs_find_volume(odfs_cache_t *cache, uint32_t session_start,
+                           uint64_t *vol_byte)
+{
+    return hfs_check_part(cache, (uint64_t)session_start * 2048, vol_byte) ||
+           odfs_hfs_scan_apm(cache, session_start, hfs_check_part, vol_byte);
+}
+
 static odfs_err_t hfs_probe(odfs_cache_t *cache,
                               odfs_log_state_t *log,
                               uint32_t session_start)
 {
-    const uint8_t *sector;
-    odfs_err_t err;
+    uint64_t vol_byte;
 
-    /* MDB is at 512-byte block 2 from volume start.
-       On a 2048-byte CD sector, that's at byte 1024 within LBA 0. */
-    err = odfs_cache_read(cache, session_start, &sector);
-    if (err != ODFS_OK)
-        return err;
+    if (!hfs_find_volume(cache, session_start, &vol_byte))
+        return ODFS_ERR_BAD_FORMAT;
 
-    uint16_t sig = hfs_be16(&sector[1024]);
-    if (sig == HFS_MDB_SIG) {
-        ODFS_INFO(log, ODFS_SUB_HFS, "HFS MDB found at session LBA %" PRIu32,
-                   session_start);
-        return ODFS_OK;
-    }
-
-    /* try with Apple Partition Map: check for "PM" at 512-byte block 1 */
-    sig = hfs_be16(&sector[512]);
-    if (sig == HFS_APM_SIG) {
-        /* scan partition map for Apple_HFS partition */
-        /* for now, just check the first partition entry */
-        const uint8_t *pm = &sector[512];
-        const char *ptype = (const char *)&pm[48]; /* pmPartType at offset 48 */
-        if (memcmp(ptype, "Apple_HFS", 9) == 0) {
-            uint32_t pstart = hfs_be32(&pm[8]); /* pmPyPartStart */
-            /* verify MDB at pstart + 2 */
-            uint64_t mdb_byte = ((uint64_t)pstart + 2) * 512;
-            uint32_t mdb_lba = (uint32_t)(mdb_byte / 2048);
-            uint32_t mdb_off = (uint32_t)(mdb_byte % 2048);
-            err = odfs_cache_read(cache, session_start + mdb_lba, &sector);
-            if (err != ODFS_OK)
-                return err;
-            if (hfs_be16(&sector[mdb_off]) == HFS_MDB_SIG) {
-                ODFS_INFO(log, ODFS_SUB_HFS,
-                           "HFS via APM at partition start %" PRIu32, pstart);
-                return ODFS_OK;
-            }
-        }
-    }
-
-    return ODFS_ERR_BAD_FORMAT;
+    ODFS_INFO(log, ODFS_SUB_HFS, "HFS MDB found at byte %" PRIu64,
+              vol_byte + 1024);
+    return ODFS_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,10 +149,9 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
                               void **backend_ctx)
 {
     hfs_volume_t *vol;
-    const uint8_t *sector;
     const uint8_t *mdb;
     odfs_err_t err;
-    uint32_t vol_start_512 = 0;
+    uint64_t vol_byte;
     uint32_t mtime;
 
     vol = odfs_calloc(1, sizeof(*vol) + HFS_VOLNAME_SIZE);
@@ -174,36 +159,20 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
 
     vol->parse_entry = hfs_parse_entry;
 
-    /* find MDB — try direct first, then APM */
-    err = odfs_cache_read(cache, session_start, &sector);
-    if (err != ODFS_OK) { odfs_free(vol); return err; }
-
-    if (hfs_be16(&sector[1024]) == HFS_MDB_SIG) {
-        vol_start_512 = session_start * 4; /* 2048/512 = 4 */
-        mdb = &sector[1024];
-    } else if (hfs_be16(&sector[512]) == HFS_APM_SIG) {
-        const uint8_t *pm = &sector[512];
-        if (memcmp(&pm[48], "Apple_HFS", 9) != 0) {
-            odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
-        }
-        uint32_t pstart = hfs_be32(&pm[8]);
-        vol_start_512 = session_start * 4 + pstart;
-        uint64_t mdb_byte = ((uint64_t)vol_start_512 + 2) * 512;
-        uint32_t mdb_lba = (uint32_t)(mdb_byte / 2048);
-        uint32_t mdb_off = (uint32_t)(mdb_byte % 2048);
-        err = odfs_cache_read(cache, mdb_lba, &sector);
-        if (err != ODFS_OK) { odfs_free(vol); return err; }
-        mdb = &sector[mdb_off];
-        if (hfs_be16(mdb) != HFS_MDB_SIG) { odfs_free(vol); return ODFS_ERR_BAD_FORMAT; }
-    } else {
-        odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
+    if (!hfs_find_volume(cache, session_start, &vol_byte)) {
+        odfs_free(vol);
+        return ODFS_ERR_BAD_FORMAT;
+    }
+    mdb = odfs_hfs_read_block(cache, vol_byte + 1024);
+    if (!mdb) {
+        odfs_free(vol);
+        return ODFS_ERR_IO;
     }
 
     /* parse MDB */
     vol->total_blocks = hfs_be16(&mdb[HFS_MDB_NMALBLKS]);
     vol->block_size = hfs_be32(&mdb[HFS_MDB_ALBLKSIZ]);
-    vol->alloc_base = ((uint64_t)vol_start_512 +
-                       hfs_be16(&mdb[HFS_MDB_ALBLST])) * 512;
+    vol->alloc_base = vol_byte + (uint64_t)hfs_be16(&mdb[HFS_MDB_ALBLST]) * 512;
 
     uint8_t vnamelen = mdb[HFS_MDB_VOLNAMELEN];
     if (vnamelen > 27) vnamelen = 27;

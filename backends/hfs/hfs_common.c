@@ -23,6 +23,53 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
+/* partition map                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Return the 512-byte block at byte_off, which must be 512-aligned,
+ * from the block cache. The pointer is valid until the next cache read.
+ */
+const uint8_t *odfs_hfs_read_block(odfs_cache_t *cache, uint64_t byte_off)
+{
+    const uint8_t *sector;
+
+    if (byte_off / 2048 > UINT32_MAX ||
+        odfs_cache_read(cache, (uint32_t)(byte_off / 2048), &sector) != ODFS_OK)
+        return NULL;
+    return sector + (uint32_t)(byte_off % 2048);
+}
+
+/*
+ * Apple Partition Map: entry 1 at 512-byte block 1 is usually the map
+ * itself, with the Apple_HFS (or Apple_HFSX) partition in a later
+ * entry. pmMapBlkCnt in each entry gives the number of entries.
+ */
+int odfs_hfs_scan_apm(odfs_cache_t *cache, uint32_t session_start,
+                      hfs_part_fn check, void *ctx)
+{
+    uint64_t base = (uint64_t)session_start * 2048;
+    uint32_t count = 1;
+
+    for (uint32_t i = 1; i <= count && i <= 64; i++) {
+        const uint8_t *pm = odfs_hfs_read_block(cache, base + i * 512u);
+        uint64_t part_byte;
+
+        if (!pm || hfs_be16(pm) != HFS_APM_SIG)
+            break;
+        if (i == 1)
+            count = hfs_be32(&pm[4]);     /* pmMapBlkCnt */
+        if (memcmp(&pm[48], "Apple_HFS", 9) != 0)   /* pmPartType */
+            continue;
+
+        part_byte = base + (uint64_t)hfs_be32(&pm[8]) * 512;   /* pmPyPartStart */
+        if (check(cache, part_byte, ctx))
+            return 1;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* B-tree access                                                       */
 /* ------------------------------------------------------------------ */
 

@@ -37,10 +37,6 @@
 #define HFS_MDB_CTFLSIZE    146    /* uint32: catalog B-tree file size */
 #define HFS_MDB_CTEXTREC    150    /* 12 bytes: catalog B-tree extents */
 
-/* ---- Apple Partition Map ---- */
-
-#define HFS_APM_SIG           0x504D  /* "PM" */
-
 /* volume_name buffer size, NUL included */
 
 #define HFS_VOLNAME_SIZE      28
