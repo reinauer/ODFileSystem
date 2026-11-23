@@ -1164,7 +1164,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         odfs_err_t err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
-                *resume_offset = (uint32_t)i;
+                *resume_offset = (uint32_t)(i + 1);
             return err;
         }
     }
@@ -1179,7 +1179,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         odfs_err_t err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
-                *resume_offset = (uint32_t)(metadata_count + i);
+                *resume_offset = (uint32_t)(metadata_count + i + 1);
             return err;
         }
     }
