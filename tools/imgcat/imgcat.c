@@ -66,9 +66,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (node.kind == ODFS_NODE_DIR) {
+        fprintf(stderr, "error: '%s': %s\n",
+                path, odfs_err_str(ODFS_ERR_IS_DIR));
+        odfs_unmount(&mnt);
+        return 1;
+    }
+
     /* read and write to stdout */
     uint8_t buf[8192];
     uint64_t offset = 0;
+    int rc = 0;
     while (offset < node.size) {
         size_t len = sizeof(buf);
         if (offset + len > node.size)
@@ -78,15 +86,24 @@ int main(int argc, char **argv)
         if (err != ODFS_OK) {
             fprintf(stderr, "error: read at offset %llu: %s\n",
                     (unsigned long long)offset, odfs_err_str(err));
+            rc = 1;
             break;
         }
         if (len == 0)
             break;
 
-        fwrite(buf, 1, len, stdout);
+        if (fwrite(buf, 1, len, stdout) != len) {
+            fprintf(stderr, "error: write failed\n");
+            rc = 1;
+            break;
+        }
         offset += len;
+    }
+    if (rc == 0 && fflush(stdout) != 0) {
+        fprintf(stderr, "error: write failed\n");
+        rc = 1;
     }
 
     odfs_unmount(&mnt);
-    return 0;
+    return rc;
 }
