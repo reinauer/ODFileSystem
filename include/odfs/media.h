@@ -145,8 +145,7 @@ static inline void odfs_media_close(odfs_media_t *m)
 {
     if (!m || !m->ops || !m->ops->close)
         return;
-    if (m->ops->close)
-        m->ops->close(m->ctx);
+    m->ops->close(m->ctx);
 }
 
 /* host-side: open an image file as media */
