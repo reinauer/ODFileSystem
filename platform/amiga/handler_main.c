@@ -2510,7 +2510,8 @@ static odfs_err_t resolve_amiga_path(handler_global_t *g,
 
 #if ODFS_FEATURE_CDDA
         /* intercept "CDDA" virtual directory on mixed-mode discs */
-        if (g->has_cdda && cur->extent.lba == g->mount.root.extent.lba &&
+        if (g->has_cdda && cur->backend != ODFS_BACKEND_CDDA &&
+            cur->extent.lba == g->mount.root.extent.lba &&
             odfs_strcasecmp(comp, "CDDA") == 0) {
             swap_node_ptrs(&grandparent, &parent);
             swap_node_ptrs(&parent, &cur);
@@ -2820,7 +2821,8 @@ static LONG resolve_object_into_entry(handler_global_t *g,
         return odfs_err_to_dos(ODFS_ERR_NOT_DIR);
 
 #if ODFS_FEATURE_CDDA
-    if (g->has_cdda && start->extent.lba == g->mount.root.extent.lba &&
+    if (g->has_cdda && start->backend != ODFS_BACKEND_CDDA &&
+        start->extent.lba == g->mount.root.extent.lba &&
         odfs_strcasecmp(p, "CDDA") == 0) {
         entry->fnode = g->cdda_root;
     } else
