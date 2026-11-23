@@ -979,4 +979,60 @@ TEST(cdda_cdtext_file_holds_dense_short_strings)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_audio_cache_is_allocated_on_first_audio_read)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t track;
+    void *backend_ctx = NULL;
+    cdda_context_t *cdda_ctx;
+    uint8_t frames[2 * CDDA_FRAME_SIZE];
+    uint8_t buf[64];
+    size_t len;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    fake_audio_ctx_t audio_ctx;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].length = 2;
+
+    for (size_t i = 0; i < sizeof(frames); i++)
+        frames[i] = (uint8_t)(i ^ 0x5Au);
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    memset(&audio_ctx, 0, sizeof(audio_ctx));
+    audio_ctx.data = frames;
+    media_ops.read_audio = fake_read_audio_counted;
+    media.ops = &media_ops;
+    media.ctx = &audio_ctx;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &media, &root, &backend_ctx));
+    cdda_ctx = backend_ctx;
+    ASSERT(cdda_ctx->audio_cache == NULL);
+
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track01.wav", &track));
+
+    /* the synthesized header needs no audio buffer */
+    len = CDDA_WAV_HEADER_SIZE;
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track,
+                                    0, buf, &len));
+    ASSERT_EQ(len, CDDA_WAV_HEADER_SIZE);
+    ASSERT(cdda_ctx->audio_cache == NULL);
+    ASSERT_EQ(audio_ctx.calls, 0);
+
+    len = sizeof(buf);
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track,
+                                    CDDA_WAV_HEADER_SIZE, buf, &len));
+    ASSERT_EQ(len, sizeof(buf));
+    ASSERT(cdda_ctx->audio_cache != NULL);
+    ASSERT_EQ(cdda_ctx->audio_cache_cap, CDDA_READAHEAD_FRAMES);
+    ASSERT_EQ(audio_ctx.calls, 1);
+    ASSERT(memcmp(buf, frames, sizeof(buf)) == 0);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()
