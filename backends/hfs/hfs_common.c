@@ -125,8 +125,8 @@ static uint32_t hfs_key_length(const hfs_volume_t *vol, const uint8_t *key)
 odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
                                odfs_cache_t *cache)
 {
-    /* node descriptor and the B-tree header record up to nodeSize */
-    uint8_t hdr[34];
+    /* node descriptor and the B-tree header record up to totalNodes */
+    uint8_t hdr[40];
     odfs_err_t err;
 
     err = hfs_read_btree(vol, tree, cache, 0, hdr, sizeof(hdr));
@@ -138,6 +138,7 @@ odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
 
     tree->root_node = hfs_be32(&hdr[16]);
     tree->node_size = hfs_be16(&hdr[32]);
+    tree->total_nodes = hfs_be32(&hdr[36]);
 
     if (tree->node_size < 14 || tree->node_size > 32768)
         return ODFS_ERR_BAD_FORMAT;
@@ -171,6 +172,7 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
     uint32_t node_size = tree->node_size;
     uint32_t cur_node = tree->root_node;
     uint8_t *node = vol->node_buf;
+    uint32_t steps = 0;
     odfs_err_t err;
     int depth;
 
@@ -218,12 +220,13 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
         cur_node = child;
     }
     if (depth == 20)
-        return ODFS_OK;
+        return ODFS_ERR_LOOP;
 
     /* scan leaf nodes for records of parent_cnid */
     for (;;) {
         uint16_t nrecs;
         uint32_t limit;
+        uint32_t prev_node;
 
         if (!hfs_read_record_count(node, node_size, &nrecs, &limit))
             return ODFS_ERR_CORRUPT;
@@ -263,13 +266,20 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
         }
 
         /* follow forward link to next leaf */
+        prev_node = cur_node;
         cur_node = hfs_be32(&node[0]);
         if (cur_node == 0)
             return ODFS_OK;
+        if (++steps >= tree->total_nodes)
+            return ODFS_ERR_LOOP;
 
         err = hfs_read_node(vol, tree, cache, cur_node, node);
         if (err != ODFS_OK || node[8] != HFS_NODE_LEAF)
             return err;
+        /* the leaf chain is doubly linked; a self-link or a jump out of
+         * the chain shows up as a back link that does not match */
+        if (hfs_be32(&node[4]) != prev_node)
+            return ODFS_ERR_CORRUPT;
     }
 }
 

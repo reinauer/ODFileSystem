@@ -59,6 +59,7 @@ typedef struct hfs_btree {
     hfs_extent_t extents[8];
     uint32_t     root_node;
     uint32_t     node_size;
+    uint32_t     total_nodes;
 } hfs_btree_t;
 
 typedef struct hfs_volume hfs_volume_t;
