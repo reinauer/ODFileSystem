@@ -19,6 +19,12 @@
 #include <string.h>
 #include <inttypes.h>
 
+/* the only supported logical block size: one optical media sector */
+#define UDF_BLOCK_SIZE 2048u
+
+/* the Main VDS needs at least 16 sectors; anything beyond this is corrupt */
+#define UDF_MAX_VDS_SECTORS 256u
+
 /* ------------------------------------------------------------------ */
 /* tag parsing                                                         */
 /* ------------------------------------------------------------------ */
@@ -181,14 +187,13 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
 {
     udf_context_t *ctx;
     const uint8_t *sector;
+    uint32_t lv_block_size = 0;
     uint16_t tag;
     odfs_err_t err;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
         return ODFS_ERR_NOMEM;
-
-    ctx->lv_block_size = 2048;
 
     /* read AVDP */
     err = odfs_cache_read(cache, session_start + UDF_AVDP_LBA, &sector);
@@ -202,11 +207,13 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     /* AVDP: main VDS extent at offset 16 */
     uint32_t mvds_lba = udf_le32(&sector[16 + 4]);
     uint32_t mvds_len = udf_le32(&sector[16]);
-    uint32_t mvds_sectors = mvds_len / 2048;
+    uint32_t mvds_sectors = mvds_len / UDF_BLOCK_SIZE;
 
     ODFS_DEBUG(log, ODFS_SUB_UDF,
                 "MVDS at LBA %" PRIu32 ", %" PRIu32 " sectors",
                 mvds_lba, mvds_sectors);
+    if (mvds_sectors > UDF_MAX_VDS_SECTORS)
+        mvds_sectors = UDF_MAX_VDS_SECTORS;
 
     /* scan VDS for PVD, PD, LVD */
     int found_pd = 0, found_lvd = 0;
@@ -240,7 +247,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
 
         case UDF_TAG_LVD:
             /* Logical Volume Descriptor */
-            ctx->lv_block_size = udf_le32(&sector[212]);
+            lv_block_size = udf_le32(&sector[212]);
             /* LVD volume id at offset 84, 128 bytes d-string */
             if (ctx->volume_id[0] == '\0')
                 udf_decode_dstring(&sector[84], 128,
@@ -257,7 +264,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
             found_lvd = 1;
             ODFS_INFO(log, ODFS_SUB_UDF,
                        "LVD block size: %" PRIu32 ", FSD at part LBA %" PRIu32,
-                       ctx->lv_block_size, fsd_ad.lba);
+                       lv_block_size, fsd_ad.lba);
             break;
 
         case UDF_TAG_TD:
@@ -274,6 +281,13 @@ vds_done:
                     "incomplete VDS: PD=%d LVD=%d", found_pd, found_lvd);
         odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
+    }
+
+    if (lv_block_size != UDF_BLOCK_SIZE) {
+        ODFS_ERROR(log, ODFS_SUB_UDF,
+                    "unsupported logical block size %" PRIu32, lv_block_size);
+        odfs_free(ctx);
+        return ODFS_ERR_UNSUPPORTED;
     }
 
     /* read File Set Descriptor */
@@ -376,7 +390,7 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
     if (tag == 0)
         return ODFS_ERR_CORRUPT;
 
-    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
+    uint32_t block_size = UDF_BLOCK_SIZE;
     uint16_t alloc_type;
     uint32_t ad_offset;  /* offset of allocation descriptors in FE */
     uint32_t ad_length;
@@ -486,7 +500,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
     size_t done = 0;
     uint64_t data_size;
     uint64_t cur_pos = 0;
-    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
+    uint32_t block_size = UDF_BLOCK_SIZE;
     uint16_t alloc_type;
     uint8_t file_type;
     uint32_t ea_len, ad_length, ad_base, ad_offset, ad_run_len;
@@ -1363,11 +1377,8 @@ static odfs_err_t udf_get_volume_name(void *backend_ctx,
 static uint32_t udf_get_volume_size(void *backend_ctx)
 {
     udf_context_t *ctx = backend_ctx;
-    uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
-    uint64_t bytes = (uint64_t)ctx->part_length * block_size;
-    uint64_t blocks = (bytes + 2047u) / 2048u;
 
-    return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
+    return ctx->part_length;
 }
 
 /* ------------------------------------------------------------------ */
