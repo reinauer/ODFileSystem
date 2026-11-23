@@ -1744,6 +1744,10 @@ static int lock_is_active(handler_global_t *g, odfs_lock_t *needle)
 {
     if (!g || !needle)
         return 0;
+#if ODFS_AMIGA_OS4
+    if (needle == ODFS_BAD_LOCK)
+        return 0;
+#endif
 
 #if ODFS_SERIAL_DEBUG
     {
@@ -5076,12 +5080,6 @@ static void action_info(handler_global_t *g, struct DosPacket *pkt)
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct InfoData *info = (struct InfoData *)BADDR(pkt->dp_Arg2);
     LONG err_dos;
-
-    if (pkt->dp_Arg1 && !ol) {
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_INVALID_LOCK;
-        return;
-    }
 
     err_dos = odfs_handler_fill_info(g, ol, info);
     if (err_dos != 0) {
