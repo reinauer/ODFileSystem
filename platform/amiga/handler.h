@@ -279,9 +279,25 @@ struct odfs_fh {
 #define ODFS_LOCK_DOS(ol) \
     (((ol) != NULL) ? (ol)->lock : NULL)
 
+/*
+ * A lock DOS hands us with no fl_FSPrivate1 is not one of ours. It must
+ * not turn into a NULL odfs_lock_t, which means the volume root, so it
+ * maps to a sentinel that lock_is_active() rejects.
+ */
+#define ODFS_BAD_LOCK ((odfs_lock_t *)(uintptr_t)1)
+
+static inline odfs_lock_t *odfs_lock_from_ptr(struct Lock *lock)
+{
+    odfs_lock_t *ol;
+
+    if (!lock)
+        return NULL;
+    ol = (odfs_lock_t *)lock->fl_FSPrivate1;
+    return ol ? ol : ODFS_BAD_LOCK;
+}
+
 /* Convert a direct DOS lock pointer to our odfs_lock_t */
-#define LOCK_FROM_PTR(ptr) \
-    ((ptr) ? (odfs_lock_t *)((struct Lock *)(ptr))->fl_FSPrivate1 : NULL)
+#define LOCK_FROM_PTR(ptr) odfs_lock_from_ptr((struct Lock *)(ptr))
 
 /* Convert BPTR lock to our odfs_lock_t */
 #define LOCK_FROM_BPTR(bptr) \
