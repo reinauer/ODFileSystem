@@ -94,6 +94,7 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out);
  *   sua_len   — length in bytes
  *   skip      — bytes to skip at start (from SP entry)
  *   session_start — added to CE block numbers (session-relative volumes)
+ *   blk_shift — log2(2048 / logical block size), for CE block numbers
  *   info      — receives parsed RR data
  *   symlink_out  — receives the SL target; NULL when it is not needed
  *   symlink_size — size of symlink_out in bytes
@@ -103,17 +104,18 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out);
  */
 struct odfs_cache;
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
-              uint32_t session_start, rr_info_t *info,
+              uint32_t session_start, unsigned blk_shift, rr_info_t *info,
               char *symlink_out, size_t symlink_size,
               struct odfs_cache *cache);
 
 /*
  * Find the PL (parent link) entry in the System Use Area of a relocated
- * directory's ".." record. Returns 1 and the PL block number in *lba_out,
- * 0 if there is none. Much cheaper than rr_parse() for the parent walk.
+ * directory's ".." record. Returns 1 and the PL logical block number in
+ * *lba_out, 0 if there is none. Much cheaper than rr_parse() for the parent
+ * walk.
  */
 int rr_find_parent_link(const uint8_t *sua, size_t sua_len, int skip,
-                        uint32_t session_start, struct odfs_cache *cache,
-                        uint32_t *lba_out);
+                        uint32_t session_start, unsigned blk_shift,
+                        struct odfs_cache *cache, uint32_t *lba_out);
 
 #endif /* ODFS_ROCK_RIDGE_H */

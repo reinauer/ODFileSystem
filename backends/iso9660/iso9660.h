@@ -153,7 +153,7 @@ static inline void iso_copy_strfield(const uint8_t *src, size_t src_len,
 typedef struct iso_pvd_info {
     char     system_id[33];
     char     volume_id[33];
-    uint32_t volume_space_size;   /* in logical blocks */
+    uint32_t volume_space_size;   /* in 2048-byte sectors */
     uint16_t logical_block_size;
     uint32_t path_table_size;
     uint32_t root_dir_lba;
@@ -173,6 +173,7 @@ typedef struct iso_pvd_info {
 typedef struct iso_context {
     iso_pvd_info_t pvd;
     uint32_t       session_start;
+    unsigned       blk_shift;     /* log2(2048 / logical block size) */
     int            lowercase;     /* lowercase ISO names for display */
     int            high_sierra;   /* High Sierra variant, not ISO 9660 */
     int            joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
@@ -194,13 +195,12 @@ typedef struct iso_context {
  * warning is logged. Shared by the ISO 9660 (plain and High Sierra) and
  * Joliet backends — the record fields involved sit at identical offsets.
  */
-odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
+odfs_err_t odfs_iso_merge_multi_extent(const iso_context_t *ctx,
+                                       odfs_cache_t *cache,
                                        odfs_log_state_t *log,
-                                       uint32_t session_start,
                                        uint32_t dir_lba,
                                        uint32_t dir_size,
                                        uint32_t *offset,
-                                       int high_sierra,
                                        const uint8_t *first_rec,
                                        odfs_node_t *node);
 

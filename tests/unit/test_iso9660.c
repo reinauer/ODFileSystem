@@ -369,4 +369,60 @@ TEST(iso_node_ids_are_stable_across_scans)
     odfs_cache_destroy(&cache);
 }
 
+TEST(iso_small_logical_blocks_map_to_sectors)
+{
+    static iso_test_media_t m;
+    odfs_media_t media = { .ops = &iso_test_media_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, file;
+    void *ctx = NULL;
+    char buf[16];
+    size_t len, off = 0;
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 8));
+
+    /* 512-byte logical blocks: LBN 80 is sector 20 */
+    iso_init_pvd(&m, 512, 20 * 4, 0);
+    off += iso_wr_rec(&m.sectors[20][off], 20 * 4, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    off += iso_wr_rec(&m.sectors[20][off], 20 * 4, 0, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1);
+    off += iso_wr_rec(&m.sectors[20][off], 25 * 4, 0, 5, 0, "A.TXT;1", 7);
+    /* starts 512 bytes into sector 25: cannot be represented, skipped */
+    off += iso_wr_rec(&m.sectors[20][off], 25 * 4 + 1, 0, 5, 0,
+                      "B.TXT;1", 7);
+    memcpy(m.sectors[25], "BLK_A", 5);
+
+    ASSERT_OK(iso9660_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_EQ(root.extent.lba, 20);
+    ASSERT_EQ(iso9660_backend_ops.get_volume_size(ctx), ISO_TEST_SECTORS);
+
+    ASSERT_OK(iso9660_backend_ops.lookup(ctx, &cache, &log, &root,
+                                         "A.TXT", &file));
+    ASSERT_EQ(file.extent.lba, 25);
+    len = sizeof(buf);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_OK(iso9660_backend_ops.read(ctx, &cache, &log, &file, 0, buf, &len));
+    ASSERT_EQ(len, 5);
+    ASSERT(memcmp(buf, "BLK_A", 5) == 0);
+
+    ASSERT_ERR(iso9660_backend_ops.lookup(ctx, &cache, &log, &root,
+                                          "B.TXT", &file),
+               ODFS_ERR_NOT_FOUND);
+    iso9660_backend_ops.unmount(ctx);
+
+    /* an unknown block size is reported but mounted as 2048 */
+    iso_init_pvd(&m, 4096, 20, 0);
+    iso_wr_rec(&m.sectors[20][0], 20, 0, ISO_SECTOR_SIZE,
+               ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    odfs_cache_flush(&cache);
+    ASSERT_OK(iso9660_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_EQ(root.extent.lba, 20);
+    iso9660_backend_ops.unmount(ctx);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
