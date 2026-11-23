@@ -6860,13 +6860,6 @@ void handler_main_startup(struct Message *startup_msg)
                     break;
                 }
 
-                if (!g->mounted && packet_mount_need(pkt) > 0) {
-                    pkt->dp_Res1 = DOSFALSE;
-                    pkt->dp_Res2 = ERROR_NO_DISK;
-                    return_packet(g, pkt);
-                    continue;
-                }
-
                 /*
                  * Service DOS packets with the shared packet dispatcher.
                  * On OS4 this dos.library drives the handler through the
@@ -6876,10 +6869,16 @@ void handler_main_startup(struct Message *startup_msg)
                  * answers with ERROR_ACTION_NOT_KNOWN. Hold the
                  * filesystem semaphore so packet servicing in the
                  * handler process is serialized against native
-                 * vector-port calls made from caller context.
+                 * vector-port calls made from caller context, which
+                 * may also unmount (FSInhibit) between packets.
                  */
                 ODFS_FS_LOCK(g);
-                handle_packet(g, pkt);
+                if (!g->mounted && packet_mount_need(pkt) > 0) {
+                    pkt->dp_Res1 = DOSFALSE;
+                    pkt->dp_Res2 = ERROR_NO_DISK;
+                } else {
+                    handle_packet(g, pkt);
+                }
                 ODFS_FS_UNLOCK(g);
                 return_packet(g, pkt);
 
