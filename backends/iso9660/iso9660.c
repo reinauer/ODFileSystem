@@ -414,7 +414,8 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                                    "Rock Ridge extensions detected (skip=%d)",
                                    rr_skip);
 
-                        rr_parse(sua, sua_len, rr_skip, &rr, cache);
+                        rr_parse(sua, sua_len, rr_skip, ctx->session_start,
+                                 &rr, cache);
                         iso_apply_rr(root_out, &rr, ctx->session_start, 0);
                     }
                 }
@@ -562,7 +563,8 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
         /* apply Rock Ridge overrides */
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
             rr_info_t rr;
-            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+            rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
+                     &rr, cache);
 
             /* skip relocated entries (RE) */
             if (rr.is_relocated) {
@@ -754,7 +756,8 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         rr_info_t rr;
         memset(&rr, 0, sizeof(rr));
         if (sua && sua_len > 0) {
-            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+            rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
+                     &rr, cache);
             if (rr.is_relocated)
                 continue;
             if (rr.has_name && rr.name[0] != '\0') {

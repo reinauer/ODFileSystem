@@ -140,20 +140,25 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out)
 /* parsing                                                             */
 /* ------------------------------------------------------------------ */
 
-static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
-                             int skip, rr_info_t *info,
-                             struct odfs_cache *cache, int depth);
+/* parser state carried from a System Use area into its continuations */
+typedef struct rr_state {
+    size_t   name_pos;  /* NM bytes collected so far */
+    uint32_t ce_lba;    /* continuation area named by the current area */
+    uint32_t ce_off;
+    uint32_t ce_len;
+} rr_state_t;
 
-static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
-                             int skip, rr_info_t *info,
-                             struct odfs_cache *cache, int depth)
+/*
+ * Parse the entries of one System Use area or continuation area. Returns
+ * 1 when the area names a valid continuation area, which the caller reads
+ * only after this area is done: reading it may evict the cache block that
+ * sua points into.
+ */
+static int rr_parse_entries(const uint8_t *sua, size_t sua_len,
+                            size_t pos, rr_info_t *info, rr_state_t *st)
 {
-    size_t pos = (size_t)skip;
-    size_t name_pos = info->has_name ? strlen(info->name) : 0;
-
-    /* guard against infinite CE loops */
-    if (depth > 8)
-        return;
+    size_t name_pos = st->name_pos;
+    int has_ce = 0;
 
     while (pos + 4 <= sua_len) {
         uint16_t sig = rr_sig(&sua[pos]);
@@ -318,27 +323,24 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
             break;
 
         case RR_SIG_CE:
-            /* continuation area: read from another sector */
-            if (len >= 28 && cache) {
-                uint32_t ce_lba  = rr_read_le32(&sua[pos + 4]);
-                uint32_t ce_off  = rr_read_le32(&sua[pos + 12]);
-                uint32_t ce_len  = rr_read_le32(&sua[pos + 20]);
+            /* continuation area: followed once this area is done */
+            if (len >= 28) {
+                uint32_t ce_off = rr_read_le32(&sua[pos + 12]);
+                uint32_t ce_len = rr_read_le32(&sua[pos + 20]);
 
-                if (ce_len > 0 && ce_len <= 2048) {
-                    const uint8_t *ce_sector;
-                    if (odfs_cache_read(cache, ce_lba, &ce_sector) == ODFS_OK) {
-                        if (ce_off + ce_len <= 2048) {
-                            rr_parse_entries(ce_sector + ce_off, ce_len,
-                                             0, info, cache, depth + 1);
-                        }
-                    }
+                if (ce_off < ISO_SECTOR_SIZE && ce_len > 0 &&
+                    ce_len <= ISO_SECTOR_SIZE - ce_off) {
+                    st->ce_lba = rr_read_le32(&sua[pos + 4]);
+                    st->ce_off = ce_off;
+                    st->ce_len = ce_len;
+                    has_ce = 1;
                 }
             }
             break;
 
         case RR_SIG_ST:
-            /* terminator — stop parsing */
-            return;
+            /* terminator — stop parsing this area */
+            goto out;
 
         default:
             /* unknown entry — skip */
@@ -347,12 +349,35 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
 
         pos += len;
     }
+
+out:
+    st->name_pos = name_pos;
+    return has_ce;
 }
 
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
-              rr_info_t *info,
+              uint32_t session_start, rr_info_t *info,
               struct odfs_cache *cache)
 {
+    size_t pos = (size_t)skip;
+    rr_state_t st;
+    int hop;
+
     memset(info, 0, sizeof(*info));
-    rr_parse_entries(sua, sua_len, skip, info, cache, 0);
+    st.name_pos = 0;
+
+    /* follow at most 8 continuation areas, guarding against CE loops */
+    for (hop = 0; ; hop++) {
+        const uint8_t *ce_sector;
+
+        if (!rr_parse_entries(sua, sua_len, pos, info, &st) ||
+            !cache || hop >= 8)
+            break;
+        if (odfs_cache_read(cache, st.ce_lba + session_start,
+                            &ce_sector) != ODFS_OK)
+            break;
+        sua = ce_sector + st.ce_off;
+        sua_len = st.ce_len;
+        pos = 0;
+    }
 }
