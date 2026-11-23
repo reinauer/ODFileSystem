@@ -212,10 +212,22 @@ odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
     return ODFS_OK;
 }
 
+/* byte length of an extent, for node->extent.length */
+uint32_t odfs_hfs_extent_bytes(const hfs_volume_t *vol, uint32_t blocks)
+{
+    uint64_t bytes = (uint64_t)blocks * vol->block_size;
+
+    return bytes > UINT32_MAX ? UINT32_MAX : (uint32_t)bytes;
+}
+
 /* the walk runs on every readdir and lookup; allocate its buffer once */
 odfs_err_t odfs_hfs_alloc_node_buf(hfs_volume_t *vol)
 {
-    vol->node_buf = odfs_malloc(vol->cat.node_size);
+    uint32_t size = vol->cat.node_size;
+
+    if (vol->ext.node_size > size)
+        size = vol->ext.node_size;
+    vol->node_buf = odfs_malloc(size);
     return vol->node_buf ? ODFS_OK : ODFS_ERR_NOMEM;
 }
 
@@ -449,6 +461,212 @@ odfs_err_t odfs_hfs_readdir(void *backend_ctx,
 /* read                                                                */
 /* ------------------------------------------------------------------ */
 
+/*
+ * A file's data fork lists its first extents in the catalog record,
+ * three on HFS and eight on HFS+; further extents sit in records of
+ * the extents overflow B-tree keyed by (fileID, forkType, startBlock).
+ */
+
+typedef struct hfs_inline_ext {
+    uint32_t file_id;
+    uint8_t hfsplus;
+    uint8_t found;
+    hfs_extent_t *exts;
+} hfs_inline_ext_t;
+
+static odfs_err_t hfs_inline_ext_cb(const uint8_t *key, size_t key_len,
+                                    const uint8_t *data, size_t data_len,
+                                    void *cb_ctx)
+{
+    hfs_inline_ext_t *ie = cb_ctx;
+
+    (void)key;
+    (void)key_len;
+
+    if (ie->hfsplus) {
+        /* fileID at 8, data fork extents at 104 */
+        if (data_len < 168 || hfs_be16(data) != HFS_CAT_FILE ||
+            hfs_be32(&data[8]) != ie->file_id)
+            return ODFS_OK;
+        for (int i = 0; i < 8; i++) {
+            ie->exts[i].start_block = hfs_be32(&data[104 + i * 8]);
+            ie->exts[i].block_count = hfs_be32(&data[108 + i * 8]);
+        }
+    } else {
+        /* filFlNum at 20, filExtRec at 74 */
+        if (data_len < 86 || data[0] != HFS_CAT_FILE ||
+            hfs_be32(&data[20]) != ie->file_id)
+            return ODFS_OK;
+        for (int i = 0; i < 3; i++) {
+            ie->exts[i].start_block = hfs_be16(&data[74 + i * 4]);
+            ie->exts[i].block_count = hfs_be16(&data[76 + i * 4]);
+        }
+    }
+
+    ie->found = 1;
+    return ODFS_ERR_EOF;
+}
+
+/* the inline extents of file, from its record in the parent directory */
+static odfs_err_t hfs_read_inline_ext(const hfs_volume_t *vol,
+                                      odfs_cache_t *cache,
+                                      const odfs_node_t *file,
+                                      hfs_extent_t exts[8])
+{
+    hfs_inline_ext_t ie;
+    odfs_err_t err;
+
+    memset(exts, 0, 8 * sizeof(*exts));
+    ie.file_id = file->id;
+    ie.hfsplus = vol->hfsplus;
+    ie.found = 0;
+    ie.exts = exts;
+
+    err = odfs_hfs_walk_catalog(vol, cache,
+                                file->parent_id ? file->parent_id
+                                                : HFS_CNID_ROOT_DIR,
+                                hfs_inline_ext_cb, &ie);
+    if (ie.found)
+        return ODFS_OK;
+    if (err == ODFS_OK || err == ODFS_ERR_EOF)
+        return ODFS_ERR_NOT_FOUND;
+    return err;
+}
+
+/*
+ * Find the extents overflow record of file_id's data fork that holds
+ * fork byte offset: the last record whose key is not above
+ * (file_id, data fork, offset). Returns its extents and the fork
+ * offset of the first one.
+ */
+static odfs_err_t hfs_find_overflow(const hfs_volume_t *vol,
+                                    odfs_cache_t *cache,
+                                    uint32_t file_id, uint64_t offset,
+                                    hfs_extent_t exts[8], uint64_t *base)
+{
+    const hfs_btree_t *tree = &vol->ext;
+    uint32_t node_size = tree->node_size;
+    uint32_t cur_node = tree->root_node;
+    uint8_t *node = vol->node_buf;
+    /* HFS key: keyLength(1) forkType(1) fileID(4) startBlock(2);
+       HFS+: keyLength(2) forkType(1) pad(1) fileID(4) startBlock(4) */
+    uint32_t min_key = vol->hfsplus ? 12 : 8;
+    uint32_t fork_off = vol->hfsplus ? 2 : 1;
+    uint32_t id_off = vol->hfsplus ? 4 : 2;
+
+    if (node_size == 0)
+        return ODFS_ERR_CORRUPT;
+
+    for (int depth = 0; depth < 20; depth++) {
+        uint16_t nrecs;
+        uint32_t limit;
+        uint32_t best = 0;
+        uint32_t best_start = 0;
+        uint32_t ptr_off;
+        odfs_err_t err;
+
+        err = hfs_read_node(vol, tree, cache, cur_node, node);
+        if (err != ODFS_OK)
+            return err;
+        if ((node[8] != HFS_NODE_LEAF && node[8] != HFS_NODE_INDEX) ||
+            !hfs_read_record_count(node, node_size, &nrecs, &limit))
+            return ODFS_ERR_CORRUPT;
+
+        for (uint16_t r = 0; r < nrecs; r++) {
+            uint32_t off = hfs_rec_offset(node, node_size, r);
+            uint32_t id;
+            uint32_t start;
+
+            if (off < 14 || off + min_key > limit)
+                break;
+            id = hfs_be32(&node[off + id_off]);
+            start = vol->hfsplus ? hfs_be32(&node[off + 8])
+                                 : hfs_be16(&node[off + 6]);
+            if (id > file_id ||
+                (id == file_id &&
+                 (node[off + fork_off] != 0 ||
+                  (uint64_t)start * vol->block_size > offset)))
+                break;
+            best = off;
+            best_start = start;
+        }
+        if (best == 0)
+            return ODFS_ERR_CORRUPT;
+
+        ptr_off = best + hfs_key_length(vol, &node[best]);
+        if (ptr_off & 1)
+            ptr_off++;
+
+        if (node[8] == HFS_NODE_INDEX) {
+            if (ptr_off < best + min_key || ptr_off + 4 > limit)
+                return ODFS_ERR_CORRUPT;
+            cur_node = hfs_be32(&node[ptr_off]);
+            continue;
+        }
+
+        if (hfs_be32(&node[best + id_off]) != file_id ||
+            node[best + fork_off] != 0 || ptr_off < best + min_key ||
+            ptr_off + (vol->hfsplus ? 64u : 12u) > limit)
+            return ODFS_ERR_CORRUPT;
+
+        memset(exts, 0, 8 * sizeof(*exts));
+        for (uint32_t i = 0; i < (vol->hfsplus ? 8u : 3u); i++) {
+            const uint8_t *e = &node[ptr_off + i * (vol->hfsplus ? 8u : 4u)];
+
+            exts[i].start_block = vol->hfsplus ? hfs_be32(e) : hfs_be16(e);
+            exts[i].block_count = vol->hfsplus ? hfs_be32(e + 4)
+                                               : hfs_be16(e + 2);
+        }
+        *base = (uint64_t)best_start * vol->block_size;
+        return ODFS_OK;
+    }
+    return ODFS_ERR_LOOP;
+}
+
+/*
+ * Copy what extents exts, which start at fork offset base, hold from
+ * fork offset *offset on, up to want bytes in total.
+ */
+static odfs_err_t hfs_read_extents(const hfs_volume_t *vol,
+                                   odfs_cache_t *cache,
+                                   const hfs_extent_t exts[8],
+                                   uint64_t base, uint64_t *offset,
+                                   uint8_t *buf, size_t want, size_t *done)
+{
+    for (int i = 0; i < 8 && *done < want; i++) {
+        uint64_t ext_bytes =
+            (uint64_t)exts[i].block_count * vol->block_size;
+        size_t chunk;
+        size_t got;
+        odfs_err_t err;
+
+        if (ext_bytes == 0)
+            break;
+        if (*offset >= base + ext_bytes) {
+            base += ext_bytes;
+            continue;
+        }
+
+        chunk = want - *done;
+        if (chunk > base + ext_bytes - *offset)
+            chunk = (size_t)(base + ext_bytes - *offset);
+        got = chunk;
+        err = odfs_cache_read_bytes(cache, 0,
+                                    vol->alloc_base +
+                                    (uint64_t)exts[i].start_block *
+                                    vol->block_size + (*offset - base),
+                                    buf + *done, &got);
+        *done += got;
+        *offset += got;
+        if (err != ODFS_OK)
+            return err;
+        if (got != chunk)
+            return ODFS_ERR_IO;
+        base += ext_bytes;
+    }
+    return ODFS_OK;
+}
+
 odfs_err_t odfs_hfs_read(void *backend_ctx,
                          odfs_cache_t *cache,
                          odfs_log_state_t *log,
@@ -458,8 +676,11 @@ odfs_err_t odfs_hfs_read(void *backend_ctx,
                          size_t *len)
 {
     const hfs_volume_t *vol = backend_ctx;
-    uint64_t data_start;
+    hfs_extent_t exts[8];
+    uint64_t base;
     size_t want;
+    size_t done = 0;
+    odfs_err_t err;
 
     (void)log;
 
@@ -472,11 +693,34 @@ odfs_err_t odfs_hfs_read(void *backend_ctx,
     if (want > file->size - offset)
         want = (size_t)(file->size - offset);
 
-    /* file->extent.lba = first extent start allocation block */
-    data_start = vol->alloc_base +
-                 (uint64_t)file->extent.lba * vol->block_size;
-    *len = want;
-    return odfs_cache_read_bytes(cache, 0, data_start + offset, buf, len);
+    /* file->extent holds the first extent: start block and byte length */
+    if (offset + want <= file->extent.length) {
+        *len = want;
+        return odfs_cache_read_bytes(cache, 0,
+                                     vol->alloc_base +
+                                     (uint64_t)file->extent.lba *
+                                     vol->block_size + offset,
+                                     buf, len);
+    }
+
+    err = hfs_read_inline_ext(vol, cache, file, exts);
+    if (err == ODFS_OK)
+        err = hfs_read_extents(vol, cache, exts, 0, &offset,
+                               buf, want, &done);
+
+    while (err == ODFS_OK && done < want) {
+        size_t before = done;
+
+        err = hfs_find_overflow(vol, cache, file->id, offset, exts, &base);
+        if (err == ODFS_OK)
+            err = hfs_read_extents(vol, cache, exts, base, &offset,
+                                   buf, want, &done);
+        if (err == ODFS_OK && done == before)
+            err = ODFS_ERR_CORRUPT;   /* a hole in the extent map */
+    }
+
+    *len = done;
+    return err;
 }
 
 /* ------------------------------------------------------------------ */

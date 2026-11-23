@@ -693,4 +693,202 @@ TEST(hfs_hides_finder_invisible_entries)
     odfs_free(img);
 }
 
+/* ---- fragmented files ---- */
+
+/* file contents: a pattern of the fork offset, distinct per file id */
+static void fill_pattern(uint8_t *dst, size_t len, size_t pos, uint32_t id)
+{
+    for (size_t i = 0; i < len; i++)
+        dst[i] = (uint8_t)(((pos + i) * 37u + id) ^ ((pos + i) >> 9));
+}
+
+static int check_read(odfs_mount_t *mnt, const odfs_node_t *file,
+                      uint64_t offset, size_t len)
+{
+    static uint8_t got[8192];
+    static uint8_t want[8192];
+    size_t n = len;
+
+    if (odfs_read(mnt, file, offset, got, &n) != ODFS_OK)
+        return 0;
+    if (offset + len > file->size)
+        len = (size_t)(file->size - offset);
+    if (n != len)
+        return 0;
+    fill_pattern(want, len, (size_t)offset, file->id);
+    return memcmp(got, want, len) == 0;
+}
+
+/*
+ * FRAG.BIN (CNID 16): 2300 bytes in AB 10, 12, 14 (catalog record)
+ * and 16, 18 (extents overflow record from block 3); its resource
+ * fork record points at AB 19, filled with 0xEE.
+ * TWO.BIN (CNID 17): 1024 bytes in AB 30, 32.
+ */
+static uint8_t *hfs_frag_image(void)
+{
+    static const uint16_t blocks[5] = { 10, 12, 14, 16, 18 };
+    uint8_t *img = hfs_image(3);
+    uint8_t *mdb;
+    bt_builder_t b;
+    uint8_t *rec;
+    hfs_extent_t inl[3] = { { 10, 1 }, { 12, 1 }, { 14, 1 } };
+    hfs_extent_t two[3] = { { 30, 1 }, { 32, 1 }, { 0, 0 } };
+
+    if (!img)
+        return NULL;
+    /* extents overflow B-tree at AB 3..4 */
+    mdb = img + 1024;
+    put_be16(&mdb[HFS_MDB_XTEXTREC], 3);
+    put_be16(&mdb[HFS_MDB_XTEXTREC + 2], 2);
+
+    bt_header(hfs_ab(img, 0), 512, 1, 2);
+    bt_init(&b, hfs_ab(img, 1), 512, HFS_NODE_LEAF, 0, 0);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "FRAG.BIN", 16, 2300, inl);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "TWO.BIN", 17, 1024, two);
+
+    bt_header(hfs_ab(img, 3), 512, 1, 2);
+    bt_init(&b, hfs_ab(img, 4), 512, HFS_NODE_LEAF, 0, 0);
+    rec = bt_add(&b, 20);
+    rec[0] = 7;
+    put_be32(&rec[2], 16);
+    put_be16(&rec[6], 3);
+    put_be16(&rec[8], 16);
+    put_be16(&rec[10], 1);
+    put_be16(&rec[12], 18);
+    put_be16(&rec[14], 1);
+    rec = bt_add(&b, 20);
+    rec[0] = 7;
+    rec[1] = 0xFF;
+    put_be32(&rec[2], 16);
+    put_be16(&rec[8], 19);
+    put_be16(&rec[10], 1);
+
+    for (size_t i = 0; i < 5; i++)
+        fill_pattern(hfs_ab(img, blocks[i]), 512, i * 512, 16);
+    memset(hfs_ab(img, 19), 0xEE, 512);
+    fill_pattern(hfs_ab(img, 30), 512, 0, 17);
+    fill_pattern(hfs_ab(img, 32), 512, 512, 17);
+    return img;
+}
+
+TEST(hfs_reads_overflow_extents)
+{
+    uint8_t *img = hfs_frag_image();
+    odfs_mount_t mnt;
+    odfs_node_t file;
+
+    ASSERT(img != NULL);
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "FRAG.BIN", &file));
+    ASSERT_EQ(file.extent.length, 512u);
+    ASSERT(check_read(&mnt, &file, 0, 256));
+    ASSERT(check_read(&mnt, &file, 0, 2300));
+    ASSERT(check_read(&mnt, &file, 300, 1900));
+    ASSERT(check_read(&mnt, &file, 2050, 500));
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+static void hfsp_add_ext_rec(bt_builder_t *b, uint32_t file_id,
+                             uint32_t start, uint32_t first, uint32_t count)
+{
+    uint8_t *rec = bt_add(b, 12 + 64);
+
+    put_be16(&rec[0], 10);
+    put_be32(&rec[4], file_id);
+    put_be32(&rec[8], start);
+    for (uint32_t i = 0; i < count; i++) {
+        put_be32(&rec[12 + i * 8], first + i * 2);
+        put_be32(&rec[16 + i * 8], 1);
+    }
+}
+
+TEST(hfsplus_reads_overflow_extents)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *vh;
+    uint8_t *cat;
+    uint8_t *rec;
+    uint8_t *data;
+    odfs_mount_t mnt;
+    odfs_node_t file;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    cat = hfsp_volume(img, 2);
+    vh = img + HFSPLUS_VH_OFFSET;
+    put_be32(&vh[44], 600);
+
+    /* extents overflow B-tree: 1 KiB nodes, larger than the catalog's,
+     * at blocks 6..13; an index root over two leaves */
+    put_be64(&vh[192], 4096);
+    put_be32(&vh[192 + 16], 6);
+    put_be32(&vh[192 + 20], 8);
+    bt_header(img + 6 * 512, 1024, 3, 4);
+    bt_init(&b, img + 8 * 512, 1024, HFS_NODE_LEAF, 2, 0);
+    hfsp_add_ext_rec(&b, 15, 8, 500, 8);    /* another file */
+    bt_init(&b, img + 10 * 512, 1024, HFS_NODE_LEAF, 0, 1);
+    hfsp_add_ext_rec(&b, 16, 8, 100, 8);    /* blocks 8..15 */
+    hfsp_add_ext_rec(&b, 16, 16, 116, 2);   /* blocks 16..17 */
+    bt_init(&b, img + 12 * 512, 1024, HFS_NODE_INDEX, 0, 0);
+    rec = bt_add(&b, 16);
+    put_be16(&rec[0], 10);
+    put_be32(&rec[4], 15);
+    put_be32(&rec[8], 8);
+    put_be32(&rec[12], 1);
+    rec = bt_add(&b, 16);
+    put_be16(&rec[0], 10);
+    put_be32(&rec[4], 16);
+    put_be32(&rec[8], 8);
+    put_be32(&rec[12], 2);
+
+    bt_header(cat, 512, 1, 2);
+    bt_init(&b, cat + 512, 512, HFS_NODE_LEAF, 0, 0);
+    data = hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "ten.bin", 16, 9000, 0, 0);
+    for (int i = 0; i < 8; i++) {
+        put_be32(&data[104 + i * 8], 20 + i * 2);   /* blocks 0..7 */
+        put_be32(&data[108 + i * 8], 1);
+    }
+
+    for (size_t i = 0; i < 8; i++)
+        fill_pattern(img + (20 + i * 2) * 512, 512, i * 512, 16);
+    for (size_t i = 0; i < 10; i++)
+        fill_pattern(img + (100 + i * 2) * 512, 512, (8 + i) * 512, 16);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "ten.bin", &file));
+    ASSERT(check_read(&mnt, &file, 0, 8192));
+    ASSERT(check_read(&mnt, &file, 3000, 6000));
+    ASSERT(check_read(&mnt, &file, 8500, 500));
+    ASSERT(check_read(&mnt, &file, 4000, 100));
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+TEST(hfsplus_extent_map_hole_is_corrupt)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *cat;
+    odfs_mount_t mnt;
+    odfs_node_t file;
+    bt_builder_t b;
+    uint8_t buf[1024];
+    size_t len = sizeof(buf);
+
+    ASSERT(img != NULL);
+    cat = hfsp_volume(img, 2);
+    bt_header(cat, 512, 1, 2);
+    bt_init(&b, cat + 512, 512, HFS_NODE_LEAF, 0, 0);
+    /* two blocks of data but only one block of extents, no overflow
+     * tree */
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "short.bin", 16, 1024, 8, 1);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "short.bin", &file));
+    ASSERT_EQ(odfs_read(&mnt, &file, 0, buf, &len), ODFS_ERR_CORRUPT);
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()
