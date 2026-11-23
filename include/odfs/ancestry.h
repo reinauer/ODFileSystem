@@ -13,6 +13,13 @@
 typedef struct odfs_mount odfs_mount_t;
 
 /*
+ * Only UDF, for a directory without a parent FID, and CDDA, which has
+ * no resolve_parent op, fall back to the generic search. ISO 9660,
+ * Rock Ridge, Joliet, HFS and HFS+ resolve directory parents directly.
+ */
+#define ODFS_PARENT_SEARCH (ODFS_FEATURE_UDF || ODFS_FEATURE_CDDA)
+
+/*
  * Resolve the parent of a node by walking the mounted directory tree.
  *
  * parent_out receives the containing directory. When grandparent_out is

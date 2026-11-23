@@ -671,7 +671,11 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
             return err;
     }
 
+#if ODFS_PARENT_SEARCH
     return odfs_resolve_parent_search(mnt, node, parent_out, grandparent_out);
+#else
+    return ODFS_ERR_UNSUPPORTED;
+#endif
 }
 
 #if !defined(AMIGA)
