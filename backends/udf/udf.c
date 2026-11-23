@@ -496,6 +496,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
     uint64_t cur_pos = 0;
     uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
     uint16_t alloc_type;
+    uint8_t file_type;
     uint32_t ea_len, ad_length, ad_base, ad_offset, ad_run_len;
     size_t ad_size, p;
     int guard = 0;
@@ -512,6 +513,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
     if (tag.id == UDF_TAG_FE) {
         if (block_size < 176)
             return ODFS_ERR_CORRUPT;
+        file_type  = sector[16 + 11];
         alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
         data_size  = udf_le64(&sector[56]);
         ea_len     = udf_le32(&sector[168]);
@@ -520,6 +522,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
     } else if (tag.id == UDF_TAG_EFE) {
         if (block_size < 216)
             return ODFS_ERR_CORRUPT;
+        file_type  = sector[16 + 11];
         alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
         data_size  = udf_le64(&sector[56]);
         ea_len     = udf_le32(&sector[208]);
@@ -636,6 +639,16 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
         }
 
         p += ad_size;
+    }
+
+    /*
+     * The descriptors may end before the Information Length; the rest
+     * of a file is unallocated and reads as zeros. A directory that
+     * ends early is truncated, and its short read reports that.
+     */
+    if (done < want && file_type != UDF_ICB_FILETYPE_DIR) {
+        memset(out + done, 0, want - done);
+        done = want;
     }
 
     *len = done;

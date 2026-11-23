@@ -583,6 +583,49 @@ TEST(udf_read_sparse_extent_reads_zeros)
     odfs_cache_destroy(&cache);
 }
 
+TEST(udf_read_unallocated_tail_reads_zeros)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t file;
+    uint8_t buf[16];
+    size_t len;
+    int i;
+
+    /* one recorded 5-byte extent, Information Length 105: the last
+     * 100 bytes have no allocation descriptor */
+    static const uint32_t ads[] = { 5, 1 };
+
+    udf_setup_read_env(&mock, &media, &cache, &log, &ctx, &file, 105);
+    udf_make_fe_ads(mock.sectors[0], UDF_ICB_FILETYPE_FILE, 105, ads, 1);
+    memset(mock.sectors[1], 'C', MOCK_SECTOR_SIZE);
+
+    /* straddle the recorded → unallocated tail boundary */
+    memset(buf, 0xEE, sizeof(buf));
+    len = sizeof(buf);
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   0, buf, &len));
+    ASSERT_EQ(len, sizeof(buf));
+    for (i = 0; i < 5; i++)
+        ASSERT_EQ(buf[i], 'C');
+    for (i = 5; i < 16; i++)
+        ASSERT_EQ(buf[i], 0);
+
+    /* entirely inside the tail, clamped at the Information Length */
+    memset(buf, 0xEE, sizeof(buf));
+    len = sizeof(buf);
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &file,
+                                   95, buf, &len));
+    ASSERT_EQ(len, 10);
+    for (i = 0; i < 10; i++)
+        ASSERT_EQ(buf[i], 0);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST(udf_read_follows_aed_continuation)
 {
     udf_mock_media_t mock;
