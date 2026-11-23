@@ -139,7 +139,6 @@ static APTR odfs_ks_init(APTR dummy1, APTR dummy2, struct ExecBase *sysbase)
     fse->fse_Version = (54UL << 16);
     fse->fse_PatchFlags = FSEF_SEGLIST | FSEF_GLOBVEC | FSEF_STACKSIZE;
     fse->fse_StackSize = 16384;
-    fse->fse_Priority = 10;
     fse->fse_SegList = MKBADDR(&odfs_ks_seg.next);
     fse->fse_GlobalVec = -1;
 
