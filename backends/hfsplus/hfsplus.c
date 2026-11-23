@@ -166,8 +166,6 @@ static int hfsp_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
     uint16_t key_namelen;
     uint16_t rec_type;
 
-    (void)vol;
-
     if (key_len < 8 || data_len < 2)
         return 0;
 
@@ -223,7 +221,8 @@ static int hfsp_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
                extents[8] at record offset 88 */
             fnode->size = hfs_be64(&data[88]);
             fnode->extent.lba = hfs_be32(&data[104]);
-            fnode->extent.length = (uint32_t)fnode->size;
+            fnode->extent.length =
+                odfs_hfs_extent_bytes(vol, hfs_be32(&data[108]));
         }
     }
     odfs_timestamp_from_mac_time(hfs_be32(&data[16]), &fnode->mtime);
@@ -309,9 +308,12 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
                "HFS+ block size: %" PRIu32 ", total: %" PRIu32,
                vol->block_size, vol->total_blocks);
 
-    /* catalog fork at VH offset 272 (80 bytes): logicalSize(8)
-       clumpSize(4) totalBlocks(4) extents[8] */
+    /* extents overflow and catalog forks at VH offsets 192 and 272
+       (80 bytes each): logicalSize(8) clumpSize(4) totalBlocks(4)
+       extents[8] */
     for (int i = 0; i < 8; i++) {
+        vol->ext.extents[i].start_block = hfs_be32(&vh[192 + 16 + i * 8]);
+        vol->ext.extents[i].block_count = hfs_be32(&vh[192 + 20 + i * 8]);
         vol->cat.extents[i].start_block = hfs_be32(&vh[272 + 16 + i * 8]);
         vol->cat.extents[i].block_count = hfs_be32(&vh[272 + 20 + i * 8]);
     }
@@ -324,6 +326,9 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         odfs_free(vol);
         return err;
     }
+    /* only fragmented files need the extents overflow B-tree */
+    if (odfs_hfs_init_btree(vol, &vol->ext, cache) != ODFS_OK)
+        vol->ext.node_size = 0;
 
     err = odfs_hfs_alloc_node_buf(vol);
     if (err != ODFS_OK) {

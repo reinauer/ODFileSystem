@@ -84,8 +84,6 @@ static int hfs_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
 {
     uint8_t rec_type;
 
-    (void)vol;
-
     if (data_len < 1)
         return 0;
 
@@ -129,7 +127,8 @@ static int hfs_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
         /* data fork first extent: at offset 74 in file record */
         if (data_len >= 78) {
             node->extent.lba = hfs_be16(&data[74]); /* first extent start AB */
-            node->extent.length = (uint32_t)node->size;
+            node->extent.length =
+                odfs_hfs_extent_bytes(vol, hfs_be16(&data[76]));
         }
         odfs_timestamp_from_mac_time(hfs_be32(&data[48]), &node->mtime);
     }
@@ -181,6 +180,8 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     for (int i = 0; i < 3; i++) {
         vol->cat.extents[i].start_block = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4]);
         vol->cat.extents[i].block_count = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4 + 2]);
+        vol->ext.extents[i].start_block = hfs_be16(&mdb[HFS_MDB_XTEXTREC + i * 4]);
+        vol->ext.extents[i].block_count = hfs_be16(&mdb[HFS_MDB_XTEXTREC + i * 4 + 2]);
     }
 
     /* MDB modification date for root timestamp */
@@ -198,6 +199,9 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         odfs_free(vol);
         return err;
     }
+    /* only fragmented files need the extents overflow B-tree */
+    if (odfs_hfs_init_btree(vol, &vol->ext, cache) != ODFS_OK)
+        vol->ext.node_size = 0;
 
     err = odfs_hfs_alloc_node_buf(vol);
     if (err != ODFS_OK) {
