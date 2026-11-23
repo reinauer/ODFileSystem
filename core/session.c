@@ -156,8 +156,11 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                                    ((uint32_t)buf[81] << 8) |
                                    ((uint32_t)buf[82] << 16) |
                                    ((uint32_t)buf[83] << 24);
-                if (vol_size > 0 && session_start + vol_size + ISO_VD_START_OFFSET < total) {
-                    lba = session_start + vol_size + ISO_VD_START_OFFSET;
+                /* the next PVD is at lba + vol_size; compare without
+                 * forming the sum, which can wrap back to an earlier
+                 * session and loop forever */
+                if (vol_size > 0 && vol_size < total - lba) {
+                    lba += vol_size;
                     continue;
                 }
             }
