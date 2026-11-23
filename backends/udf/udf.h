@@ -104,13 +104,30 @@ typedef struct udf_short_ad {
     uint32_t position;   /* logical block within partition */
 } udf_short_ad_t;
 
+/* ---- UDF 2.50+ Metadata File extent (the metadata partition's map) ---- */
+
+#define UDF_MAX_META_EXTENTS 16
+#define UDF_META_HOLE        0xFFFFFFFFu /* extent not recorded */
+
+typedef struct udf_meta_extent {
+    uint32_t phys_lba;   /* media LBA of the extent, or UDF_META_HOLE */
+    uint32_t blocks;     /* length in logical blocks */
+} udf_meta_extent_t;
+
 /* ---- parsed UDF mount context ---- */
 
 typedef struct udf_context {
     /* partition info */
     uint32_t part_start;     /* partition start LBA (physical) */
     uint32_t part_length;    /* partition length in sectors */
-    uint16_t part_number;    /* partition reference number */
+    uint16_t part_number;    /* partition number of the PD in use */
+    uint16_t phys_part_ref;  /* partition reference of its Type 1 map */
+
+    /* UDF 2.50+ metadata partition, mapped through the Metadata File */
+    uint8_t           has_meta_part;
+    uint8_t           meta_ext_count;
+    uint16_t          meta_part_ref;
+    udf_meta_extent_t meta_extents[UDF_MAX_META_EXTENTS];
 
     /* logical volume info */
     char     volume_id[128]; /* volume identifier (UTF-8) */
