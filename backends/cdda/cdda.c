@@ -446,35 +446,12 @@ static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
                                      size_t data_size)
 {
     char value[256];
-    size_t start = 0;
-    int value_count = 0;
 
     if (!cdda_append_cdtext_key(buf, buf_size, used, type, track, block))
         return 0;
 
     if (is_dbcs)
         return cdda_append_string(buf, buf_size, used, "<DBCS>\n");
-
-    if (type >= 0x80 && type <= 0x85) {
-        while (start < data_size) {
-            size_t end = start;
-            while (end < data_size && data[end] != 0)
-                end++;
-            if (end > start) {
-                if (value_count > 0) {
-                    if (!cdda_append_string(buf, buf_size, used, "; "))
-                        return 0;
-                }
-                cdda_sanitize_ascii(value, sizeof(value),
-                                    data + start, end - start);
-                if (!cdda_append_string(buf, buf_size, used, value))
-                    return 0;
-                value_count++;
-            }
-            start = end + 1;
-        }
-        return cdda_append_string(buf, buf_size, used, "\n");
-    }
 
     if (type == 0x8e) {
         cdda_sanitize_ascii(value, sizeof(value), data, data_size);
@@ -999,32 +976,6 @@ static void cdda_track_name(int track_num,
 }
 
 /* ------------------------------------------------------------------ */
-/* probe                                                               */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t cdda_probe(odfs_cache_t *cache,
-                               odfs_log_state_t *log,
-                               uint32_t session_start)
-{
-    (void)cache;
-    (void)session_start;
-
-    /*
-     * CDDA detection requires a TOC from the device. We can't probe
-     * from the cache alone — the media layer's read_toc must work.
-     * Since probe() doesn't have access to the media handle, we
-     * always return BAD_FORMAT here. CDDA activation is handled
-     * specially in mount.c after all other backends have been tried.
-     *
-     * TODO: add a cdda_probe_media() that takes odfs_media_t*
-     * and is called from mount.c directly.
-     */
-    ODFS_DEBUG(log, ODFS_SUB_CDDA,
-                "CDDA probe: requires TOC (not available from cache)");
-    return ODFS_ERR_BAD_FORMAT;
-}
-
-/* ------------------------------------------------------------------ */
 /* mount                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1061,8 +1012,8 @@ static int cdda_cdextra_gap_follows(const odfs_toc_t *toc, int i,
 
 /*
  * Mount a CDDA "filesystem" from a TOC. This is called directly
- * from mount.c, not through the standard probe→mount path, because
- * CDDA needs the media handle for TOC reading.
+ * by the platform mount code, not through the standard probe→mount
+ * path, because CDDA needs the media handle for TOC reading.
  *
  * Returns ODFS_OK if audio tracks were found.
  */
@@ -1158,21 +1109,6 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
 
     *backend_ctx = ctx;
     return ODFS_OK;
-}
-
-static odfs_err_t cdda_mount(odfs_cache_t *cache,
-                               odfs_log_state_t *log,
-                               uint32_t session_start,
-                               odfs_node_t *root_out,
-                               void **backend_ctx)
-{
-    (void)cache;
-    (void)log;
-    (void)session_start;
-    (void)root_out;
-    (void)backend_ctx;
-    /* standard mount path not used — see cdda_mount_from_toc() */
-    return ODFS_ERR_UNSUPPORTED;
 }
 
 static void cdda_unmount(void *backend_ctx)
@@ -1508,8 +1444,8 @@ static uint32_t cdda_get_volume_size(void *backend_ctx)
 const odfs_backend_ops_t cdda_backend_ops = {
     .name            = "cdda",
     .backend_type    = ODFS_BACKEND_CDDA,
-    .probe           = cdda_probe,
-    .mount           = cdda_mount,
+    .probe           = NULL,    /* see cdda_mount_from_toc() */
+    .mount           = NULL,
     .unmount         = cdda_unmount,
     .readdir         = cdda_readdir,
     .read            = cdda_read,
