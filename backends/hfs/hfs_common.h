@@ -25,6 +25,10 @@
 #define HFS_CAT_FILE      2
 #define HFS_CAT_DTHREAD   3
 
+/* ---- Apple Partition Map ---- */
+
+#define HFS_APM_SIG       0x504D  /* "PM" */
+
 /* ---- special CNIDs ---- */
 
 #define HFS_CNID_ROOT_DIR 2   /* root directory ID */
@@ -87,9 +91,20 @@ struct hfs_volume {
     char               volume_name[]; /* sized by the backend */
 };
 
+/*
+ * Check whether a partition starting at byte part_byte holds the
+ * backend's volume; nonzero stops the partition map scan.
+ */
+typedef int (*hfs_part_fn)(odfs_cache_t *cache, uint64_t part_byte,
+                           void *ctx);
+
 typedef odfs_err_t (*hfs_record_fn)(const uint8_t *key, size_t key_len,
                                     const uint8_t *data, size_t data_len,
                                     void *cb_ctx);
+
+const uint8_t *odfs_hfs_read_block(odfs_cache_t *cache, uint64_t byte_off);
+int odfs_hfs_scan_apm(odfs_cache_t *cache, uint32_t session_start,
+                      hfs_part_fn check, void *ctx);
 
 odfs_err_t odfs_hfs_init_btree(const hfs_volume_t *vol, hfs_btree_t *tree,
                                odfs_cache_t *cache);

@@ -168,6 +168,87 @@ static void hfs_add_file(bt_builder_t *b, uint32_t parent, const char *name,
     }
 }
 
+static void put_be64(uint8_t *p, uint64_t v)
+{
+    put_be32(p, (uint32_t)(v >> 32));
+    put_be32(p + 4, (uint32_t)v);
+}
+
+/* ---- HFS+ volume at part: 512-byte blocks, catalog from block 4 ---- */
+
+static uint8_t *hfsp_volume(uint8_t *part, uint32_t cat_blocks)
+{
+    uint8_t *vh = part + HFSPLUS_VH_OFFSET;
+
+    put_be16(&vh[0], HFSPLUS_SIG);
+    put_be16(&vh[2], 4);                  /* version */
+    put_be32(&vh[40], 512);               /* blockSize */
+    put_be32(&vh[44], 64);                /* totalBlocks */
+    put_be64(&vh[272], (uint64_t)cat_blocks * 512u);
+    put_be32(&vh[272 + 16], 4);           /* catalog extent 0 */
+    put_be32(&vh[272 + 20], cat_blocks);
+    return part + 4 * 512;                /* catalog node 0 */
+}
+
+static size_t utf16_ascii(uint8_t *dst, const char *src)
+{
+    size_t n = strlen(src);
+
+    for (size_t i = 0; i < n; i++) {
+        dst[i * 2] = 0;
+        dst[i * 2 + 1] = (uint8_t)src[i];
+    }
+    return n;
+}
+
+static void hfsp_add_thread(bt_builder_t *b, uint32_t cnid,
+                            uint32_t parent, const char *name)
+{
+    uint16_t ulen = (uint16_t)strlen(name);
+    uint8_t *rec = bt_add(b, (uint16_t)(8 + 10 + ulen * 2));
+    uint8_t *data = rec + 8;
+
+    put_be16(&rec[0], 6);
+    put_be32(&rec[2], cnid);
+    put_be16(&data[0], HFS_CAT_DTHREAD);
+    put_be32(&data[4], parent);
+    put_be16(&data[8], ulen);
+    utf16_ascii(&data[10], name);
+}
+
+/* add a file or folder record named by UTF-16BE uname; returns its data */
+static uint8_t *hfsp_add_rec(bt_builder_t *b, uint32_t parent,
+                             const uint8_t *uname, uint16_t ulen,
+                             uint16_t type, uint32_t cnid)
+{
+    uint16_t klen = (uint16_t)(6 + ulen * 2);
+    uint16_t dlen = type == HFS_CAT_DIR ? 88 : 248;
+    uint8_t *rec = bt_add(b, (uint16_t)(2 + klen + dlen));
+    uint8_t *data = rec + 2 + klen;
+
+    put_be16(&rec[0], klen);
+    put_be32(&rec[2], parent);
+    put_be16(&rec[6], ulen);
+    memcpy(&rec[8], uname, (size_t)ulen * 2);
+    put_be16(&data[0], type);
+    put_be32(&data[8], cnid);
+    return data;
+}
+
+static uint8_t *hfsp_add_file(bt_builder_t *b, uint32_t parent,
+                              const char *name, uint32_t cnid,
+                              uint64_t size, uint32_t start, uint32_t count)
+{
+    uint8_t uname[128];
+    uint16_t ulen = (uint16_t)utf16_ascii(uname, name);
+    uint8_t *data = hfsp_add_rec(b, parent, uname, ulen, HFS_CAT_FILE, cnid);
+
+    put_be64(&data[88], size);
+    put_be32(&data[104], start);
+    put_be32(&data[108], count);
+    return data;
+}
+
 typedef struct entry_list {
     int count;
     odfs_node_t nodes[16];
@@ -304,6 +385,91 @@ TEST(hfs_node_ids_are_catalog_ids)
     ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "file.txt", &b2));
     ASSERT_EQ(a.id, 23u);
     ASSERT_EQ(b2.id, 23u);
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+/* ---- Apple Partition Map ---- */
+
+static void apm_entry(uint8_t *img, uint32_t idx, uint32_t count,
+                      uint32_t start, const char *type)
+{
+    uint8_t *pm = img + idx * 512u;
+
+    put_be16(&pm[0], HFS_APM_SIG);
+    put_be32(&pm[4], count);
+    put_be32(&pm[8], start);
+    put_be32(&pm[12], 64);
+    memcpy(&pm[48], type, strlen(type));
+}
+
+TEST(hfs_in_second_apm_entry)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *part;
+    uint8_t *mdb;
+    odfs_mount_t mnt;
+    entry_list_t list;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    /* layout written by mkisofs -hfs -part: the map, then Apple_HFS */
+    apm_entry(img, 1, 2, 1, "Apple_partition_map");
+    apm_entry(img, 2, 2, 16, "Apple_HFS");
+
+    part = img + 16 * 512;
+    mdb = part + 1024;
+    put_be16(&mdb[HFS_MDB_SIGWORD], HFS_MDB_SIG);
+    put_be16(&mdb[HFS_MDB_NMALBLKS], 64);
+    put_be32(&mdb[HFS_MDB_ALBLKSIZ], 512);
+    put_be16(&mdb[HFS_MDB_ALBLST], 4);
+    put_be16(&mdb[HFS_MDB_CTEXTREC + 2], 2);
+
+    bt_header(part + 2048, 512, 1, 2);
+    bt_init(&b, part + 2560, 512, HFS_NODE_LEAF, 0, 0);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "APM.TXT", 16, 0, NULL);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_HFS);
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 1);
+    ASSERT_STR_EQ(list.nodes[0].name, "APM.TXT");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+TEST(hfsplus_in_apm_partition_past_scan_window)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *part;
+    uint8_t *cat;
+    odfs_mount_t mnt;
+    odfs_node_t file;
+    bt_builder_t b;
+    char buf[8];
+    size_t len = sizeof(buf);
+
+    ASSERT(img != NULL);
+    /* the partition starts past the 256 KiB signature scan */
+    apm_entry(img, 1, 3, 1, "Apple_partition_map");
+    apm_entry(img, 2, 3, 64, "Apple_Driver43");
+    apm_entry(img, 3, 3, 600, "Apple_HFS");
+
+    part = img + 600 * 512;
+    cat = hfsp_volume(part, 2);
+    bt_header(cat, 512, 1, 2);
+    bt_init(&b, cat + 512, 512, HFS_NODE_LEAF, 0, 0);
+    hfsp_add_thread(&b, HFS_CNID_ROOT_DIR, 1, "Far");
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "far.txt", 16, 3, 8, 1);
+    memcpy(part + 8 * 512, "FAR", 3);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_HFSPLUS);
+    ASSERT_STR_EQ(mnt.volume_name, "Far");
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "far.txt", &file));
+    ASSERT_OK(odfs_read(&mnt, &file, 0, buf, &len));
+    ASSERT_EQ(len, 3u);
+    ASSERT(memcmp(buf, "FAR", 3) == 0);
     odfs_unmount(&mnt);
     odfs_free(img);
 }

@@ -43,6 +43,20 @@ static void hfsp_decode_name(const uint8_t *uname, uint16_t ulen,
 /* probe — scan for H+ signature                                       */
 /* ------------------------------------------------------------------ */
 
+static int hfsp_check_part(odfs_cache_t *cache, uint64_t part_byte, void *ctx)
+{
+    const uint8_t *vh = odfs_hfs_read_block(cache, part_byte + HFSPLUS_VH_OFFSET);
+    uint16_t sig;
+
+    if (!vh)
+        return 0;
+    sig = hfs_be16(vh);
+    if (sig != HFSPLUS_SIG && sig != HFSX_SIG)
+        return 0;
+    *(uint64_t *)ctx = part_byte + HFSPLUS_VH_OFFSET;
+    return 1;
+}
+
 static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
                                  uint32_t session_start,
                                  uint64_t *vh_offset_out)
@@ -50,20 +64,15 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
     /*
      * Try common locations for the Volume Header:
      * 1. Byte 1024 from image start (bare HFS+ volume)
-     * 2. Scan 512-byte boundaries in first 256K for 'H+' or 'HX'
-     *    (handles GPT/APM partitioned images)
+     * 2. An Apple_HFS or Apple_HFSX partition in an Apple Partition Map
+     * 3. Scan 512-byte boundaries in first 256K for 'H+' or 'HX'
+     *    (handles GPT and other partitioned images)
      */
     const uint8_t *sector;
-    uint64_t base = (uint64_t)session_start * 2048;
 
-    /* try byte 1024 (within first 2048-byte sector) */
-    if (odfs_cache_read(cache, session_start, &sector) == ODFS_OK) {
-        uint16_t sig = hfs_be16(&sector[1024]);
-        if (sig == HFSPLUS_SIG || sig == HFSX_SIG) {
-            *vh_offset_out = base + 1024;
-            return ODFS_OK;
-        }
-    }
+    if (hfsp_check_part(cache, (uint64_t)session_start * 2048, vh_offset_out) ||
+        odfs_hfs_scan_apm(cache, session_start, hfsp_check_part, vh_offset_out))
+        return ODFS_OK;
 
     /* scan first 256K for the signature */
     for (uint32_t lba = session_start; lba < session_start + 128; lba++) {
