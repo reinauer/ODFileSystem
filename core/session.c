@@ -81,14 +81,17 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                 }
                 return ODFS_OK;
             }
-        }
 
-        ODFS_INFO(log, ODFS_SUB_MULTISESSION,
-                  "explicit last session starts at LBA %" PRIu32,
-                  *last_lba_out);
-        return ODFS_OK;
-    }
-    if (err != ODFS_ERR_UNSUPPORTED) {
+            /* audio-only last session: let the TOC heuristic below pick
+             * the last data track instead */
+            *last_lba_out = 0;
+        } else {
+            ODFS_INFO(log, ODFS_SUB_MULTISESSION,
+                      "explicit last session starts at LBA %" PRIu32,
+                      *last_lba_out);
+            return ODFS_OK;
+        }
+    } else if (err != ODFS_ERR_UNSUPPORTED) {
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                   "explicit last-session query unavailable "
                   "(%s); falling back to TOC heuristics",
