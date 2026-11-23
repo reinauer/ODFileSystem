@@ -27,10 +27,16 @@ static inline void *odfs_malloc(size_t size)
 {
     if (size == 0)
         size = 1;
+#ifdef __AROS__
+    return AllocVec((IPTR)size, MEMF_PUBLIC);
+#else
+    if (sizeof(size_t) > sizeof(ULONG) && size > (size_t)(ULONG)-1)
+        return NULL;
 #if ODFS_AMIGA_OS4
     return AllocVecTags((ULONG)size, AVT_Type, MEMF_SHARED, TAG_END);
 #else
     return AllocVec((ULONG)size, MEMF_PUBLIC);
+#endif
 #endif
 }
 
@@ -45,6 +51,11 @@ static inline void *odfs_calloc(size_t count, size_t size)
     if (total == 0)
         total = 1;
 
+#ifdef __AROS__
+    return AllocVec((IPTR)total, MEMF_PUBLIC | MEMF_CLEAR);
+#else
+    if (sizeof(size_t) > sizeof(ULONG) && total > (size_t)(ULONG)-1)
+        return NULL;
 #if ODFS_AMIGA_OS4
     return AllocVecTags((ULONG)total,
                         AVT_Type, MEMF_SHARED,
@@ -52,6 +63,7 @@ static inline void *odfs_calloc(size_t count, size_t size)
                         TAG_END);
 #else
     return AllocVec((ULONG)total, MEMF_PUBLIC | MEMF_CLEAR);
+#endif
 #endif
 }
 
