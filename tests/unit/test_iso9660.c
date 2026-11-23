@@ -176,4 +176,145 @@ TEST(iso_readdir_dir_size_near_uint32_max_terminates)
     odfs_cache_destroy(&cache);
 }
 
+/* ---- synthetic ISO media ---- */
+
+#define ISO_TEST_SECTORS 32
+
+typedef struct iso_test_media {
+    uint8_t sectors[ISO_TEST_SECTORS][ISO_SECTOR_SIZE];
+} iso_test_media_t;
+
+static odfs_err_t iso_test_read_sectors(void *ctx, uint32_t lba,
+                                        uint32_t count, void *buf)
+{
+    iso_test_media_t *m = ctx;
+    if (lba >= ISO_TEST_SECTORS || count > ISO_TEST_SECTORS - lba)
+        return ODFS_ERR_EOF;
+    memcpy(buf, &m->sectors[lba][0], (size_t)count * ISO_SECTOR_SIZE);
+    return ODFS_OK;
+}
+
+static uint32_t iso_test_sector_size(void *ctx)
+{
+    (void)ctx;
+    return ISO_SECTOR_SIZE;
+}
+
+static uint32_t iso_test_sector_count(void *ctx)
+{
+    (void)ctx;
+    return ISO_TEST_SECTORS;
+}
+
+static const odfs_media_ops_t iso_test_media_ops = {
+    .read_sectors = iso_test_read_sectors,
+    .sector_size  = iso_test_sector_size,
+    .sector_count = iso_test_sector_count,
+};
+
+static void iso_wr_bb16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static void iso_wr_bb32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+    p[4] = (uint8_t)(v >> 24);
+    p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);
+    p[7] = (uint8_t)v;
+}
+
+static size_t iso_wr_rec(uint8_t *p, uint32_t lba, uint8_t ear_len,
+                         uint32_t size, uint8_t flags,
+                         const char *name, uint8_t name_len)
+{
+    uint8_t len = (uint8_t)(33 + name_len + ((name_len & 1) == 0 ? 1 : 0));
+    memset(p, 0, len);
+    p[ISO_DR_LENGTH] = len;
+    p[ISO_DR_EXT_ATTR_LENGTH] = ear_len;
+    iso_wr_bb32(&p[ISO_DR_EXTENT_LBA], lba);
+    iso_wr_bb32(&p[ISO_DR_DATA_LENGTH], size);
+    p[ISO_DR_DATE] = 126;
+    p[ISO_DR_DATE + 1] = 1;
+    p[ISO_DR_DATE + 2] = 1;
+    p[ISO_DR_FLAGS] = flags;
+    iso_wr_bb16(&p[ISO_DR_VOLUME_SEQ_NUM], 1);
+    p[ISO_DR_NAME_LEN] = name_len;
+    memcpy(&p[ISO_DR_NAME], name, name_len);
+    return len;
+}
+
+static void iso_init_pvd(iso_test_media_t *m, uint16_t blk_size,
+                         uint32_t root_lbn, uint8_t root_ear)
+{
+    uint8_t *pvd = m->sectors[ISO_VD_START_LBA];
+    uint8_t *term = m->sectors[ISO_VD_START_LBA + 1];
+
+    memset(m, 0, sizeof(*m));
+    pvd[ISO_PVD_TYPE] = ISO_VD_TYPE_PRIMARY;
+    memcpy(&pvd[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    pvd[ISO_PVD_VERSION] = 1;
+    memset(&pvd[ISO_PVD_SYSTEM_ID], ' ', 32);
+    memset(&pvd[ISO_PVD_VOLUME_ID], ' ', 32);
+    memcpy(&pvd[ISO_PVD_VOLUME_ID], "ISOTEST", 7);
+    iso_wr_bb32(&pvd[ISO_PVD_VOLUME_SPACE_SIZE],
+                ISO_TEST_SECTORS * (ISO_SECTOR_SIZE / blk_size));
+    iso_wr_bb16(&pvd[ISO_PVD_LOGICAL_BLK_SIZE], blk_size);
+    iso_wr_rec(&pvd[ISO_PVD_ROOT_DIR_RECORD], root_lbn, root_ear,
+               ISO_SECTOR_SIZE, ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+
+    term[ISO_PVD_TYPE] = ISO_VD_TYPE_TERM;
+    memcpy(&term[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    term[ISO_PVD_VERSION] = 1;
+}
+
+TEST(iso_extent_skips_extended_attribute_record)
+{
+    static iso_test_media_t m;
+    odfs_media_t media = { .ops = &iso_test_media_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root, file;
+    void *ctx = NULL;
+    char buf[16];
+    size_t len, off = 0;
+
+    /* root extent at LBA 18 with a 2-block EAR: directory data at LBA 20 */
+    iso_init_pvd(&m, ISO_SECTOR_SIZE, 18, 2);
+    off += iso_wr_rec(&m.sectors[20][off], 18, 2, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x00", 1);
+    off += iso_wr_rec(&m.sectors[20][off], 18, 2, ISO_SECTOR_SIZE,
+                      ISO_DR_FLAG_DIRECTORY, "\x01", 1);
+    /* file extent at LBA 22 with a 3-block EAR: file data at LBA 25 */
+    off += iso_wr_rec(&m.sectors[20][off], 22, 3, 5, 0, "EAR.TXT;1", 9);
+    memcpy(m.sectors[22], "WRONG", 5);
+    memcpy(m.sectors[25], "EAROK", 5);
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 8));
+    ASSERT_OK(iso9660_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_EQ(root.extent.lba, 20);
+
+    ASSERT_OK(iso9660_backend_ops.lookup(ctx, &cache, &log, &root,
+                                         "EAR.TXT", &file));
+    ASSERT_EQ(file.extent.lba, 25);
+
+    len = sizeof(buf);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_OK(iso9660_backend_ops.read(ctx, &cache, &log, &file, 0, buf, &len));
+    ASSERT_EQ(len, 5);
+    ASSERT(memcmp(buf, "EAROK", 5) == 0);
+
+    iso9660_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
