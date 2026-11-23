@@ -478,6 +478,27 @@ TEST(cache_sequential_miss_installs_readahead)
     odfs_cache_destroy(&cache);
 }
 
+static uint32_t raw_sector_size(void *ctx)
+{
+    (void)ctx;
+    return 2352;
+}
+
+TEST(cache_init_rejects_non_pow2_sector_size)
+{
+    static const odfs_media_ops_t raw_ops = {
+        .read_sectors = mock_read_sectors,
+        .sector_size  = raw_sector_size,
+        .sector_count = mock_sector_count,
+    };
+    odfs_cache_t cache;
+    odfs_media_t media = { &raw_ops, NULL };
+
+    ASSERT_EQ(odfs_cache_init(&cache, &media, 4), ODFS_ERR_INVAL);
+    ASSERT(cache.entries == NULL);
+    ASSERT(cache.buckets == NULL);
+}
+
 #if ODFS_FEATURE_CACHE_RETAIN
 TEST(cache_retain_external_read)
 {
