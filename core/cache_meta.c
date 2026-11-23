@@ -21,7 +21,7 @@
 #include "odfs/string.h"
 #include <string.h>
 
-#define META_NO_COMMENT 0xffffffffUL
+#define META_POOL_FAIL 0xffffffffUL
 
 /* directories this large hash the name a lookup looks for */
 #define META_LOOKUP_HASH_MIN 8u
@@ -189,7 +189,7 @@ static const odfs_meta_entry_t *meta_find_name(odfs_meta_dir_t *d,
                                                const char *name,
                                                size_t len)
 {
-    const odfs_meta_entry_t *e = d->entries;
+    const odfs_meta_entry_t *e = d->storage;
     const odfs_meta_entry_t *last = e + d->count;
     unsigned int hash;
 
@@ -214,7 +214,7 @@ static const odfs_meta_entry_t *meta_find_name(odfs_meta_dir_t *d,
     if (!d->hashed) {
         odfs_meta_entry_t *h;
 
-        for (h = d->entries; h < last; h++)
+        for (h = d->storage; h < last; h++)
             h->name_hash = odfs_strcasehash(d->pool + h->name_off);
         d->hashed = 1;
     }
@@ -231,7 +231,8 @@ static void meta_entry_to_node(const odfs_meta_dir_t *d,
                                const odfs_meta_entry_t *e,
                                odfs_node_t *out)
 {
-    size_t len;
+    const char *src;
+    char *dst;
 
     out->id = e->id;
     out->parent_id = d->dir_id;
@@ -239,30 +240,29 @@ static void meta_entry_to_node(const odfs_meta_dir_t *d,
     out->kind = (odfs_node_kind_t)e->kind;
     out->size = e->size;
     out->mtime = e->mtime;
-    out->ctime = e->ctime;
+    out->ctime = e->mtime;
     out->mode = e->mode;
     out->extent.lba = e->lba;
     out->extent.length = e->length;
     out->backend_data = NULL;
 
     /* pool names come from node names, so they fit out->name */
-    {
-        const char *src = d->pool + e->name_off;
-        char *dst = out->name;
-
-        while ((*dst++ = *src++) != '\0')
-            ;
-    }
+    src = d->pool + e->name_off;
+    dst = out->name;
+    while ((*dst++ = *src++) != '\0')
+        ;
 
     out->amiga_as.has_protection = e->has_protection;
     if (e->has_protection)
         memcpy(out->amiga_as.protection, e->protection, 4);
     out->amiga_as.has_comment = e->has_comment;
     if (e->has_comment) {
-        len = strlen(d->pool + e->comment_off);
+        /* the comment follows the name */
+        size_t len = strlen(src);
+
         if (len >= sizeof(out->amiga_as.comment))
             len = sizeof(out->amiga_as.comment) - 1;
-        memcpy(out->amiga_as.comment, d->pool + e->comment_off, len);
+        memcpy(out->amiga_as.comment, src, len);
         out->amiga_as.comment[len] = '\0';
     }
 }
@@ -309,7 +309,7 @@ static uint32_t meta_pool_add_len(meta_build_ctx_t *bc, const char *s,
             new_cap *= 2u;
         bc->pool = meta_grow(bc->pool, bc->pool_len, new_cap);
         if (!bc->pool)
-            return META_NO_COMMENT;
+            return META_POOL_FAIL;
         bc->pool_cap = new_cap;
     }
     off = bc->pool_len;
@@ -366,7 +366,6 @@ static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
     e->length = entry->extent.length;
     e->size = entry->size;
     e->mtime = entry->mtime;
-    e->ctime = entry->ctime;
     e->mode = entry->mode;
     e->kind = (uint8_t)entry->kind;
     e->backend = (uint8_t)entry->backend;
@@ -375,18 +374,14 @@ static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
         memcpy(e->protection, entry->amiga_as.protection, 4);
 
     off = meta_pool_add_name(bc, entry->name);
-    if (off == META_NO_COMMENT)
+    if (off == META_POOL_FAIL)
         goto fail;
     e->name_off = off;
 
     e->has_comment = entry->amiga_as.has_comment;
-    e->comment_off = META_NO_COMMENT;
-    if (entry->amiga_as.has_comment) {
-        off = meta_pool_add(bc, entry->amiga_as.comment);
-        if (off == META_NO_COMMENT)
-            goto fail;
-        e->comment_off = off;
-    }
+    if (entry->amiga_as.has_comment &&
+        meta_pool_add(bc, entry->amiga_as.comment) == META_POOL_FAIL)
+        goto fail;
 
     bc->count++;
 
@@ -462,9 +457,8 @@ static odfs_meta_dir_t *meta_build(odfs_meta_cache_t *mc,
     d->dir_id = dir->id;
     d->count = bc.count;
     d->bytes = (uint32_t)total;
-    d->entries = d->storage;
-    d->pool = (char *)d->entries + entry_bytes;
-    memcpy(d->entries, bc.entries, entry_bytes);
+    d->pool = (char *)d->storage + entry_bytes;
+    memcpy(d->storage, bc.entries, entry_bytes);
     memcpy(d->pool, bc.pool, bc.pool_len);
 
 out:
@@ -551,7 +545,7 @@ static odfs_err_t meta_replay(const odfs_meta_dir_t *d,
     for (; i < d->count; i++) {
         odfs_node_t node;
 
-        meta_entry_to_node(d, &d->entries[i], &node);
+        meta_entry_to_node(d, &d->storage[i], &node);
         err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)

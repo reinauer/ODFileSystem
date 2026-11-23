@@ -103,6 +103,97 @@ TEST(meta_cache_evicts_least_recently_used_directory)
     odfs_meta_cache_destroy(&mc);
 }
 
+/* three files with Amiga metadata; the middle one has no comment */
+static odfs_err_t amiga_as_readdir(void *backend_ctx, odfs_cache_t *cache,
+                                   odfs_log_state_t *log,
+                                   const odfs_node_t *dir,
+                                   odfs_dir_iter_fn callback, void *cb_ctx,
+                                   uint32_t *resume_offset)
+{
+    static const char *const names[3] = { "First", "Second", "Third" };
+    odfs_node_t child;
+    int *readdirs = backend_ctx;
+    unsigned int i;
+    odfs_err_t err;
+
+    (void)cache;
+    (void)log;
+    (void)resume_offset;
+    (*readdirs)++;
+
+    for (i = 0; i < 3; i++) {
+        memset(&child, 0, sizeof(child));
+        child.id = 10 + i;
+        child.parent_id = dir->id;
+        child.backend = dir->backend;
+        child.kind = ODFS_NODE_FILE;
+        child.extent.lba = 500 + i;
+        child.extent.length = 1234;
+        child.size = (UINT64_C(5) << 32) | i;
+        child.mode = 0755;
+        child.mtime.year = 2024;
+        child.mtime.month = 6;
+        child.mtime.day = (uint8_t)(15 + i);
+        child.amiga_as.has_protection = 1;
+        child.amiga_as.protection[3] = (uint8_t)(0x40 + i);
+        if (i != 1) {
+            child.amiga_as.has_comment = 1;
+            snprintf(child.amiga_as.comment, sizeof(child.amiga_as.comment),
+                     "comment %u", i);
+        }
+        strcpy(child.name, names[i]);
+        err = callback(&child, cb_ctx);
+        if (err != ODFS_OK)
+            return err;
+    }
+    return ODFS_OK;
+}
+
+static const odfs_backend_ops_t amiga_as_ops = {
+    .name = "amiga-as",
+    .backend_type = ODFS_BACKEND_ROCK_RIDGE,
+    .readdir = amiga_as_readdir,
+};
+
+TEST(meta_cache_keeps_amiga_metadata)
+{
+    static odfs_meta_cache_t mc;
+    odfs_log_state_t log;
+    odfs_node_t dir, out;
+    int readdirs = 0;
+    unsigned int i;
+    static const char *const names[3] = { "first", "SECOND", "third" };
+
+    odfs_log_init(&log);
+    odfs_meta_cache_init(&mc, 1u << 14);
+    init_dir(&dir, 100);
+    dir.backend = ODFS_BACKEND_ROCK_RIDGE;
+
+    for (i = 0; i < 3; i++) {
+        memset(&out, 0xa5, sizeof(out));
+        ASSERT_OK(odfs_meta_lookup(&mc, &amiga_as_ops, &readdirs, NULL,
+                                   &log, &dir, names[i], &out));
+        ASSERT_EQ(readdirs, 1);
+        ASSERT_EQ(out.id, 10 + i);
+        ASSERT_EQ(out.parent_id, dir.id);
+        ASSERT_EQ(out.extent.lba, 500 + i);
+        ASSERT_EQ(out.size, (UINT64_C(5) << 32) | i);
+        ASSERT_EQ(out.mode, 0755);
+        ASSERT_EQ(out.mtime.day, 15 + i);
+        ASSERT_EQ(out.amiga_as.has_protection, 1);
+        ASSERT_EQ(out.amiga_as.protection[3], 0x40 + i);
+        ASSERT_EQ(out.amiga_as.has_comment, i != 1);
+        if (i != 1) {
+            char want[16];
+
+            snprintf(want, sizeof(want), "comment %u", i);
+            ASSERT_STR_EQ(out.amiga_as.comment, want);
+        }
+    }
+
+    odfs_meta_cache_destroy(&mc);
+}
+
 /* HFS+ directories hold eight files, HFS directories one */
 static odfs_err_t by_backend_readdir(void *backend_ctx, odfs_cache_t *cache,
                                      odfs_log_state_t *log,
