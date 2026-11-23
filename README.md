@@ -141,7 +141,7 @@ Supported control flags:
 - `LOWERCASE` to lowercase plain ISO names
 - `NOROCKRIDGE` or `NORR` to disable Rock Ridge
 - `NOJOLIET` or `NOJ` to disable Joliet
-- `HFSFIRST` or `HF` to prefer HFS on hybrid discs
+- `HFSFIRST` or `HF` to prefer HFS or HFS+ on hybrid discs
 - `UDF` to prefer UDF on bridge discs
 - `AIFF` to expose audio tracks as AIFF instead of WAV
 - `FILEBUFFERS=n` or `FB=n` to set the block-cache size in sectors
@@ -176,7 +176,7 @@ standard Rock Ridge names, timestamps, links, and directory structure.
 
 When several directory trees are available, ODFileSystem prefers Rock Ridge,
 then Joliet, then plain ISO 9660. On bridge or hybrid discs it prefers the
-ISO-family view over UDF or HFS.
+ISO-family view over UDF, HFS or HFS+.
 
 To prefer UDF, set:
 
@@ -184,7 +184,7 @@ To prefer UDF, set:
 Control = "UDF"
 ```
 
-To prefer HFS, use `Control = "HFSFIRST"`. Options can be combined, for example
+To prefer HFS or HFS+, use `Control = "HFSFIRST"`. Options can be combined, for example
 `Control = "UDF LOWERCASE"`.
 
 ### Name collisions
