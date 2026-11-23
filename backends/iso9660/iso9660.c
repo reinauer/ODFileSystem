@@ -66,10 +66,13 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
             node->kind = ODFS_NODE_FILE;
     }
 
-    if (rr->has_timestamps) {
+    if (rr->has_mtime) {
         node->mtime = rr->mtime;
-        node->ctime = rr->ctime;
+        if (!rr->has_ctime)
+            node->ctime = rr->mtime;
     }
+    if (rr->has_ctime)
+        node->ctime = rr->ctime;
 
     if (rr->has_child_link)
         node->extent.lba = rr->child_link_lba + session_start;

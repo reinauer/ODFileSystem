@@ -63,7 +63,8 @@ typedef struct rr_info {
     uint32_t nlinks;             /* link count from PX */
     uint32_t uid;                /* user ID from PX */
     uint32_t gid;                /* group ID from PX */
-    int      has_timestamps;     /* TF entry found */
+    int      has_mtime;          /* TF modify time found */
+    int      has_ctime;          /* TF creation time found */
     odfs_timestamp_t mtime;
     odfs_timestamp_t ctime;
     int      is_symlink;         /* SL entry found */
