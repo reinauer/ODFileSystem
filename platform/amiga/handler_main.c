@@ -5125,8 +5125,8 @@ static void action_current_volume(handler_global_t *g,
 {
     odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
 
-    pkt->dp_Res1 = (SIPTR)MKBADDR(
-        volume_node_ptr(fh ? fh_volume(fh) : g->current_volume));
+    pkt->dp_Res1 = (SIPTR)MKBADDR(volume_node_ptr(
+        fh_is_active(g, fh) ? fh_volume(fh) : g->current_volume));
     pkt->dp_Res2 = (SIPTR)g->devunit;
 }
 
