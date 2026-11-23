@@ -39,7 +39,7 @@ typedef struct file_media_ctx {
     char        disc_title[HOST_CUE_TEXT_MAX];
     char        disc_performer[HOST_CUE_TEXT_MAX];
     size_t      track_count;
-    cue_track_t tracks[HOST_MAX_CUE_TRACKS];
+    cue_track_t tracks[]; /* track_count entries, CUE images only */
 } file_media_ctx_t;
 
 typedef struct cue_track_spec {
@@ -435,7 +435,7 @@ static odfs_err_t cue_media_open(const char *path, odfs_media_t *out)
     if (!bin_path)
         return ODFS_ERR_NOMEM;
 
-    fm = calloc(1, sizeof(*fm));
+    fm = calloc(1, sizeof(*fm) + track_count * sizeof(fm->tracks[0]));
     if (!fm) {
         free(bin_path);
         return ODFS_ERR_NOMEM;
