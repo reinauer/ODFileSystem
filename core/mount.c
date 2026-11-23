@@ -190,8 +190,11 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
     for (i = 0; backend_table[i] != NULL; i++) {
         const odfs_backend_ops_t *be = backend_table[i];
 
+        /* Rock Ridge is detected by mounting ISO 9660 */
         if (mnt->opts.force_backend != 0 &&
-            (odfs_backend_type_t)mnt->opts.force_backend != be->backend_type)
+            (odfs_backend_type_t)mnt->opts.force_backend != be->backend_type &&
+            !(mnt->opts.force_backend == ODFS_BACKEND_ROCK_RIDGE &&
+              be->backend_type == ODFS_BACKEND_ISO9660))
             continue;
 
         ODFS_DEBUG(&mnt->log, ODFS_SUB_MOUNT,
@@ -232,7 +235,13 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
     if (mount_try_one(mnt, iso_candidate, session_start, &chosen,
                       &last_err)) {
         if (mnt->root.backend != ODFS_BACKEND_ROCK_RIDGE &&
-            !mnt->opts.disable_joliet && joliet_candidate) {
+            mnt->opts.force_backend == ODFS_BACKEND_ROCK_RIDGE) {
+            iso_candidate->unmount(mnt->backend_ctx);
+            mnt->backend_ctx = NULL;
+            chosen = NULL;
+            iso_candidate = NULL;
+        } else if (mnt->root.backend != ODFS_BACKEND_ROCK_RIDGE &&
+                   !mnt->opts.disable_joliet && joliet_candidate) {
             iso_candidate->unmount(mnt->backend_ctx);
             mnt->backend_ctx = NULL;
             chosen = NULL;
