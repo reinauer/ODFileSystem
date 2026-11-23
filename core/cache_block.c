@@ -265,6 +265,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->clock = 0;
     cache->media = media;
     cache->stream_buf = NULL;
+    cache->last_miss_lba = UINT32_MAX;
     if (capacity >= 4u * ODFS_CACHE_READAHEAD) {
         /* optional: read-ahead is skipped when this allocation fails */
         cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD <<
@@ -299,6 +300,7 @@ void odfs_cache_flush(odfs_cache_t *cache)
     for (uint32_t i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
+    cache->last_miss_lba = UINT32_MAX;
     cache->generation++;
     cache_reset_indices(cache);
 }
@@ -428,7 +430,7 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     /* Cluster only sequential miss patterns (directory scans, small
      * sequential reads); random misses would fetch data that is
      * evicted unused while paying for the larger transfer. */
-    if (cache->stream_buf && lba == cache->last_miss_lba + 1u) {
+    if (cache->stream_buf && lba > 0 && lba - 1u == cache->last_miss_lba) {
         uint32_t run = 1;
 
         while (run < ODFS_CACHE_READAHEAD &&
