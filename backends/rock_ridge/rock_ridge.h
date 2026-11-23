@@ -81,6 +81,7 @@ typedef struct rr_info {
 /*
  * Check whether Rock Ridge is present in a directory's "." entry.
  * Returns 1 if SP signature found with correct check bytes, 0 otherwise.
+ * An SP entry behind a leading CD-ROM XA system use record is found too.
  *   sua       — pointer to System Use Area data
  *   sua_len   — length of System Use Area in bytes
  *   skip_out  — receives the SP skip length (bytes to skip in future entries)
