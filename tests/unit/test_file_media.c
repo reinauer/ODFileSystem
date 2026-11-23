@@ -367,4 +367,50 @@ TEST(cue_index_msf_parsing)
     ASSERT(rmdir(dir_path) == 0);
 }
 
+/*
+ * A chunk size of 0xFFFFFFFF used to wrap to 0 when padded to a word
+ * boundary, so the parser stepped into the chunk body and took a "data"
+ * header there as the payload. A chunk running past EOF must make the
+ * file fall back to a raw bin instead.
+ */
+TEST(cue_wav_rejects_chunk_past_eof)
+{
+    char dir_path[256];
+    char cue_path[320];
+    char wav_path[320];
+    uint8_t wav[2 * TEST_AUDIO_FRAME_SIZE];
+    uint8_t frame[TEST_AUDIO_FRAME_SIZE];
+    odfs_media_t media;
+
+    ASSERT(test_make_temp_dir(dir_path, sizeof(dir_path)));
+    ASSERT(snprintf(cue_path, sizeof(cue_path), "%s/disc.cue", dir_path) <
+           (int)sizeof(cue_path));
+    ASSERT(snprintf(wav_path, sizeof(wav_path), "%s/disc.wav", dir_path) <
+           (int)sizeof(wav_path));
+
+    memset(wav, 0xa5, sizeof(wav));
+    memcpy(wav, "RIFF", 4);
+    test_put_le32(wav + 4, (uint32_t)(sizeof(wav) - 8));
+    memcpy(wav + 8, "WAVE", 4);
+    memcpy(wav + 12, "JUNK", 4);
+    test_put_le32(wav + 16, 0xFFFFFFFFu);
+    memcpy(wav + 20, "data", 4);
+    test_put_le32(wav + 24, TEST_AUDIO_FRAME_SIZE);
+    ASSERT(test_write_file(wav_path, wav, sizeof(wav)));
+
+    ASSERT_OK(test_open_cue(cue_path,
+                            "FILE \"disc.wav\" WAVE\n"
+                            "  TRACK 01 AUDIO\n"
+                            "    INDEX 01 00:00:00\n",
+                            &media));
+    ASSERT_EQ(odfs_media_sector_count(&media), 2);
+    ASSERT_OK(odfs_media_read_audio(&media, 0, 1, frame));
+    ASSERT(memcmp(frame, "RIFF", 4) == 0);
+    odfs_media_close(&media);
+
+    ASSERT(remove(cue_path) == 0);
+    ASSERT(remove(wav_path) == 0);
+    ASSERT(rmdir(dir_path) == 0);
+}
+
 TEST_MAIN()

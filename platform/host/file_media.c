@@ -273,7 +273,8 @@ static void cue_parse_text_value(const char *s, char *dst, size_t dst_size)
  * track offsets can skip the header. Returns 0 when the file is not a
  * WAV; the caller then treats it as a raw bin.
  */
-static int host_riff_data_range(FILE *fp, uint64_t *base_out, uint64_t *size_out)
+static int host_riff_data_range(FILE *fp, uint64_t file_size,
+                                uint64_t *base_out, uint64_t *size_out)
 {
     uint8_t hdr[12];
     uint8_t chdr[8];
@@ -286,22 +287,26 @@ static int host_riff_data_range(FILE *fp, uint64_t *base_out, uint64_t *size_out
 
     for (;;) {
         uint32_t csize;
+        uint64_t skip;
         off_t pos;
 
         if (fread(chdr, 1, sizeof(chdr), fp) != sizeof(chdr))
             return 0;
         csize = (uint32_t)chdr[4] | ((uint32_t)chdr[5] << 8) |
                 ((uint32_t)chdr[6] << 16) | ((uint32_t)chdr[7] << 24);
+        pos = ftello(fp);
+        if (pos < 0)
+            return 0;
         if (memcmp(chdr, "data", 4) == 0) {
-            pos = ftello(fp);
-            if (pos < 0)
-                return 0;
             *base_out = (uint64_t)pos;
             *size_out = csize;
             return 1;
         }
-        /* chunks are word-aligned */
-        if (fseek(fp, (long)(csize + (csize & 1u)), SEEK_CUR) != 0)
+        /* chunks are word-aligned; a chunk must not extend past EOF */
+        skip = (uint64_t)csize + (csize & 1u);
+        if (skip > file_size - (uint64_t)pos)
+            return 0;
+        if (fseeko(fp, (off_t)skip, SEEK_CUR) != 0)
             return 0;
     }
 }
@@ -456,7 +461,8 @@ static odfs_err_t cue_media_open(const char *path, odfs_media_t *out)
     }
 
     payload_size = (uint64_t)file_size;
-    if (host_riff_data_range(fm->fp, &payload_base, &payload_size)) {
+    if (host_riff_data_range(fm->fp, (uint64_t)file_size,
+                             &payload_base, &payload_size)) {
         /* clamp a data chunk that claims more than the file holds */
         if (payload_base + payload_size > (uint64_t)file_size)
             payload_size = (uint64_t)file_size - payload_base;
