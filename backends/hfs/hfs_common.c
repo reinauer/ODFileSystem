@@ -196,16 +196,24 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
             uint32_t off = hfs_rec_offset(node, node_size, r);
             uint32_t key_len;
             uint32_t key_parent;
+            uint32_t ptr_off;
             uint32_t ptr;
 
             if (off < 14 || off + 6 > limit)
                 break;
             key_len = hfs_key_length(vol, &node[off]);
-            if (key_len < 6 || key_len + 4 > limit - off)
+            if (key_len < 6 || key_len > limit - off)
+                break;
+
+            /* the child pointer follows the key, padded to even */
+            ptr_off = off + key_len;
+            if (ptr_off & 1)
+                ptr_off++;
+            if (ptr_off + 4 > limit)
                 break;
 
             key_parent = hfs_be32(&node[off + 2]);
-            ptr = hfs_be32(&node[off + key_len]);
+            ptr = hfs_be32(&node[ptr_off]);
 
             /* a directory's records can start in the child before the
              * first key naming it */

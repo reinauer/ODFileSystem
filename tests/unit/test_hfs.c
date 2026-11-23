@@ -251,4 +251,38 @@ TEST(hfs_index_self_link_is_rejected)
     odfs_free(img);
 }
 
+/* ---- index records ---- */
+
+TEST(hfs_index_pointer_follows_padded_key)
+{
+    uint8_t *img = hfs_image(3);
+    odfs_mount_t mnt;
+    entry_list_t list;
+    bt_builder_t b;
+    uint8_t *rec;
+
+    ASSERT(img != NULL);
+    bt_header(hfs_ab(img, 0), 512, 1, 3);
+
+    /* variable-length index key: keyLength 8 is even, so the key takes
+     * nine bytes and the child pointer starts after a pad byte */
+    bt_init(&b, hfs_ab(img, 1), 512, HFS_NODE_INDEX, 0, 0);
+    rec = bt_add(&b, 14);
+    rec[0] = 8;
+    put_be32(&rec[2], HFS_CNID_ROOT_DIR);
+    rec[6] = 2;
+    memcpy(&rec[7], "FR", 2);
+    put_be32(&rec[10], 2);                /* child: leaf 2 */
+
+    bt_init(&b, hfs_ab(img, 2), 512, HFS_NODE_LEAF, 0, 0);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "FRAG.BIN", 16, 0, NULL);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 1);
+    ASSERT_STR_EQ(list.nodes[0].name, "FRAG.BIN");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()
