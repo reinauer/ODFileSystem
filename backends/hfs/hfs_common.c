@@ -296,7 +296,7 @@ odfs_err_t odfs_hfs_walk_catalog(const hfs_volume_t *vol,
 /* ------------------------------------------------------------------ */
 
 typedef struct hfs_readdir_ctx {
-    hfs_volume_t *vol;
+    const hfs_volume_t *vol;
     const odfs_node_t *dir;
     odfs_dir_iter_fn callback;
     void *cb_ctx;
@@ -318,7 +318,6 @@ static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
     if (!rc->vol->parse_entry(rc->vol, rc->dir, key, key_len,
                               data, data_len, &node))
         return ODFS_OK;
-    node.id = rc->vol->next_node_id++;
 
     err = odfs_namefix_apply(&rc->namefix, node.name, sizeof(node.name));
     if (err != ODFS_OK) {
@@ -352,7 +351,7 @@ odfs_err_t odfs_hfs_readdir(void *backend_ctx,
                             void *cb_ctx,
                             uint32_t *resume_offset)
 {
-    hfs_volume_t *vol = backend_ctx;
+    const hfs_volume_t *vol = backend_ctx;
     hfs_readdir_ctx_t rc;
     odfs_err_t err;
 
@@ -558,6 +557,7 @@ static odfs_node_t hfs_dir_stub(const hfs_volume_t *vol, uint32_t cnid)
         return vol->root;
 
     memset(&n, 0, sizeof(n));
+    n.id = cnid;
     n.backend = vol->root.backend;
     n.kind = ODFS_NODE_DIR;
     n.extent.lba = cnid;

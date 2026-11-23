@@ -141,9 +141,11 @@ static int hfsp_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
     if (fnode->name[0] == '\0')
         return 0;
 
+    /* folderID or fileID */
+    fnode->id = hfs_be32(&data[8]);
     if (rec_type == HFS_CAT_DIR) {
         fnode->kind = ODFS_NODE_DIR;
-        fnode->extent.lba = hfs_be32(&data[8]);
+        fnode->extent.lba = fnode->id;
     } else {
         fnode->kind = ODFS_NODE_FILE;
         if (data_len >= 168) {
@@ -197,7 +199,6 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
 
     vol = odfs_calloc(1, sizeof(*vol) + HFSPLUS_VOLNAME_SIZE);
     if (!vol) return ODFS_ERR_NOMEM;
-    vol->next_node_id = 1;
     vol->hfsplus = 1;
     vol->parse_entry = hfsp_parse_entry;
 
