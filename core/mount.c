@@ -732,8 +732,11 @@ odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,
         odfs_err_t err = ops->resolve_parent(backend_ctx, &mnt->cache,
                                              &mnt->log, node,
                                              parent_out, grandparent_out);
-        /* UNSUPPORTED means "use the generic search for this node" */
-        if (err != ODFS_ERR_UNSUPPORTED)
+        /* UNSUPPORTED means "use the generic search for this node";
+         * the direct resolvers take directories only */
+        if (err != ODFS_ERR_UNSUPPORTED &&
+            (err != ODFS_ERR_NOT_DIR || node->kind == ODFS_NODE_DIR ||
+             !ODFS_PARENT_SEARCH))
             return err;
     }
 
