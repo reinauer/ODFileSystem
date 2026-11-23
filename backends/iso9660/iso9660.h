@@ -175,7 +175,9 @@ typedef struct iso_context {
     uint32_t       session_start;
     unsigned       blk_shift;     /* log2(2048 / logical block size) */
     int            lowercase;     /* lowercase ISO names for display */
+#if ODFS_FEATURE_HIGH_SIERRA
     int            high_sierra;   /* High Sierra variant, not ISO 9660 */
+#endif
     int            joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
     int            has_rock_ridge; /* Rock Ridge extensions detected */
     int            rr_skip;       /* SP skip bytes for RR entries */

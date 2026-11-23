@@ -11,6 +11,9 @@
  */
 
 #include "joliet.h"
+
+#if ODFS_FEATURE_JOLIET
+
 #include "odfs/cache.h"
 #include "odfs/error.h"
 #include "odfs/log.h"
@@ -107,3 +110,5 @@ const odfs_backend_ops_t joliet_backend_ops = {
     .get_volume_name = odfs_iso_get_volume_name,
     .get_volume_size = odfs_iso_get_volume_size,
 };
+
+#endif /* ODFS_FEATURE_JOLIET */
