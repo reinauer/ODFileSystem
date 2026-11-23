@@ -695,6 +695,17 @@ static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
     return ODFS_OK;
 }
 
+/*
+ * A child whose File Entry cannot be parsed is skipped, but media and
+ * allocation failures must reach the caller: skipping on those would
+ * report an existing file as missing, and a readdir snapshot taken by
+ * the metadata cache would keep it missing for the rest of the mount.
+ */
+static inline int udf_is_fatal_err(odfs_err_t err)
+{
+    return err == ODFS_ERR_IO || err == ODFS_ERR_NOMEM;
+}
+
 typedef struct udf_fid_info {
     const uint8_t *header;
     uint32_t       start;
@@ -899,7 +910,7 @@ static odfs_err_t udf_readdir_entry(const udf_dir_entry_t *entry, void *arg)
     err = udf_fill_node_from_icb(walk->ctx, walk->cache,
                                  entry->flags, entry->icb_lba, &node);
     if (err != ODFS_OK)
-        return ODFS_OK;
+        return udf_is_fatal_err(err) ? err : ODFS_OK;
 
     err = walk->callback(&node, walk->arg);
     if (err != ODFS_OK && walk->resume)
@@ -985,7 +996,7 @@ static odfs_err_t udf_lookup_entry(const udf_dir_entry_t *entry, void *arg)
     err = udf_fill_node_from_icb(lookup->ctx, lookup->cache,
                                  entry->flags, entry->icb_lba, &node);
     if (err != ODFS_OK)
-        return ODFS_OK;
+        return udf_is_fatal_err(err) ? err : ODFS_OK;
 
     *lookup->out = node;
     lookup->found = 1;
@@ -1193,7 +1204,9 @@ static odfs_err_t udf_child_icb_entry(const udf_dir_entry_t *entry, void *arg)
     node = entry->node;
     err = udf_fill_node_from_icb(child->ctx, child->cache,
                                  entry->flags, entry->icb_lba, &node);
-    if (err != ODFS_OK || node.kind != ODFS_NODE_DIR)
+    if (err != ODFS_OK)
+        return udf_is_fatal_err(err) ? err : ODFS_OK;
+    if (node.kind != ODFS_NODE_DIR)
         return ODFS_OK;
 
     *child->out = node;
