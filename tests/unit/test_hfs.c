@@ -574,4 +574,30 @@ TEST(hfs_volume_name_keeps_multibyte_characters)
     odfs_free(img);
 }
 
+/* ---- names ---- */
+
+TEST(hfsplus_names_drop_amiga_separators)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *cat;
+    odfs_mount_t mnt;
+    entry_list_t list;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    cat = hfsp_volume(img, 2);
+    bt_header(cat, 512, 1, 2);
+    bt_init(&b, cat + 512, 512, HFS_NODE_LEAF, 0, 0);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "AC/DC", 16, 0, 0, 0);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "Icon\r", 17, 0, 0, 0);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 2);
+    ASSERT_STR_EQ(list.nodes[0].name, "AC-DC");
+    ASSERT_STR_EQ(list.nodes[1].name, "Icon?");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()
