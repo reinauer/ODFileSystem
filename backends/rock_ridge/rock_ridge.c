@@ -200,18 +200,25 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
             break;
 
         case RR_SIG_TF: {
-            uint8_t flags = sua[pos + 4];
-            const uint8_t *tp = &sua[pos + 5];
-            size_t tf_rem = entry_len - 5;
-            size_t ts_len = (flags & RR_TF_LONG_FORM) ? 17U : 7U;
-            void (*parse_ts)(const uint8_t *, odfs_timestamp_t *) =
-                (flags & RR_TF_LONG_FORM) ? rr_parse_ts17 : rr_parse_ts7;
+            uint8_t flags;
+            const uint8_t *tp;
+            size_t tf_rem;
+            size_t ts_len;
+            void (*parse_ts)(const uint8_t *, odfs_timestamp_t *);
+
+            if (entry_len < 5)
+                break;
+            flags = sua[pos + 4];
+            tp = &sua[pos + 5];
+            tf_rem = entry_len - 5;
+            ts_len = (flags & RR_TF_LONG_FORM) ? 17U : 7U;
+            parse_ts = (flags & RR_TF_LONG_FORM) ? rr_parse_ts17 : rr_parse_ts7;
 
             if (flags & RR_TF_CREATION) {
                 if (ts_len > tf_rem)
                     break;
                 parse_ts(tp, &info->ctime);
-                info->has_timestamps = 1;
+                info->has_ctime = 1;
                 tp += ts_len;
                 tf_rem -= ts_len;
             }
@@ -219,7 +226,7 @@ static void rr_parse_entries(const uint8_t *sua, size_t sua_len,
                 if (ts_len > tf_rem)
                     break;
                 parse_ts(tp, &info->mtime);
-                info->has_timestamps = 1;
+                info->has_mtime = 1;
                 tp += ts_len;
                 tf_rem -= ts_len;
             }
