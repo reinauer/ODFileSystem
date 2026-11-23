@@ -507,14 +507,18 @@ odfs_err_t odfs_cache_read_bytes(odfs_cache_t *cache,
     size_t done = 0;
     odfs_err_t err;
 
-    if (!cache || !cache->entries || !cache->media || !buf || !len)
+    if (!len)
+        return ODFS_ERR_INVAL;
+    want = *len;
+    *len = 0;
+
+    if (!cache || !cache->entries || !cache->media || !buf)
         return ODFS_ERR_INVAL;
 
     sector_size = cache->sector_size;
     if (sector_size == 0)
         return ODFS_ERR_INVAL;
 
-    want = *len;
     if (want == 0)
         return ODFS_OK;
 
