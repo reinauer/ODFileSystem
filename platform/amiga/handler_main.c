@@ -5016,6 +5016,9 @@ static void action_fh_from_lock(handler_global_t *g, struct DosPacket *pkt)
     }
 
     fhandle->fh_Arg1 = (SIPTR)fh;
+#if ODFS_AMIGA_OS4
+    fhandle->fh_Arg2 = fh;
+#endif
     pkt->dp_Res1 = DOSTRUE;
 }
 
@@ -5039,6 +5042,9 @@ static void action_findinput(handler_global_t *g, struct DosPacket *pkt)
     }
 
     fhandle->fh_Arg1 = (SIPTR)fh;
+#if ODFS_AMIGA_OS4
+    fhandle->fh_Arg2 = fh;
+#endif
     pkt->dp_Res1 = DOSTRUE;
 }
 
