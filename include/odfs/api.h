@@ -46,8 +46,11 @@ typedef struct odfs_mount {
     void                      *backend_ctx;
     const odfs_backend_ops_t *backend_map[ODFS_BACKEND__COUNT];
     void                      *backend_ctx_map[ODFS_BACKEND__COUNT];
-    odfs_node_t               virtual_root_map[ODFS_BACKEND__COUNT];
-    uint8_t                   has_virtual_root[ODFS_BACKEND__COUNT];
+#if !defined(AMIGA)
+    /* CDDA directory shown in the root, for odfs_resolve_path() */
+    odfs_node_t               virtual_root;
+    uint8_t                   has_virtual_root;
+#endif
 
     odfs_node_t              root;
     /* total volume size in 2048-byte logical media blocks */

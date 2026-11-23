@@ -350,21 +350,15 @@ static int mount_virtual_root_by_name(const odfs_mount_t *mnt,
                                       const char *name,
                                       odfs_node_t *out)
 {
-    int i;
-
-    if (!mnt || !dir || !name || !out || !mount_is_root(mnt, dir))
+    if (!mnt || !dir || !name || !out || !mnt->has_virtual_root ||
+        !mount_is_root(mnt, dir))
         return 0;
 
-    for (i = ODFS_BACKEND_NONE + 1; i < ODFS_BACKEND__COUNT; i++) {
-        if (!mnt->has_virtual_root[i])
-            continue;
-        if (odfs_strcasecmp(name, mnt->virtual_root_map[i].name) != 0)
-            continue;
-        *out = mnt->virtual_root_map[i];
-        return 1;
-    }
+    if (odfs_strcasecmp(name, mnt->virtual_root.name) != 0)
+        return 0;
 
-    return 0;
+    *out = mnt->virtual_root;
+    return 1;
 }
 #endif
 
@@ -395,12 +389,19 @@ void odfs_mount_register_backend(odfs_mount_t *mnt,
 
     mnt->backend_map[node_backend] = ops;
     mnt->backend_ctx_map[node_backend] = ctx;
-    mnt->has_virtual_root[node_backend] = 0;
 
-    if (virtual_root) {
-        mnt->virtual_root_map[node_backend] = *virtual_root;
-        mnt->has_virtual_root[node_backend] = 1;
+#if !defined(AMIGA)
+    /* the mount root needs no entry of its own */
+    if (virtual_root && !mount_is_root(mnt, virtual_root)) {
+        mnt->virtual_root = *virtual_root;
+        mnt->has_virtual_root = 1;
+    } else if (mnt->has_virtual_root &&
+               mnt->virtual_root.backend == node_backend) {
+        mnt->has_virtual_root = 0;
     }
+#else
+    (void)virtual_root;
+#endif
 }
 
 odfs_err_t odfs_mount(odfs_media_t *media,
@@ -492,7 +493,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     }
 
     odfs_mount_register_backend(mnt, mnt->root.backend, mnt->backend_ops,
-                                mnt->backend_ctx, &mnt->root);
+                                mnt->backend_ctx, NULL);
     if (mnt->backend_ops->backend_type != mnt->root.backend)
         odfs_mount_register_backend(mnt, mnt->backend_ops->backend_type,
                                     mnt->backend_ops,
