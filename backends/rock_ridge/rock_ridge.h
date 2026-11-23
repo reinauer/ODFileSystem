@@ -92,15 +92,15 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out);
  *   sua       — pointer to System Use Area
  *   sua_len   — length in bytes
  *   skip      — bytes to skip at start (from SP entry)
+ *   session_start — added to CE block numbers (session-relative volumes)
  *   info      — receives parsed RR data
  *   cache     — block cache (for CE continuation reads)
- *   media_ctx — for CE reads (unused if no CE present)
  *
- * CE (continuation area) entries are followed automatically.
+ * CE (continuation area) entries are followed, up to 8 of them.
  */
 struct odfs_cache;
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
-              rr_info_t *info,
+              uint32_t session_start, rr_info_t *info,
               struct odfs_cache *cache);
 
 #endif /* ODFS_ROCK_RIDGE_H */
