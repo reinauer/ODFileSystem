@@ -6,14 +6,15 @@
 
 #include "odfs/media.h"
 #include "odfs/error.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-static void hexdump(const uint8_t *data, size_t len, uint32_t base_offset)
+static void hexdump(const uint8_t *data, size_t len, uint64_t base_offset)
 {
     for (size_t i = 0; i < len; i += 16) {
-        printf("%08x  ", (unsigned)(base_offset + i));
+        printf("%08llx  ", (unsigned long long)(base_offset + i));
         for (size_t j = 0; j < 16; j++) {
             if (i + j < len)
                 printf("%02x ", data[i + j]);
@@ -44,6 +45,12 @@ int main(int argc, char **argv)
     if (argc >= 3) lba = (uint32_t)strtoul(argv[2], NULL, 0);
     if (argc >= 4) count = (uint32_t)strtoul(argv[3], NULL, 0);
 
+    if (count == 0 || count - 1u > UINT32_MAX - lba) {
+        fprintf(stderr, "error: invalid sector count %u at LBA %u\n",
+                count, lba);
+        return 1;
+    }
+
     err = odfs_media_open_image(argv[1], &media);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: cannot open '%s': %s\n",
@@ -52,6 +59,12 @@ int main(int argc, char **argv)
     }
 
     uint32_t ss = odfs_media_sector_size(&media);
+    if ((size_t)count > SIZE_MAX / ss) {
+        fprintf(stderr, "error: sector read size overflow\n");
+        odfs_media_close(&media);
+        return 1;
+    }
+
     uint8_t *buf = malloc((size_t)ss * count);
     if (!buf) {
         fprintf(stderr, "error: out of memory\n");
@@ -69,7 +82,7 @@ int main(int argc, char **argv)
 
     printf("LBA %u-%u (%u sector(s), %u bytes/sector)\n",
            lba, lba + count - 1, count, ss);
-    hexdump(buf, (size_t)ss * count, lba * ss);
+    hexdump(buf, (size_t)ss * count, (uint64_t)lba * ss);
 
     free(buf);
     odfs_media_close(&media);
