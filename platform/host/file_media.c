@@ -141,11 +141,43 @@ static char *host_trim(char *s)
     return s;
 }
 
+/*
+ * Parse one decimal field of an MM:SS:FF timestamp. Unlike sscanf's %u,
+ * reject signs so a negative field cannot wrap to a huge value.
+ */
+static const char *cue_parse_msf_field(const char *s, size_t max_digits,
+                                       uint32_t *value_out)
+{
+    uint32_t value = 0;
+    size_t digits = 0;
+
+    while (isdigit((unsigned char)*s)) {
+        if (digits == max_digits)
+            return NULL;
+        value = value * 10u + (uint32_t)(*s - '0');
+        s++;
+        digits++;
+    }
+    if (digits == 0u)
+        return NULL;
+    *value_out = value;
+    return s;
+}
+
 static int cue_parse_msf(const char *s, uint32_t *frames_out)
 {
-    unsigned int mm, ss, ff;
+    uint32_t mm, ss, ff;
 
-    if (sscanf(s, "%2u:%2u:%2u", &mm, &ss, &ff) != 3)
+    while (isspace((unsigned char)*s))
+        s++;
+    s = cue_parse_msf_field(s, 4u, &mm);
+    if (!s || *s++ != ':')
+        return 0;
+    s = cue_parse_msf_field(s, 2u, &ss);
+    if (!s || *s++ != ':')
+        return 0;
+    s = cue_parse_msf_field(s, 2u, &ff);
+    if (!s || *s != '\0' || ss >= 60u || ff >= 75u)
         return 0;
     *frames_out = (mm * 60u + ss) * 75u + ff;
     return 1;
