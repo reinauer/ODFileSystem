@@ -4365,6 +4365,7 @@ typedef struct dir_next_ctx {
     uint32_t count;             /* entries delivered */
     LONG  failed;               /* DOS error from deliver, 0 if none */
     ULONG last_key;             /* key of the last delivered entry */
+    const odfs_node_t *dir;     /* directory being scanned */
     odfs_dir_deliver_fn deliver;
     void *user;
 } dir_next_ctx_t;
@@ -4381,7 +4382,7 @@ static odfs_err_t dir_next_cb(const odfs_node_t *entry, void *ctx)
         return ODFS_OK;
     }
 
-    err = dc->deliver(entry, dc->user);
+    err = dc->deliver(dc->dir, entry, dc->user);
     if (err != 0) {
         dc->failed = err;
         return ODFS_ERR_EOF;
@@ -4444,6 +4445,7 @@ LONG odfs_handler_scan_dir(handler_global_t *g,
     dc.previous_key = *previous_key;
     dc.first = (dc.previous_key == 0 || dc.previous_key == dir_key);
     dc.max = max;
+    dc.dir = dir;
     dc.deliver = deliver;
     dc.user = user;
     if (dc.first)
