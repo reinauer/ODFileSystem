@@ -38,7 +38,7 @@ typedef struct odfs_cache {
     int32_t            *buckets;     /* hash bucket -> entry index */
     int32_t            *next;        /* hash collision chain per entry */
     uint32_t             capacity;    /* number of entries */
-    uint32_t             hash_size;
+    uint32_t             hash_mask;   /* bucket count - 1 (power of two) */
     uint32_t             valid_count;
     uint32_t             sector_size;
     uint32_t             sector_shift; /* log2(sector_size) */
