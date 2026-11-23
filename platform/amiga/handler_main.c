@@ -6109,6 +6109,10 @@ static void mount_volume(handler_global_t *g)
     odfs_mount_opts_t opts;
     odfs_err_t err;
     ULONG status;
+#if ODFS_FEATURE_CDDA
+    odfs_toc_t toc;
+    odfs_err_t toc_err;
+#endif
 
     if (g->mounted || g->inhibited)
         return;
@@ -6144,11 +6148,10 @@ static void mount_volume(handler_global_t *g)
 #endif
 
 #if ODFS_FEATURE_CDDA
+    /* read once; the checks below try again only if this fails */
+    toc_err = odfs_media_read_toc(&g->media, &toc);
     {
-        odfs_toc_t toc;
-
-        if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
-            !toc_has_data_track(&toc)) {
+        if (toc_err == ODFS_OK && !toc_has_data_track(&toc)) {
             err = cdda_mount_from_toc(&toc, 0, &opts, &g->media,
                                       &g->cdda_root, &g->cdda_ctx);
             if (err != ODFS_OK) {
@@ -6175,9 +6178,10 @@ static void mount_volume(handler_global_t *g)
                       odfs_err_str(err));
 #if ODFS_FEATURE_CDDA
             /* no data filesystem — try pure audio CD */
-            odfs_toc_t toc;
-            odfs_err_t toc_err = odfs_media_read_toc(&g->media, &toc);
             odfs_err_t cdda_err = ODFS_OK;
+
+            if (toc_err != ODFS_OK)
+                toc_err = odfs_media_read_toc(&g->media, &toc);
             if (toc_err == ODFS_OK)
                 cdda_err = cdda_mount_from_toc(&toc, 0, &opts, &g->media,
                                                &g->cdda_root, &g->cdda_ctx);
@@ -6204,9 +6208,10 @@ static void mount_volume(handler_global_t *g)
 
 #if ODFS_FEATURE_CDDA
             /* check for audio tracks on mixed-mode disc */
+            if (toc_err != ODFS_OK)
+                toc_err = odfs_media_read_toc(&g->media, &toc);
             {
-                odfs_toc_t toc;
-                if (odfs_media_read_toc(&g->media, &toc) == ODFS_OK &&
+                if (toc_err == ODFS_OK &&
                     cdda_mount_from_toc(&toc, 1, &opts, &g->media, &g->cdda_root,
                                         &g->cdda_ctx) == ODFS_OK) {
                     g->has_cdda = 1;
