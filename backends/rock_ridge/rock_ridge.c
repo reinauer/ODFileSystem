@@ -143,6 +143,10 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out)
 /* parser state carried from a System Use area into its continuations */
 typedef struct rr_state {
     size_t   name_pos;  /* NM bytes collected so far */
+    char    *sl_out;    /* SL target buffer, or NULL to skip decoding */
+    size_t   sl_size;
+    size_t   sl_pos;    /* SL target bytes written so far */
+    uint8_t  sl_cont;   /* last SL component continues in the next one */
     uint32_t ce_lba;    /* continuation area named by the current area */
     uint32_t ce_off;
     uint32_t ce_len;
@@ -240,12 +244,13 @@ static int rr_parse_entries(const uint8_t *sua, size_t sua_len,
         }
 
         case RR_SIG_SL:
-            /* symbolic link — parse component records */
+            /* symbolic link — decode component records into sl_out */
             if (entry_len > 5) {
                 const uint8_t *comp = &sua[pos + 5];
                 size_t comp_area_len = entry_len - 5;
                 size_t comp_pos = 0;
-                size_t sl_pos = strlen(info->symlink_target);
+                char *out = st->sl_out;
+                size_t sl_pos = st->sl_pos;
 
                 /*
                  * SUSP entry lengths are one byte, so an SL payload cannot
@@ -256,58 +261,56 @@ static int rr_parse_entries(const uint8_t *sua, size_t sua_len,
                 if (comp_area_len > RR_SL_MAX_PAYLOAD_LEN)
                     break;
 
-                if (sl_pos >= sizeof(info->symlink_target))
-                    sl_pos = sizeof(info->symlink_target) - 1;
-                info->symlink_target[sl_pos] = '\0';
+                info->is_symlink = 1;
+                if (!out || info->sl_truncated)
+                    break;
 
                 while (comp_pos + 2 <= comp_area_len) {
                     uint8_t cflags = comp[comp_pos];
                     size_t comp_len = comp[comp_pos + 1];
                     size_t record_len = 2 + comp_len;
-                    const uint8_t *comp_data;
+                    const char *src = (const char *)(comp + comp_pos + 2);
+                    size_t src_len = comp_len;
+                    size_t sep;
 
-                    if (comp_len > RR_SL_MAX_PAYLOAD_LEN)
-                        break;
                     if (record_len > comp_area_len - comp_pos)
                         break;
-                    comp_data = comp + comp_pos + 2;
+
+                    /* a '/' separates components, except after a
+                     * component continued in this record (CONTINUE) */
+                    sep = (!st->sl_cont && sl_pos > 0 &&
+                           out[sl_pos - 1] != '/') ? 1U : 0U;
 
                     if (cflags & 0x02) {
                         /* current directory "." */
-                        if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
-                            if (sl_pos < sizeof(info->symlink_target))
-                                info->symlink_target[sl_pos++] = '/';
-                        if (sl_pos + 1 < sizeof(info->symlink_target))
-                            info->symlink_target[sl_pos++] = '.';
+                        src = "..";
+                        src_len = 1;
                     } else if (cflags & 0x04) {
                         /* parent directory ".." */
-                        if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
-                            if (sl_pos < sizeof(info->symlink_target))
-                                info->symlink_target[sl_pos++] = '/';
-                        if (sl_pos + 2 < sizeof(info->symlink_target)) {
-                            info->symlink_target[sl_pos++] = '.';
-                            info->symlink_target[sl_pos++] = '.';
-                        }
+                        src = "..";
+                        src_len = 2;
                     } else if (cflags & 0x08) {
                         /* root "/" */
-                        if (sl_pos < sizeof(info->symlink_target))
-                            info->symlink_target[sl_pos++] = '/';
-                    } else if (comp_len > 0) {
-                        if (sl_pos > 0 && info->symlink_target[sl_pos - 1] != '/')
-                            if (sl_pos < sizeof(info->symlink_target))
-                                info->symlink_target[sl_pos++] = '/';
-                        if (sl_pos + comp_len < sizeof(info->symlink_target)) {
-                            memcpy(info->symlink_target + sl_pos,
-                                   comp_data, comp_len);
-                            sl_pos += comp_len;
-                        }
+                        src = "/";
+                        src_len = (sl_pos > 0 && out[sl_pos - 1] == '/') ? 0 : 1;
+                        sep = 0;
+                    } else if (src_len == 0) {
+                        sep = 0;
                     }
-                    if (sl_pos >= sizeof(info->symlink_target))
-                        sl_pos = sizeof(info->symlink_target) - 1;
-                    info->symlink_target[sl_pos] = '\0';
+
+                    if (sl_pos + sep + src_len >= st->sl_size) {
+                        info->sl_truncated = 1;
+                        break;
+                    }
+                    if (sep)
+                        out[sl_pos++] = '/';
+                    memcpy(out + sl_pos, src, src_len);
+                    sl_pos += src_len;
+                    out[sl_pos] = '\0';
+                    st->sl_cont = cflags & 0x01;
                     comp_pos += record_len;
                 }
-                info->is_symlink = 1;
+                st->sl_pos = sl_pos;
             }
             break;
 
@@ -357,6 +360,7 @@ out:
 
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
               uint32_t session_start, rr_info_t *info,
+              char *symlink_out, size_t symlink_size,
               struct odfs_cache *cache)
 {
     size_t pos = (size_t)skip;
@@ -365,6 +369,12 @@ void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
 
     memset(info, 0, sizeof(*info));
     st.name_pos = 0;
+    st.sl_out = (symlink_size > 0) ? symlink_out : NULL;
+    st.sl_size = symlink_size;
+    st.sl_pos = 0;
+    st.sl_cont = 0;
+    if (st.sl_out)
+        st.sl_out[0] = '\0';
 
     /* follow at most 8 continuation areas, guarding against CE loops */
     for (hop = 0; ; hop++) {

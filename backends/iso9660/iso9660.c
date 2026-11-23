@@ -415,7 +415,7 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
                                    rr_skip);
 
                         rr_parse(sua, sua_len, rr_skip, ctx->session_start,
-                                 &rr, cache);
+                                 &rr, NULL, 0, cache);
                         iso_apply_rr(root_out, &rr, ctx->session_start, 0);
                     }
                 }
@@ -564,7 +564,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
             rr_info_t rr;
             rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
-                     &rr, cache);
+                     &rr, NULL, 0, cache);
 
             /* skip relocated entries (RE) */
             if (rr.is_relocated) {
@@ -757,7 +757,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         memset(&rr, 0, sizeof(rr));
         if (sua && sua_len > 0) {
             rr_parse(sua, sua_len, ctx->rr_skip, ctx->session_start,
-                     &rr, cache);
+                     &rr, buf, buf_size, cache);
             if (rr.is_relocated)
                 continue;
             if (rr.has_name && rr.name[0] != '\0') {
@@ -773,13 +773,12 @@ static odfs_err_t iso_readlink(void *backend_ctx,
             continue;
 
         /* found the object, but it carries no link target */
-        if (!rr.is_symlink || rr.symlink_target[0] == '\0')
+        if (!rr.is_symlink)
             return ODFS_ERR_UNSUPPORTED;
-
-        size_t tlen = strlen(rr.symlink_target);
-        if (tlen >= buf_size)
+        if (rr.sl_truncated)
             return ODFS_ERR_NAME_TOO_LONG;
-        memcpy(buf, rr.symlink_target, tlen + 1);
+        if (buf[0] == '\0')
+            return ODFS_ERR_UNSUPPORTED;
         return ODFS_OK;
     }
 

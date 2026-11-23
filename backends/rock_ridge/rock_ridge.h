@@ -68,7 +68,7 @@ typedef struct rr_info {
     odfs_timestamp_t mtime;
     odfs_timestamp_t ctime;
     int      is_symlink;         /* SL entry found */
-    char     symlink_target[512];
+    int      sl_truncated;       /* SL target did not fit symlink_out */
     int      is_relocated;       /* RE entry found (skip this entry) */
     uint32_t child_link_lba;     /* CL: real location of relocated dir */
     int      has_child_link;
@@ -94,6 +94,8 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out);
  *   skip      — bytes to skip at start (from SP entry)
  *   session_start — added to CE block numbers (session-relative volumes)
  *   info      — receives parsed RR data
+ *   symlink_out  — receives the SL target; NULL when it is not needed
+ *   symlink_size — size of symlink_out in bytes
  *   cache     — block cache (for CE continuation reads)
  *
  * CE (continuation area) entries are followed, up to 8 of them.
@@ -101,6 +103,7 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out);
 struct odfs_cache;
 void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
               uint32_t session_start, rr_info_t *info,
+              char *symlink_out, size_t symlink_size,
               struct odfs_cache *cache);
 
 #endif /* ODFS_ROCK_RIDGE_H */

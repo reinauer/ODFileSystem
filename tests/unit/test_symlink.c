@@ -263,6 +263,10 @@ TEST(readlink_returns_posix_target)
                             target, sizeof(target)));
     ASSERT_STR_EQ(target, "../target.txt");
 
+    /* a target that does not fit the caller's buffer */
+    ASSERT_ERR(odfs_readlink(&mnt, &mnt.root, "LINK.TXT", target, 5),
+               ODFS_ERR_NAME_TOO_LONG);
+
     odfs_unmount(&mnt);
 }
 
