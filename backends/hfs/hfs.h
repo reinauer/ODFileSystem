@@ -32,6 +32,8 @@
 #define HFS_MDB_NMRTDIRS     82    /* uint16: dirs in root */
 #define HFS_MDB_FILCNT       84    /* uint32: file count */
 #define HFS_MDB_DIRCNT       88    /* uint32: directory count */
+#define HFS_MDB_EMBEDSIG    124    /* uint16: embedded HFS+ signature */
+#define HFS_MDB_EMBEDEXT    126    /* 4 bytes: embedded volume extent */
 #define HFS_MDB_XTFLSIZE    130    /* uint32: extents B-tree file size */
 #define HFS_MDB_XTEXTREC    134    /* 12 bytes: extents B-tree extents */
 #define HFS_MDB_CTFLSIZE    146    /* uint32: catalog B-tree file size */
