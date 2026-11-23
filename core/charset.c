@@ -50,15 +50,32 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
     if (!src || !dst || dst_size == 0)
         return ODFS_ERR_INVAL;
 
-    /* UCS-2 is 2 bytes per code unit */
+    /* UCS-2 / UTF-16 is 2 bytes per code unit */
     if (src_len & 1)
         return ODFS_ERR_INVAL;
 
     for (si = 0; si + 1 < src_len; si += 2) {
-        uint16_t cp = (uint16_t)(((uint16_t)src[si] << 8) | src[si + 1]);
+        uint16_t u1 = (uint16_t)(((uint16_t)src[si] << 8) | src[si + 1]);
+        uint32_t cp = u1;
 
-        if (cp == 0)
+        if (u1 == 0)
             break; /* NUL terminator */
+
+        if (u1 >= 0xD800u && u1 <= 0xDFFFu) {
+            /* a high surrogate followed by a low one is one code
+             * point; any other surrogate stands for nothing */
+            cp = '?';
+            if (u1 <= 0xDBFFu && si + 3 < src_len) {
+                uint16_t u2 = (uint16_t)(((uint16_t)src[si + 2] << 8) |
+                                         src[si + 3]);
+
+                if (u2 >= 0xDC00u && u2 <= 0xDFFFu) {
+                    cp = 0x10000u + (((uint32_t)(u1 - 0xD800u) << 10) |
+                                     (uint32_t)(u2 - 0xDC00u));
+                    si += 2;
+                }
+            }
+        }
 
         if (!odfs_utf8_append(cp, dst, dst_size, &di))
             break;

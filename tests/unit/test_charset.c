@@ -57,6 +57,34 @@ TEST(ucs2be_odd_length)
                ODFS_ERR_INVAL);
 }
 
+TEST(ucs2be_surrogate_pairs)
+{
+    /* U+1F600 (D83D DE00) -> F0 9F 98 80, followed by 'A' */
+    const uint8_t pair[] = { 0xD8, 0x3D, 0xDE, 0x00, 0x00, 'A' };
+    /* lone high surrogate, 'B', lone low surrogate, high at the end */
+    const uint8_t lone[] = { 0xD8, 0x00, 0x00, 'B', 0xDC, 0x01, 0xDB, 0xFF };
+    char dst[64];
+    size_t len = 0;
+
+    ASSERT_OK(odfs_ucs2be_to_utf8(pair, sizeof(pair), dst, sizeof(dst), &len));
+    ASSERT_EQ(len, 5);
+    ASSERT_EQ((unsigned char)dst[0], 0xF0);
+    ASSERT_EQ((unsigned char)dst[1], 0x9F);
+    ASSERT_EQ((unsigned char)dst[2], 0x98);
+    ASSERT_EQ((unsigned char)dst[3], 0x80);
+    ASSERT_EQ(dst[4], 'A');
+    ASSERT_EQ(dst[5], '\0');
+
+    ASSERT_OK(odfs_ucs2be_to_utf8(lone, sizeof(lone), dst, sizeof(dst), &len));
+    ASSERT_STR_EQ(dst, "?B??");
+    ASSERT_EQ(len, 4);
+
+    /* a pair that does not fit is left out whole */
+    ASSERT_OK(odfs_ucs2be_to_utf8(pair, sizeof(pair), dst, 4, &len));
+    ASSERT_EQ(len, 0);
+    ASSERT_EQ(dst[0], '\0');
+}
+
 TEST(mac_roman_ascii)
 {
     const uint8_t src[] = { 'H', 'e', 'l', 'l', 'o' };
