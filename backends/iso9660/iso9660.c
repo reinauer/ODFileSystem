@@ -317,19 +317,14 @@ odfs_err_t odfs_iso_mount_vd(odfs_cache_t *cache,
 
     /*
      * Multisession: if the descriptor's root LBA is already >= session_start,
-     * the mastering tool wrote absolute LBAs (e.g. mkisofs -C).
-     * Don't add session_start again. Only add it for session-relative LBAs.
+     * the mastering tool wrote absolute LBAs (e.g. mkisofs -C). Set
+     * session_start to 0 in the context so readdir doesn't double-offset
+     * file extents. Only add it for session-relative LBAs.
      */
-    if (ctx->pvd.root_dir_lba < session_start)
-        ctx->pvd.root_dir_lba += session_start;
-
-    /*
-     * If the on-disc LBAs are already absolute, set session_start to 0
-     * in the context so readdir doesn't double-offset file extents.
-     */
-    if (session_start > 0 && ctx->pvd.root_dir_lba >= session_start) {
+    if (session_start > 0 && ctx->pvd.root_dir_lba >= session_start)
         ctx->session_start = 0;
-    }
+    else
+        ctx->pvd.root_dir_lba += session_start;
 
     ODFS_INFO(log, ODFS_SUB_ISO,
                "%svolume: \"%s\"  system: \"%s\"  blocks: %" PRIu32 "  blksize: %" PRIu16,
