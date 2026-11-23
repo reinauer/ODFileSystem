@@ -3995,6 +3995,10 @@ odfs_handler_inhibit(handler_global_t *g, LONG state)
         unmount_volume(g);
     } else {
         g->inhibited = 0;
+        /* media changes went unhandled while inhibited; the disc
+         * mounted now is the one the counter has to stand for */
+        if (query_media_change_count(g, &g->change_count))
+            g->change_count_valid = 1;
         mount_volume(g);
     }
 
