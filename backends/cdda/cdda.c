@@ -994,6 +994,33 @@ static odfs_err_t cdda_probe(odfs_cache_t *cache,
 /* mount                                                               */
 /* ------------------------------------------------------------------ */
 
+/* Blue Book session gap: lead-out (6750) + lead-in (4500) + pregap (150) */
+#define CDDA_CDEXTRA_GAP_FRAMES 11400u
+
+/*
+ * On a CD-Extra (Blue Book) disc the audio session closes with its own
+ * lead-out, and the data session's lead-in and pregap come before the
+ * data track. A length that runs up to the data track's start therefore
+ * ends with 11400 frames that are not audio. Trust this only when the
+ * drive reports that the data track opens the last session: a
+ * single-session disc that ends in a data track has no such gap.
+ */
+static int cdda_cdextra_gap_follows(const odfs_toc_t *toc, int i,
+                                    uint32_t length, odfs_media_t *media)
+{
+    const odfs_session_t *next = &toc->sessions[i + 1];
+    uint32_t last_session_lba;
+
+    if (!media || (next->control & 0x04) == 0 ||
+        length <= CDDA_CDEXTRA_GAP_FRAMES ||
+        toc->sessions[i].start_lba + length != next->start_lba)
+        return 0;
+
+    return odfs_media_read_last_session_lba(media, &last_session_lba)
+               == ODFS_OK &&
+           last_session_lba == next->start_lba;
+}
+
 /*
  * Mount a CDDA "filesystem" from a TOC. This is called directly
  * from mount.c, not through the standard probe→mount path, because
@@ -1037,6 +1064,10 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
 
         if (length == 0)
             continue;
+
+        if (i + 1 < toc->session_count &&
+            cdda_cdextra_gap_follows(toc, i, length, media))
+            length -= CDDA_CDEXTRA_GAP_FRAMES;
 
         ctx->tracks[audio_count].number = toc->sessions[i].number;
         ctx->tracks[audio_count].start_lba = start;

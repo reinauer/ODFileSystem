@@ -809,4 +809,60 @@ TEST(cdda_readdir_resume_offset_steps_without_duplicates)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+static odfs_err_t fake_read_last_session_lba(void *ctx, uint32_t *lba_out)
+{
+    *lba_out = *(const uint32_t *)ctx;
+    return ODFS_OK;
+}
+
+/* Amiga-style TOC: every entry's length already runs to the next start. */
+static uint32_t mount_audio_then_data(uint32_t *last_session_lba)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    void *backend_ctx = NULL;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    uint32_t length;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 2;
+    toc.leadout_lba = 25000;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 20000;
+    toc.sessions[1].number = 2;
+    toc.sessions[1].control = 0x04;
+    toc.sessions[1].start_lba = 20000;
+    toc.sessions[1].length = 5000;
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    if (last_session_lba)
+        media_ops.read_last_session_lba = fake_read_last_session_lba;
+    media.ops = &media_ops;
+    media.ctx = last_session_lba;
+
+    if (cdda_mount_from_toc(&toc, 1, NULL, &media, &root,
+                            &backend_ctx) != ODFS_OK)
+        return 0;
+    length = ((cdda_context_t *)backend_ctx)->tracks[0].length_frames;
+    cdda_backend_ops.unmount(backend_ctx);
+    return length;
+}
+
+TEST(cdda_cdextra_last_audio_track_excludes_session_gap)
+{
+    uint32_t last_session_lba = 20000;
+
+    ASSERT_EQ(mount_audio_then_data(&last_session_lba), 8600u);
+}
+
+TEST(cdda_single_session_trailing_data_track_keeps_length)
+{
+    uint32_t last_session_lba = 0;
+
+    ASSERT_EQ(mount_audio_then_data(&last_session_lba), 20000u);
+    ASSERT_EQ(mount_audio_then_data(NULL), 20000u);
+}
+
 TEST_MAIN()
