@@ -380,10 +380,12 @@ static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
 }
 #endif
 
+#if !ODFS_AMIGA_OS4
 int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba)
 {
     return cache && cache->entries && cache_find_index(cache, lba) >= 0;
 }
+#endif
 
 #if ODFS_FEATURE_CACHE_RETAIN
 odfs_err_t odfs_cache_retain(odfs_cache_t *cache, uint32_t lba,
