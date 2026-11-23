@@ -180,8 +180,6 @@ TEST(udf_readdir_cross_sector_fid)
     memset(&dir, 0, sizeof(dir));
     memset(&collect, 0, sizeof(collect));
 
-    ctx.next_node_id = 1;
-
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -255,8 +253,6 @@ TEST(udf_readdir_resume_skips_prior_icb_reads)
     memset(&dir, 0, sizeof(dir));
     memset(&collect, 0, sizeof(collect));
 
-    ctx.next_node_id = 1;
-
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -317,8 +313,6 @@ TEST(udf_lookup_skips_nonmatching_icb_reads)
     memset(&dir, 0, sizeof(dir));
     memset(&out, 0, sizeof(out));
 
-    ctx.next_node_id = 1;
-
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -365,8 +359,6 @@ TEST(udf_lookup_propagates_truncated_directory)
     memset(&dir, 0, sizeof(dir));
     memset(&out, 0, sizeof(out));
 
-    ctx.next_node_id = 1;
-
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -403,7 +395,6 @@ TEST(udf_resolve_parent_skips_nonmatching_child_icb_reads)
     memset(&child, 0, sizeof(child));
     memset(&parent, 0, sizeof(parent));
 
-    ctx.next_node_id = 1;
     ctx.root.id = 0;
     ctx.root.parent_id = 0;
     ctx.root.backend = ODFS_BACKEND_UDF;
@@ -482,7 +473,6 @@ static void udf_setup_read_env(udf_mock_media_t *mock, odfs_media_t *media,
     memset(ctx, 0, sizeof(*ctx));
     memset(file, 0, sizeof(*file));
 
-    ctx->next_node_id = 1;
     udf_make_media(media, mock);
     odfs_cache_init(cache, media, 4);
     odfs_log_init(log);
@@ -689,7 +679,6 @@ TEST(udf_readdir_multi_extent_directory)
     memset(&dir, 0, sizeof(dir));
     memset(&collect, 0, sizeof(collect));
 
-    ctx.next_node_id = 1;
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -745,8 +734,6 @@ static void udf_setup_two_entry_dir(udf_mock_media_t *mock,
     memset(mock, 0, sizeof(*mock));
     memset(ctx, 0, sizeof(*ctx));
     memset(dir, 0, sizeof(*dir));
-
-    ctx->next_node_id = 1;
 
     udf_make_media(media, mock);
     odfs_cache_init(cache, media, 4);
@@ -836,8 +823,6 @@ TEST(udf_readlink_current_directory_component)
     memset(&ctx, 0, sizeof(ctx));
     memset(&dir, 0, sizeof(dir));
 
-    ctx.next_node_id = 1;
-
     udf_make_media(&media, &mock);
     ASSERT_OK(odfs_cache_init(&cache, &media, 4));
     odfs_log_init(&log);
@@ -863,6 +848,33 @@ TEST(udf_readlink_current_directory_component)
     ASSERT_OK(udf_backend_ops.readlink(&ctx, &cache, &log, &dir, "dot",
                                        target, sizeof(target)));
     ASSERT_STR_EQ(target, ".");
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_node_id_is_stable_across_walks)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t first, again;
+    collect_ctx_t collect;
+
+    udf_setup_two_entry_dir(&mock, &media, &cache, &log, &ctx, &dir);
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "B", &first));
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "B", &again));
+    ASSERT_EQ(again.id, first.id);
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_STR_EQ(collect.node.name, "B");
+    ASSERT_EQ(collect.node.id, first.id);
+    ASSERT(first.id != 0);
 
     odfs_cache_destroy(&cache);
 }
