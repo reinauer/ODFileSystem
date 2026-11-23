@@ -480,6 +480,32 @@ TEST(cache_sequential_miss_installs_readahead)
     odfs_cache_destroy(&cache);
 }
 
+TEST(cache_first_miss_is_not_sequential)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    stream_read_counts_t reads = {0, 0};
+    const uint8_t *data;
+
+    make_stream_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 32));
+
+    ASSERT_OK(odfs_cache_read(&cache, 1, &data));
+    ASSERT_EQ(reads.calls, 1);
+    ASSERT_EQ(reads.sectors, 1);
+
+    ASSERT_OK(odfs_cache_read(&cache, 0, &data));
+    ASSERT_EQ(reads.calls, 2);
+    ASSERT_EQ(reads.sectors, 2);
+
+    odfs_cache_flush(&cache);
+    ASSERT_OK(odfs_cache_read(&cache, 1, &data));
+    ASSERT_EQ(reads.calls, 3);
+    ASSERT_EQ(reads.sectors, 3);
+
+    odfs_cache_destroy(&cache);
+}
+
 static uint32_t raw_sector_size(void *ctx)
 {
     (void)ctx;
