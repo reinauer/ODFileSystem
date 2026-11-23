@@ -6477,7 +6477,9 @@ static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
     g->dma_buf = (uint8_t *)
         (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
     g->dma_buf_size = bounce_sectors[i] * ss;
+#if !ODFS_AMIGA_OS4
     g->pf_buf = g->dma_buf + g->dma_buf_size;
+#endif
     return 1;
 }
 #endif
