@@ -29,46 +29,41 @@
  *
  *   media        — media handle
  *   log          — log state (may be NULL)
+ *   toc          — the medium's TOC, or NULL if it has none
  *   last_lba_out — receives the start LBA of the last session
  *
  * Returns ODFS_OK if a session was found, error otherwise.
  * On failure, *last_lba_out is set to 0 (use first session).
  */
-odfs_err_t odfs_find_last_session(odfs_media_t *media,
-                                    odfs_log_state_t *log,
-                                    uint32_t *last_lba_out)
+odfs_err_t odfs_find_last_session_toc(odfs_media_t *media,
+                                      odfs_log_state_t *log,
+                                      const odfs_toc_t *toc,
+                                      uint32_t *last_lba_out)
 {
     odfs_err_t err;
-    odfs_toc_t toc;
-    int have_toc = 0;
 
     (void)log;
 
     *last_lba_out = 0;
-
-    memset(&toc, 0, sizeof(toc));
 
     /* strategy 1: explicit last-session query */
     err = odfs_media_read_last_session_lba(media, last_lba_out);
     if (err == ODFS_OK) {
         uint32_t explicit_lba = *last_lba_out;
 
-        err = odfs_media_read_toc(media, &toc);
-        if (err == ODFS_OK && toc.session_count > 0) {
-            have_toc = 1;
-
+        if (toc && toc->session_count > 0) {
             /*
              * The last session can start with audio tracks on mixed-mode
              * discs. For filesystem probing we want the first data track in
              * that session, not necessarily the session's first track.
              */
-            for (uint8_t i = 0; i < toc.session_count; i++) {
-                if ((toc.sessions[i].control & 0x04) == 0)
+            for (uint8_t i = 0; i < toc->session_count; i++) {
+                if ((toc->sessions[i].control & 0x04) == 0)
                     continue;
-                if (toc.sessions[i].start_lba < explicit_lba)
+                if (toc->sessions[i].start_lba < explicit_lba)
                     continue;
 
-                *last_lba_out = toc.sessions[i].start_lba;
+                *last_lba_out = toc->sessions[i].start_lba;
                 if (*last_lba_out != explicit_lba) {
                     ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                               "explicit last session starts at LBA %" PRIu32
@@ -99,15 +94,12 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
     }
 
     /* strategy 2: device TOC heuristic */
-    if (!have_toc) {
-        err = odfs_media_read_toc(media, &toc);
-    }
-    if (err == ODFS_OK && toc.session_count > 0) {
+    if (toc && toc->session_count > 0) {
         int found_data = 0;
         uint8_t last = 0;
 
-        for (uint8_t i = 0; i < toc.session_count; i++) {
-            if ((toc.sessions[i].control & 0x04) != 0) {
+        for (uint8_t i = 0; i < toc->session_count; i++) {
+            if ((toc->sessions[i].control & 0x04) != 0) {
                 last = i;
                 found_data = 1;
             }
@@ -117,15 +109,15 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                       "TOC: %" PRIu32
                       " track(s), no data track found; using LBA 0",
-                      (uint32_t)toc.session_count);
+                      (uint32_t)toc->session_count);
             return ODFS_OK;
         }
 
-        *last_lba_out = toc.sessions[last].start_lba;
+        *last_lba_out = toc->sessions[last].start_lba;
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                    "TOC heuristic picked last data track "
                    "from %" PRIu32 " track(s) at LBA %" PRIu32,
-                   (uint32_t)toc.session_count, *last_lba_out);
+                   (uint32_t)toc->session_count, *last_lba_out);
         return ODFS_OK;
     }
 
@@ -184,3 +176,16 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
     return ODFS_OK;
 }
+
+#if !defined(AMIGA)
+odfs_err_t odfs_find_last_session(odfs_media_t *media,
+                                    odfs_log_state_t *log,
+                                    uint32_t *last_lba_out)
+{
+    odfs_toc_t toc;
+
+    if (odfs_media_read_toc(media, &toc) != ODFS_OK)
+        return odfs_find_last_session_toc(media, log, NULL, last_lba_out);
+    return odfs_find_last_session_toc(media, log, &toc, last_lba_out);
+}
+#endif

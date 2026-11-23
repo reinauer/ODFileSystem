@@ -534,4 +534,67 @@ TEST(mount_rejects_missing_forced_session)
     odfs_media_close(&media);
 }
 
+typedef struct toc_count_media {
+    odfs_media_t inner;
+    unsigned int toc_reads;
+} toc_count_media_t;
+
+static odfs_err_t toc_count_read_sectors(void *ctx, uint32_t lba,
+                                         uint32_t count, void *buf)
+{
+    toc_count_media_t *m = ctx;
+    return odfs_media_read(&m->inner, lba, count, buf);
+}
+
+static uint32_t toc_count_sector_size(void *ctx)
+{
+    toc_count_media_t *m = ctx;
+    return odfs_media_sector_size(&m->inner);
+}
+
+static uint32_t toc_count_sector_count(void *ctx)
+{
+    toc_count_media_t *m = ctx;
+    return odfs_media_sector_count(&m->inner);
+}
+
+/* one data track at LBA 0 */
+static odfs_err_t toc_count_read_toc(void *ctx, odfs_toc_t *toc)
+{
+    toc_count_media_t *m = ctx;
+
+    m->toc_reads++;
+    memset(toc, 0, sizeof(*toc));
+    toc->first_session = 1;
+    toc->last_session = 1;
+    toc->session_count = 1;
+    toc->sessions[0].number = 1;
+    toc->sessions[0].control = 0x04;
+    return ODFS_OK;
+}
+
+TEST(mount_reads_toc_once)
+{
+    static const odfs_media_ops_t toc_count_ops = {
+        .read_sectors = toc_count_read_sectors,
+        .sector_size  = toc_count_sector_size,
+        .sector_count = toc_count_sector_count,
+        .read_toc     = toc_count_read_toc,
+    };
+    toc_count_media_t tm;
+    odfs_media_t media = { &toc_count_ops, &tm };
+    odfs_mount_t mnt;
+
+    if (odfs_media_open_image(IMG_RR, &tm.inner) != ODFS_OK) {
+        printf("  (skipped: fixture " IMG_RR " unavailable)\n");
+        return;
+    }
+    tm.toc_reads = 0;
+
+    ASSERT_OK(odfs_mount(&media, NULL, NULL, &mnt));
+    ASSERT_EQ(tm.toc_reads, 1);
+    odfs_unmount(&mnt);
+    odfs_media_close(&tm.inner);
+}
+
 TEST_MAIN()

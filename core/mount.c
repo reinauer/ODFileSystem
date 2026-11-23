@@ -54,13 +54,11 @@ static const odfs_backend_ops_t *const backend_table[] = {
 };
 
 static size_t mount_build_session_candidates(odfs_mount_t *mnt,
+                                             const odfs_toc_t *toc,
                                              uint32_t preferred_start,
                                              uint32_t *starts,
                                              size_t max_starts)
 {
-#if ODFS_FEATURE_MULTISESSION
-    odfs_toc_t toc;
-#endif
     size_t count = 0;
 
     if (!mnt || !starts || max_starts == 0)
@@ -72,15 +70,15 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
     if (mnt->opts.force_session >= 0)
         return count;
 
-    if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK) {
+    if (toc) {
         int i;
 
-        for (i = (int)toc.session_count - 1; i >= 0 && count < max_starts; i--) {
-            uint32_t start = toc.sessions[i].start_lba;
+        for (i = (int)toc->session_count - 1; i >= 0 && count < max_starts; i--) {
+            uint32_t start = toc->sessions[i].start_lba;
             int duplicate = 0;
             size_t j;
 
-            if ((toc.sessions[i].control & 0x04) == 0)
+            if ((toc->sessions[i].control & 0x04) == 0)
                 continue;
 
             for (j = 0; j < count; j++) {
@@ -93,12 +91,55 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
                 starts[count++] = start;
         }
     }
+#else
+    (void)toc;
 #endif
 
     if (preferred_start != 0 && count < max_starts)
         starts[count++] = 0;
 
     return count;
+}
+
+/*
+ * Work out the session starts to try, best first. The TOC is read once,
+ * here rather than in odfs_mount(), whose frame stays on the stack while
+ * the backends probe.
+ */
+#ifdef __GNUC__
+__attribute__((noinline))
+#endif
+static odfs_err_t mount_find_sessions(odfs_mount_t *mnt, uint32_t *starts,
+                                      size_t max_starts, size_t *count_out)
+{
+    uint32_t session_start = 0;
+    const odfs_toc_t *toc_ptr = NULL;
+#if ODFS_FEATURE_MULTISESSION
+    odfs_toc_t toc;
+
+    if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK)
+        toc_ptr = &toc;
+
+    if (mnt->opts.force_session >= 0) {
+        if (toc_ptr && mnt->opts.force_session < toc.session_count) {
+            session_start = toc.sessions[mnt->opts.force_session].start_lba;
+            ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
+                       "forced session %d at LBA %" PRIu32,
+                       mnt->opts.force_session, session_start);
+        } else if (mnt->opts.force_session > 0) {
+            /* not on the disc; without a TOC only session 0 is known */
+            return ODFS_ERR_RANGE;
+        }
+    } else {
+        /* default: find and use last session */
+        odfs_find_last_session_toc(&mnt->media, &mnt->log, toc_ptr,
+                                   &session_start);
+    }
+#endif
+
+    *count_out = mount_build_session_candidates(mnt, toc_ptr, session_start,
+                                                starts, max_starts);
+    return ODFS_OK;
 }
 
 /* media and allocation failures, as opposed to an unrecognised format */
@@ -416,33 +457,14 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     }
 #endif
 
-    /* determine session start */
-    uint32_t session_start = 0;
-#if ODFS_FEATURE_MULTISESSION
-    if (mnt->opts.force_session >= 0) {
-        /* user forced a specific session — read TOC to find it */
-        odfs_toc_t toc;
-        if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK &&
-            mnt->opts.force_session < toc.session_count) {
-            session_start = toc.sessions[mnt->opts.force_session].start_lba;
-            ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
-                       "forced session %d at LBA %" PRIu32,
-                       mnt->opts.force_session, session_start);
-        } else if (mnt->opts.force_session > 0) {
-            /* not on the disc; without a TOC only session 0 is known */
-            fail_err = ODFS_ERR_RANGE;
-            goto fail;
-        }
-    } else {
-        /* default: find and use last session */
-        odfs_find_last_session(&mnt->media, &mnt->log, &session_start);
+    err = mount_find_sessions(mnt, session_candidates,
+                              sizeof(session_candidates) /
+                              sizeof(session_candidates[0]),
+                              &session_count);
+    if (err != ODFS_OK) {
+        fail_err = err;
+        goto fail;
     }
-#endif
-
-    session_count = mount_build_session_candidates(mnt, session_start,
-                                                   session_candidates,
-                                                   sizeof(session_candidates) /
-                                                   sizeof(session_candidates[0]));
 
     err = ODFS_ERR_BAD_FORMAT;
     for (session_index = 0; session_index < session_count; session_index++) {
@@ -457,10 +479,8 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 
         /* Retries probe different LBAs, and the block cache is keyed by LBA. */
         err = mount_try_session_start(mnt, candidate);
-        if (err == ODFS_OK) {
-            session_start = candidate;
+        if (err == ODFS_OK)
             break;
-        }
         if (fail_err == ODFS_ERR_BAD_FORMAT)
             fail_err = err;
     }
