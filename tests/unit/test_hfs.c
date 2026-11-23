@@ -600,4 +600,97 @@ TEST(hfsplus_names_drop_amiga_separators)
     odfs_free(img);
 }
 
+/* ---- visibility ---- */
+
+TEST(hfsplus_shows_dotfiles_and_hides_system_files)
+{
+    static const char priv_dir[] = ".HFS+ Private Directory Data\r";
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    uint8_t *cat;
+    uint8_t uname[64];
+    uint8_t *data;
+    odfs_mount_t mnt;
+    odfs_node_t dir;
+    entry_list_t list;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    cat = hfsp_volume(img, 12);
+    bt_header(cat, 2048, 1, 3);
+    bt_init(&b, cat + 2048, 2048, HFS_NODE_LEAF, 2, 0);
+    hfsp_add_thread(&b, HFS_CNID_ROOT_DIR, 1, "Dots");
+    memset(uname, 0, 8);
+    utf16_ascii(uname + 8, "HFS+ Private Data");
+    hfsp_add_rec(&b, HFS_CNID_ROOT_DIR, uname, 21, HFS_CAT_DIR, 18);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, ".backdrop", 20, 0, 0, 0);
+    hfsp_add_rec(&b, HFS_CNID_ROOT_DIR, uname,
+                 (uint16_t)utf16_ascii(uname, priv_dir), HFS_CAT_DIR, 19);
+
+    bt_init(&b, cat + 4096, 2048, HFS_NODE_LEAF, 0, 1);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, ".info", 21, 0, 0, 0);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, ".journal", 22, 0, 0, 0);
+    hfsp_add_file(&b, HFS_CNID_ROOT_DIR, ".journal_info_block", 23, 0, 0, 0);
+    data = hfsp_add_file(&b, HFS_CNID_ROOT_DIR, "Hidden", 24, 0, 0, 0);
+    put_be16(&data[56], HFS_FINDER_INVISIBLE);
+    data = hfsp_add_rec(&b, HFS_CNID_ROOT_DIR, uname,
+                        (uint16_t)utf16_ascii(uname, "HiddenDir"),
+                        HFS_CAT_DIR, 25);
+    put_be16(&data[56], HFS_FINDER_INVISIBLE);
+    hfsp_add_rec(&b, HFS_CNID_ROOT_DIR, uname,
+                 (uint16_t)utf16_ascii(uname, "Sub"), HFS_CAT_DIR, 26);
+    hfsp_add_file(&b, 26, ".journal", 27, 0, 0, 0);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 3);
+    ASSERT_STR_EQ(list.nodes[0].name, ".backdrop");
+    ASSERT_STR_EQ(list.nodes[1].name, ".info");
+    ASSERT_STR_EQ(list.nodes[2].name, "Sub");
+
+    /* the journal names are only reserved in the root */
+    dir = list.nodes[2];
+    memset(&list, 0, sizeof(list));
+    ASSERT_OK(odfs_readdir(&mnt, &dir, collect_cb, &list, NULL));
+    ASSERT_EQ(list.count, 1);
+    ASSERT_STR_EQ(list.nodes[0].name, ".journal");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+TEST(hfs_hides_finder_invisible_entries)
+{
+    uint8_t *img = hfs_image(2);
+    odfs_mount_t mnt;
+    entry_list_t list;
+    bt_builder_t b;
+    uint8_t *rec;
+
+    ASSERT(img != NULL);
+    bt_header(hfs_ab(img, 0), 512, 1, 2);
+    bt_init(&b, hfs_ab(img, 1), 512, HFS_NODE_LEAF, 0, 0);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, ".info", 16, 0, NULL);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "Desktop DB", 17, 0, NULL);
+    /* fdFlags of the record just added: key (12 bytes) + data[12] */
+    put_be16(b.node + b.free_off - 102 + 12, HFS_FINDER_INVISIBLE);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "Visible", 18, 0, NULL);
+
+    /* a directory record (70 bytes) with frFlags invisible */
+    rec = bt_add(&b, 8 + 70);
+    rec[0] = 7;
+    put_be32(&rec[2], HFS_CNID_ROOT_DIR);
+    rec[6] = 1;
+    rec[7] = 'Z';
+    rec[8] = HFS_CAT_DIR;
+    put_be32(&rec[8 + 6], 19);
+    put_be16(&rec[8 + 30], HFS_FINDER_INVISIBLE);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(list_root(&mnt, &list));
+    ASSERT_EQ(list.count, 2);
+    ASSERT_STR_EQ(list.nodes[0].name, ".info");
+    ASSERT_STR_EQ(list.nodes[1].name, "Visible");
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()

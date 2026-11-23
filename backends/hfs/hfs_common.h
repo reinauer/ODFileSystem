@@ -25,6 +25,10 @@
 #define HFS_CAT_FILE      2
 #define HFS_CAT_DTHREAD   3
 
+/* ---- Finder flags (FInfo.fdFlags, DInfo.frFlags) ---- */
+
+#define HFS_FINDER_INVISIBLE 0x4000
+
 /* ---- Apple Partition Map ---- */
 
 #define HFS_APM_SIG       0x504D  /* "PM" */

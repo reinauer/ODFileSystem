@@ -95,6 +95,15 @@ static int hfs_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
     if (rec_type != HFS_CAT_FILE && rec_type != HFS_CAT_DIR)
         return 0;
 
+    /* hide what the Finder hides: fdFlags of a file's FInfo, frFlags
+     * of a directory's DInfo */
+    if (rec_type == HFS_CAT_FILE && data_len >= 14 &&
+        (hfs_be16(&data[12]) & HFS_FINDER_INVISIBLE))
+        return 0;
+    if (rec_type == HFS_CAT_DIR && data_len >= 32 &&
+        (hfs_be16(&data[30]) & HFS_FINDER_INVISIBLE))
+        return 0;
+
     memset(node, 0, sizeof(*node));
     node->parent_id = dir->id;
     node->backend = ODFS_BACKEND_HFS;
