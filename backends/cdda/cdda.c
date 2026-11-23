@@ -1031,6 +1031,10 @@ static odfs_err_t cdda_probe(odfs_cache_t *cache,
 /* Blue Book session gap: lead-out (6750) + lead-in (4500) + pregap (150) */
 #define CDDA_CDEXTRA_GAP_FRAMES 11400u
 
+/* longest track whose synthesized file size fits in 32 bits */
+#define CDDA_MAX_TRACK_FRAMES \
+    ((UINT32_MAX - CDDA_AIFF_HEADER_SIZE) / CDDA_FRAME_SIZE)
+
 /*
  * On a CD-Extra (Blue Book) disc the audio session closes with its own
  * lead-out, and the data session's lead-in and pregap come before the
@@ -1109,11 +1113,13 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
         if (i + 1 < toc->session_count &&
             cdda_cdextra_gap_follows(toc, i, length, media))
             length -= CDDA_CDEXTRA_GAP_FRAMES;
+        if (length > CDDA_MAX_TRACK_FRAMES)
+            length = CDDA_MAX_TRACK_FRAMES;
 
         ctx->tracks[audio_count].number = toc->sessions[i].number;
         ctx->tracks[audio_count].start_lba = start;
         ctx->tracks[audio_count].length_frames = length;
-        ctx->tracks[audio_count].data_size = (uint64_t)length * CDDA_FRAME_SIZE;
+        ctx->tracks[audio_count].data_size = length * CDDA_FRAME_SIZE;
         ctx->tracks[audio_count].file_size = ctx->tracks[audio_count].data_size
                                              + header_size;
         audio_count++;
@@ -1197,7 +1203,7 @@ static void cdda_fill_track_node(const cdda_context_t *ctx, int i,
     node->kind = ODFS_NODE_VIRTUAL;
     node->size = ctx->tracks[i].file_size;
     node->extent.lba = (uint32_t)(i + 2);
-    node->extent.length = (uint32_t)ctx->tracks[i].file_size;
+    node->extent.length = ctx->tracks[i].file_size;
 
     cdda_track_name(ctx->tracks[i].number, ctx->file_format,
                     node->name, sizeof(node->name));
@@ -1343,7 +1349,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
     /* serve synthesized header bytes if offset is within the header */
     if (offset < header_size) {
         uint8_t hdr[CDDA_AIFF_HEADER_SIZE];
-        cdda_build_header(ctx->file_format, hdr, (uint32_t)trk->data_size);
+        cdda_build_header(ctx->file_format, hdr, trk->data_size);
 
         size_t hdr_avail = header_size - (size_t)offset;
         size_t chunk = (hdr_avail < want) ? hdr_avail : want;
