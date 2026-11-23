@@ -1077,6 +1077,13 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     if (!ctx)
         return ODFS_ERR_NOMEM;
 
+    /* one slot per TOC entry; data tracks leave theirs unused */
+    ctx->tracks = odfs_calloc(toc->session_count, sizeof(*ctx->tracks));
+    if (!ctx->tracks) {
+        odfs_free(ctx);
+        return ODFS_ERR_NOMEM;
+    }
+
     ctx->is_mixed_mode = has_data_session;
     ctx->file_format = (opts && opts->prefer_aiff)
         ? CDDA_FILE_FORMAT_AIFF
@@ -1115,6 +1122,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     ctx->track_count = audio_count;
 
     if (audio_count == 0) {
+        odfs_free(ctx->tracks);
         odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
@@ -1167,6 +1175,7 @@ static void cdda_unmount(void *backend_ctx)
 
     if (ctx) {
         odfs_free(ctx->audio_cache);
+        odfs_free(ctx->tracks);
         odfs_free(ctx->cddb_text);
         odfs_free(ctx->cdtext_text);
         odfs_free(ctx->disk_icon);

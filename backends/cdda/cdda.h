@@ -44,7 +44,7 @@ typedef struct cdda_track {
 /* CDDA mount context */
 typedef struct cdda_context {
     int                track_count;
-    cdda_track_t       tracks[CDDA_MAX_TRACKS];
+    cdda_track_t       *tracks;         /* one slot per TOC entry */
     int                is_mixed_mode;   /* has both data and audio tracks */
     cdda_file_format_t file_format;
     char               volume_name[32];
