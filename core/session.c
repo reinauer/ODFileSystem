@@ -129,6 +129,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         return ODFS_OK;
     }
 
+#if !defined(AMIGA)
     /* strategy 3: scan for PVD signatures (host images) */
     {
         uint32_t total = odfs_media_sector_count(media);
@@ -179,6 +180,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                        best_lba);
         }
     }
+#endif
 
     return ODFS_OK;
 }
