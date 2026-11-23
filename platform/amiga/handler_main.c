@@ -6437,10 +6437,18 @@ static LONG probe_drive_geometry(handler_global_t *g)
               "geometry rc=%ld sector=%lu", (long)geo_rc,
               (unsigned long)geom.dg_SectorSize);
 
-    if (geo_rc == 0 && geom.dg_SectorSize != 0 &&
-        geom.dg_SectorSize != 2048) {
-        ODFS_INFO(&g->log, ODFS_SUB_IO, "mode select...");
-        (void)scsi_mode_select(g, 2048);
+    if (geo_rc == 0 && geom.dg_SectorSize != 0) {
+        int is_2048 = geom.dg_SectorSize == 2048;
+
+        if (!is_2048) {
+            ODFS_INFO(&g->log, ODFS_SUB_IO, "mode select...");
+            is_2048 = scsi_mode_select(g, 2048);
+        }
+        /* the mountlist's block size may say otherwise */
+        if (is_2048 && g->sector_size != 2048) {
+            g->sector_size = 2048;
+            amiga_init_max_transfer(g);
+        }
     }
 
     return geo_rc;
@@ -6505,6 +6513,14 @@ static struct DosPacket *packet_from_message(const struct Message *msg)
     return (struct DosPacket *)(uintptr_t)msg->mn_Node.ln_Name;
 }
 
+/*
+ * Size the bounce buffer for sectors of at least 2048 bytes: the drive
+ * may be switched to 2048-byte blocks only after it is allocated, and
+ * the read-ahead always transfers 2048-byte sectors.
+ */
+#define DMA_SECTOR_SIZE(g) \
+    ((g)->sector_size < 2048 ? 2048 : (g)->sector_size)
+
 #ifdef __AROS__
 /* Keep the original 64 KiB bounce buffer, with a separate read-ahead area.
  * Try the larger sequential window first; low-memory systems can retain
@@ -6513,11 +6529,11 @@ static struct DosPacket *packet_from_message(const struct Message *msg)
 static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
 {
     const ULONG bounce_sectors = 32;
+    ULONG ss = DMA_SECTOR_SIZE(g);
 
     g->pf_capacity = ODFS_PF_SECTORS;
     for (;;) {
-        g->dma_buf_raw_size = (bounce_sectors + g->pf_capacity) *
-                             g->sector_size + 15;
+        g->dma_buf_raw_size = (bounce_sectors + g->pf_capacity) * ss + 15;
         g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(g->dma_buf_raw_size,
                                                        memtype);
         if (!g->dma_buf_raw && memtype != MEMF_PUBLIC)
@@ -6532,7 +6548,7 @@ static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
 
     g->dma_buf = (uint8_t *)
         (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
-    g->dma_buf_size = bounce_sectors * g->sector_size;
+    g->dma_buf_size = bounce_sectors * ss;
     g->pf_buf = g->dma_buf + g->dma_buf_size;
     return 1;
 }
@@ -6546,7 +6562,7 @@ static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
 static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
 {
     static const UBYTE bounce_sectors[] = { 32, 8, 2 };
-    ULONG ss = g->sector_size;
+    ULONG ss = DMA_SECTOR_SIZE(g);
     unsigned int i;
 
     for (i = 0; i < sizeof(bounce_sectors); i++) {
