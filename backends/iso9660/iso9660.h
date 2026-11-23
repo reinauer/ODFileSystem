@@ -155,10 +155,8 @@ typedef struct iso_pvd_info {
     char     volume_id[33];
     uint32_t volume_space_size;   /* in 2048-byte sectors */
     uint16_t logical_block_size;
-    uint32_t path_table_size;
     uint32_t root_dir_lba;
     uint32_t root_dir_size;
-    uint8_t  root_dir_record[34]; /* raw root directory record */
 } iso_pvd_info_t;
 
 /* --- ISO9660 mount context --- */
@@ -173,14 +171,14 @@ typedef struct iso_pvd_info {
 typedef struct iso_context {
     iso_pvd_info_t pvd;
     uint32_t       session_start;
-    unsigned       blk_shift;     /* log2(2048 / logical block size) */
-    int            lowercase;     /* lowercase ISO names for display */
+    uint8_t        blk_shift;     /* log2(2048 / logical block size) */
+    uint8_t        lowercase;     /* lowercase ISO names for display */
 #if ODFS_FEATURE_HIGH_SIERRA
-    int            high_sierra;   /* High Sierra variant, not ISO 9660 */
+    uint8_t        high_sierra;   /* High Sierra variant, not ISO 9660 */
 #endif
-    int            joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
-    int            has_rock_ridge; /* Rock Ridge extensions detected */
-    int            rr_skip;       /* SP skip bytes for RR entries */
+    uint8_t        joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
+    uint8_t        has_rock_ridge; /* Rock Ridge extensions detected */
+    uint8_t        rr_skip;       /* SP skip bytes for RR entries */
     odfs_node_t    root;          /* verbatim root node, for parent resolution */
 } iso_context_t;
 

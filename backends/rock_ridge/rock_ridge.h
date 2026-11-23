@@ -54,27 +54,27 @@
 #define RR_AS_COMMENT          0x02
 #define RR_AS_COMMENT_CONTINUE 0x04
 
-/* parsed RR data to overlay onto an odfs_node_t */
+/*
+ * parsed RR data to overlay onto an odfs_node_t; rr_parse() clears only
+ * the flags, each field is valid only when its flag is set
+ */
 typedef struct rr_info {
-    int      has_name;           /* NM entry found */
-    char     name[512];          /* alternate name from NM */
-    int      has_posix;          /* PX entry found */
     uint32_t mode;               /* POSIX mode from PX */
-    uint32_t nlinks;             /* link count from PX */
-    uint32_t uid;                /* user ID from PX */
-    uint32_t gid;                /* group ID from PX */
-    int      has_mtime;          /* TF modify time found */
-    int      has_ctime;          /* TF creation time found */
+    uint32_t child_link_lba;     /* CL: real location of relocated dir */
     odfs_timestamp_t mtime;
     odfs_timestamp_t ctime;
-    int      is_symlink;         /* SL entry found */
-    int      sl_truncated;       /* SL target did not fit symlink_out */
-    int      is_relocated;       /* RE entry found (skip this entry) */
-    uint32_t child_link_lba;     /* CL: real location of relocated dir */
-    int      has_child_link;
-    int      has_amiga_protection;
     uint8_t  amiga_protection[4];
-    int      has_amiga_comment;
+    uint8_t  has_name;           /* NM entry found */
+    uint8_t  has_posix;          /* PX entry found */
+    uint8_t  has_mtime;          /* TF modify time found */
+    uint8_t  has_ctime;          /* TF creation time found */
+    uint8_t  is_symlink;         /* SL entry found */
+    uint8_t  sl_truncated;       /* SL target did not fit symlink_out */
+    uint8_t  is_relocated;       /* RE entry found (skip this entry) */
+    uint8_t  has_child_link;
+    uint8_t  has_amiga_protection;
+    uint8_t  has_amiga_comment;
+    char     name[ODFS_NAME_MAX]; /* alternate name from NM */
     char     amiga_comment[ODFS_AMIGA_COMMENT_MAX];
 } rr_info_t;
 

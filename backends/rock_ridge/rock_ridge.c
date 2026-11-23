@@ -247,9 +247,6 @@ static int rr_parse_entries(const uint8_t *sua, size_t sua_len,
         case RR_SIG_PX:
             if (len >= 36) {
                 info->mode   = rr_read_le32(&sua[pos + 4]);
-                info->nlinks = rr_read_le32(&sua[pos + 12]);
-                info->uid    = rr_read_le32(&sua[pos + 20]);
-                info->gid    = rr_read_le32(&sua[pos + 28]);
                 info->has_posix = 1;
             }
             break;
@@ -407,7 +404,16 @@ void rr_parse(const uint8_t *sua, size_t sua_len, int skip,
     rr_state_t st;
     int hop;
 
-    memset(info, 0, sizeof(*info));
+    info->has_name = 0;
+    info->has_posix = 0;
+    info->has_mtime = 0;
+    info->has_ctime = 0;
+    info->is_symlink = 0;
+    info->sl_truncated = 0;
+    info->is_relocated = 0;
+    info->has_child_link = 0;
+    info->has_amiga_protection = 0;
+    info->has_amiga_comment = 0;
     st.name_pos = 0;
     st.sl_out = (symlink_size > 0) ? symlink_out : NULL;
     st.sl_size = symlink_size;
