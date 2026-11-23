@@ -62,6 +62,12 @@ typedef struct odfs_exnext_cursor {
 } odfs_exnext_cursor_t;
 #endif
 
+/* free list of same-sized objects */
+typedef struct odfs_pool {
+    void    *head;
+    ULONG    count;
+} odfs_pool_t;
+
 /* ---- handler globals ---- */
 
 typedef struct handler_global {
@@ -105,9 +111,9 @@ typedef struct handler_global {
 
     /* DMA-safe bounce buffer */
     /* free-list pools for per-packet objects (entry/lock/fh) */
-    void                *entry_pool;
-    void                *lock_pool;
-    void                *fh_pool;
+    odfs_pool_t          entry_pool;
+    odfs_pool_t          lock_pool;
+    odfs_pool_t          fh_pool;
 
     uint8_t             *dma_buf_raw;   /* raw allocation (for FreeMem) */
 #ifdef __AROS__
