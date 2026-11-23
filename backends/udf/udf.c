@@ -1101,30 +1101,63 @@ static odfs_err_t udf_read(void *backend_ctx,
 /* lookup                                                              */
 /* ------------------------------------------------------------------ */
 
-typedef struct udf_lookup_ctx {
+typedef struct udf_match_ctx {
     udf_context_t *ctx;
     odfs_cache_t  *cache;
-    const char    *name;
+    const char    *name;      /* match by name, or if NULL ... */
+    uint32_t       child_icb; /* ... the directory with this ICB */
     odfs_node_t   *out;
     int            found;
-} udf_lookup_ctx_t;
+} udf_match_ctx_t;
 
-static odfs_err_t udf_lookup_entry(udf_dir_entry_t *entry, void *arg)
+static odfs_err_t udf_match_entry(udf_dir_entry_t *entry, void *arg)
 {
-    udf_lookup_ctx_t *lookup = arg;
+    udf_match_ctx_t *m = arg;
     odfs_err_t err;
 
-    if (odfs_strcasecmp(entry->node.name, lookup->name) != 0)
+    if (m->name) {
+        if (odfs_strcasecmp(entry->node.name, m->name) != 0)
+            return ODFS_OK;
+    } else if (udf_phys_lba(m->ctx, entry->icb_lba) != m->child_icb) {
         return ODFS_OK;
+    }
 
-    err = udf_fill_node_from_icb(lookup->ctx, lookup->cache,
+    err = udf_fill_node_from_icb(m->ctx, m->cache,
                                  entry->flags, entry->icb_lba, &entry->node);
     if (err != ODFS_OK)
         return udf_is_fatal_err(err) ? err : ODFS_OK;
+    if (!m->name && entry->node.kind != ODFS_NODE_DIR)
+        return ODFS_OK;
 
-    *lookup->out = entry->node;
-    lookup->found = 1;
+    *m->out = entry->node;
+    m->found = 1;
     return ODFS_ERR_EOF;
+}
+
+static __attribute__((noinline)) odfs_err_t
+udf_find_entry(udf_context_t *ctx,
+               odfs_cache_t *cache,
+               const odfs_node_t *dir,
+               const char *name,
+               uint32_t child_icb,
+               odfs_node_t *out)
+{
+    udf_match_ctx_t m;
+    odfs_err_t err;
+
+    m.ctx = ctx;
+    m.cache = cache;
+    m.name = name;
+    m.child_icb = child_icb;
+    m.out = out;
+    m.found = 0;
+
+    err = udf_walk_dir_entries(ctx, cache, dir, udf_match_entry, &m, NULL);
+    if (m.found)
+        return ODFS_OK;
+    if (err != ODFS_OK)
+        return err;
+    return ODFS_ERR_NOT_FOUND;
 }
 
 static odfs_err_t udf_lookup(void *backend_ctx,
@@ -1134,25 +1167,9 @@ static odfs_err_t udf_lookup(void *backend_ctx,
                              const char *name,
                              odfs_node_t *out)
 {
-    udf_context_t *ctx = backend_ctx;
-    udf_lookup_ctx_t lookup;
-    odfs_err_t err;
-
     (void)log;
 
-    lookup.ctx = ctx;
-    lookup.cache = cache;
-    lookup.name = name;
-    lookup.out = out;
-    lookup.found = 0;
-
-    err = udf_walk_dir_entries(ctx, cache, dir, udf_lookup_entry,
-                               &lookup, NULL);
-    if (lookup.found)
-        return ODFS_OK;
-    if (err != ODFS_OK)
-        return err;
-    return ODFS_ERR_NOT_FOUND;
+    return udf_find_entry(backend_ctx, cache, dir, name, 0, out);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1310,62 +1327,6 @@ static odfs_err_t udf_read_parent_icb(udf_context_t *ctx,
     return ODFS_ERR_UNSUPPORTED;
 }
 
-typedef struct udf_child_icb_ctx {
-    udf_context_t *ctx;
-    odfs_cache_t  *cache;
-    uint32_t       child_icb;
-    odfs_node_t   *out;
-    int            found;
-} udf_child_icb_ctx_t;
-
-static odfs_err_t udf_child_icb_entry(udf_dir_entry_t *entry, void *arg)
-{
-    udf_child_icb_ctx_t *child = arg;
-    odfs_err_t err;
-
-    if (udf_phys_lba(child->ctx, entry->icb_lba) != child->child_icb)
-        return ODFS_OK;
-
-    err = udf_fill_node_from_icb(child->ctx, child->cache,
-                                 entry->flags, entry->icb_lba, &entry->node);
-    if (err != ODFS_OK)
-        return udf_is_fatal_err(err) ? err : ODFS_OK;
-    if (entry->node.kind != ODFS_NODE_DIR)
-        return ODFS_OK;
-
-    *child->out = entry->node;
-    child->found = 1;
-    return ODFS_ERR_EOF;
-}
-
-static odfs_err_t udf_find_child_by_icb(void *backend_ctx,
-                                       odfs_cache_t *cache,
-                                       odfs_log_state_t *log,
-                                       const odfs_node_t *parent_dir,
-                                       uint32_t child_icb,
-                                       odfs_node_t *out)
-{
-    udf_context_t *ctx = backend_ctx;
-    udf_child_icb_ctx_t child;
-    odfs_err_t err;
-
-    (void)log;
-
-    child.ctx = ctx;
-    child.cache = cache;
-    child.child_icb = child_icb;
-    child.out = out;
-    child.found = 0;
-
-    err = udf_walk_dir_entries(ctx, cache, parent_dir,
-                               udf_child_icb_entry, &child, NULL);
-    if (child.found)
-        return ODFS_OK;
-    if (err != ODFS_OK)
-        return err;
-    return ODFS_ERR_NOT_FOUND;
-}
-
 static odfs_node_t udf_dir_stub(uint32_t icb)
 {
     odfs_node_t n;
@@ -1385,75 +1346,56 @@ static odfs_err_t udf_resolve_parent(void *backend_ctx,
                                      odfs_node_t *grandparent_out)
 {
     udf_context_t *ctx = backend_ctx;
-    uint32_t parent_icb;
-    uint32_t gp_icb;
-    odfs_node_t grandparent;
+    uint32_t root_icb = ctx->root.extent.lba;
+    odfs_node_t *outs[2];
+    odfs_node_t stub;
+    uint32_t cur_icb;
     odfs_err_t err;
+
+    (void)log;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
 
-    if (dir->extent.lba == ctx->root.extent.lba)
+    if (dir->extent.lba == root_icb)
         return ODFS_ERR_NOT_FOUND;
 
-    err = udf_read_parent_icb(ctx, cache, dir, &parent_icb);
+    err = udf_read_parent_icb(ctx, cache, dir, &cur_icb);
     if (err != ODFS_OK)
         return err;
 
-    if (parent_icb == dir->extent.lba)
+    if (cur_icb == dir->extent.lba)
         return ODFS_ERR_NOT_FOUND;
 
-    if (parent_icb == ctx->root.extent.lba) {
-        *parent_out = ctx->root;
-        if (grandparent_out)
-            *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
+    /*
+     * A FID names its directory only in that directory's parent: find
+     * the parent's own parent through its ".." FID, then the parent's
+     * entry there by ICB. Repeat one level up for the grandparent.
+     */
+    outs[0] = parent_out;
+    outs[1] = grandparent_out;
+    stub = udf_dir_stub(cur_icb);
 
-    {
-        odfs_node_t parent_stub = udf_dir_stub(parent_icb);
+    for (int step = 0; step < 2 && outs[step]; step++) {
+        uint32_t up_icb;
 
-        err = udf_read_parent_icb(ctx, cache, &parent_stub, &gp_icb);
-        if (err != ODFS_OK)
-            return err;
-    }
+        if (cur_icb == root_icb) {
+            *outs[step] = ctx->root;
+            if (step == 0 && grandparent_out)
+                *grandparent_out = ctx->root;
+            return ODFS_OK;
+        }
 
-    if (gp_icb == ctx->root.extent.lba)
-        grandparent = ctx->root;
-    else
-        grandparent = udf_dir_stub(gp_icb);
-
-    err = udf_find_child_by_icb(backend_ctx, cache, log, &grandparent,
-                                parent_icb, parent_out);
-    if (err != ODFS_OK)
-        return err;
-
-    if (!grandparent_out)
-        return ODFS_OK;
-
-    if (gp_icb == ctx->root.extent.lba) {
-        *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    {
-        odfs_node_t gp_stub = udf_dir_stub(gp_icb);
-        odfs_node_t great;
-        uint32_t ggp_icb;
-
-        err = udf_read_parent_icb(ctx, cache, &gp_stub, &ggp_icb);
+        stub.extent.lba = cur_icb;
+        err = udf_read_parent_icb(ctx, cache, &stub, &up_icb);
         if (err != ODFS_OK)
             return err;
 
-        if (ggp_icb == ctx->root.extent.lba)
-            great = ctx->root;
-        else
-            great = udf_dir_stub(ggp_icb);
-
-        err = udf_find_child_by_icb(backend_ctx, cache, log, &great,
-                                    gp_icb, grandparent_out);
+        stub.extent.lba = up_icb;
+        err = udf_find_entry(ctx, cache, &stub, NULL, cur_icb, outs[step]);
         if (err != ODFS_OK)
             return err;
+        cur_icb = up_icb;
     }
 
     return ODFS_OK;
