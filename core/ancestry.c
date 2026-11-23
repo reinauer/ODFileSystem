@@ -24,8 +24,63 @@ typedef struct ancestry_frame {
     uint32_t    resume;
 } ancestry_frame_t;
 
+/*
+ * Directories already entered, keyed by extent, so that a directory
+ * listed in several places, or in a cycle, is read only once. Open
+ * addressing; a zero extent marks a free slot, so virtual directories
+ * without an extent are not tracked and rely on the depth cap.
+ */
+typedef struct ancestry_seen {
+    odfs_extent_t *slot;
+    size_t         mask;
+    size_t         count;
+} ancestry_seen_t;
+
+static int ancestry_seen_insert(odfs_extent_t *slot, size_t mask,
+                                const odfs_extent_t *e)
+{
+    size_t i = (size_t)(e->lba ^ (e->lba >> 11) ^ e->length) & mask;
+
+    while (slot[i].lba != 0 || slot[i].length != 0) {
+        if (slot[i].lba == e->lba && slot[i].length == e->length)
+            return 0;
+        i = (i + 1) & mask;
+    }
+    slot[i] = *e;
+    return 1;
+}
+
+/* 1 if e is new, 0 if it was entered before, -1 if out of memory */
+static int ancestry_seen_add(ancestry_seen_t *seen, const odfs_extent_t *e)
+{
+    if (e->lba == 0 && e->length == 0)
+        return 1;
+
+    if (2 * (seen->count + 1) > seen->mask + 1) {
+        size_t mask = 2 * seen->mask + 1;
+        odfs_extent_t *slot = odfs_calloc(mask + 1, sizeof(*slot));
+        size_t i;
+
+        if (!slot)
+            return -1;
+        for (i = 0; i <= seen->mask; i++) {
+            if (seen->slot[i].lba != 0 || seen->slot[i].length != 0)
+                ancestry_seen_insert(slot, mask, &seen->slot[i]);
+        }
+        odfs_free(seen->slot);
+        seen->slot = slot;
+        seen->mask = mask;
+    }
+
+    if (!ancestry_seen_insert(seen->slot, seen->mask, e))
+        return 0;
+    seen->count++;
+    return 1;
+}
+
 typedef struct ancestry_search_ctx {
     const odfs_node_t *target;
+    ancestry_seen_t    seen;
     ancestry_frame_t  *child_frame;
     size_t             depth;
     int                found;
@@ -43,10 +98,17 @@ static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
     }
 
     if (!asc->descend && entry->kind == ODFS_NODE_DIR) {
+        int added;
+
         if (asc->depth >= ANCESTRY_MAX_DEPTH) {
             asc->truncated = 1;
             return ODFS_OK;
         }
+        added = ancestry_seen_add(&asc->seen, &entry->extent);
+        if (added < 0)
+            return ODFS_ERR_NOMEM;
+        if (added == 0)
+            return ODFS_OK; /* searched already, or being searched */
         asc->child_frame->dir = *entry;
         asc->child_frame->resume = 0;
         asc->descend = 1;
@@ -73,11 +135,18 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
     odfs_err_t err = ODFS_ERR_NOT_FOUND;
 
     frames = odfs_malloc(cap * sizeof(*frames));
-    if (!frames)
+    asc.seen.slot = odfs_calloc(64, sizeof(*asc.seen.slot));
+    asc.seen.mask = 63;
+    asc.seen.count = 0;
+    if (!frames || !asc.seen.slot) {
+        odfs_free(asc.seen.slot);
+        odfs_free(frames);
         return ODFS_ERR_NOMEM;
+    }
 
     frames[0].dir = mnt->root;
     frames[0].resume = 0;
+    ancestry_seen_add(&asc.seen, &mnt->root.extent);
 
     asc.truncated = 0;
 
@@ -136,6 +205,7 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
     if (depth == 0)
         err = asc.truncated ? ODFS_ERR_LOOP : ODFS_ERR_NOT_FOUND;
 
+    odfs_free(asc.seen.slot);
     odfs_free(frames);
     return err;
 }

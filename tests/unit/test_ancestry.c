@@ -376,4 +376,84 @@ TEST(resolve_parent_search_bounds_depth)
                ODFS_ERR_LOOP);
 }
 
+/*
+ * Every directory from LBA 11 on lists two subdirectories that share
+ * one extent: in the DAG at the next LBA, 40 levels deep; in the cycle
+ * at LBA 11 again. Root (LBA 10) lists two names for LBA 11.
+ */
+typedef struct shared_tree_ctx {
+    unsigned int readdirs;
+    int          cycle;
+} shared_tree_ctx_t;
+
+static odfs_err_t shared_readdir(void *backend_ctx, odfs_cache_t *cache,
+                                 odfs_log_state_t *log, const odfs_node_t *dir,
+                                 odfs_dir_iter_fn callback, void *cb_ctx,
+                                 uint32_t *resume_offset)
+{
+    shared_tree_ctx_t *ctx = backend_ctx;
+    odfs_node_t children[2];
+    uint32_t child_lba;
+    uint32_t index = *resume_offset;
+
+    (void)cache;
+    (void)log;
+
+    if (++ctx->readdirs > 100000)
+        return ODFS_ERR_IO;
+
+    if (dir->extent.lba == 10 || ctx->cycle)
+        child_lba = 11;
+    else if (dir->extent.lba < 50)
+        child_lba = dir->extent.lba + 1;
+    else
+        return ODFS_OK;
+
+    fake_init_node(&children[0], child_lba, "a", ODFS_NODE_DIR, child_lba);
+    fake_init_node(&children[1], child_lba, "b", ODFS_NODE_DIR, child_lba);
+
+    while (index < 2) {
+        odfs_err_t err = callback(&children[index++], cb_ctx);
+
+        if (err != ODFS_OK) {
+            *resume_offset = index;
+            return err;
+        }
+    }
+    *resume_offset = 2;
+    return ODFS_OK;
+}
+
+static const odfs_backend_ops_t shared_backend_ops = {
+    .name = "shared-tree",
+    .backend_type = ODFS_BACKEND_ISO9660,
+    .readdir = shared_readdir,
+};
+
+TEST(resolve_parent_search_reads_shared_directories_once)
+{
+    shared_tree_ctx_t ctx;
+    odfs_mount_t mnt;
+    odfs_node_t probe;
+    odfs_node_t parent;
+    int cycle;
+
+    for (cycle = 0; cycle < 2; cycle++) {
+        memset(&mnt, 0, sizeof(mnt));
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.cycle = cycle;
+        fake_init_node(&mnt.root, 1, "/", ODFS_NODE_DIR, 10);
+        mnt.active_backend = ODFS_BACKEND_ISO9660;
+        mnt.backend_ops = &shared_backend_ops;
+        mnt.backend_ctx = &ctx;
+        mnt.backend_map[ODFS_BACKEND_ISO9660] = &shared_backend_ops;
+        mnt.backend_ctx_map[ODFS_BACKEND_ISO9660] = &ctx;
+
+        fake_init_node(&probe, 999, "missing", ODFS_NODE_FILE, 999);
+        ASSERT_ERR(odfs_resolve_parent_node(&mnt, &probe, &parent, NULL),
+                   ODFS_ERR_NOT_FOUND);
+        ASSERT(ctx.readdirs < 200);
+    }
+}
+
 TEST_MAIN()
