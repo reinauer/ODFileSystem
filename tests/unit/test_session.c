@@ -203,4 +203,70 @@ TEST(find_last_session_keeps_lba_zero_for_audio_only_toc)
     ASSERT_EQ(lba, 0);
 }
 
+typedef struct pvd_scan_media {
+    uint32_t total_sectors;
+    uint32_t pvd_lba[2];
+    uint32_t vol_size[2];
+    uint32_t reads;
+} pvd_scan_media_t;
+
+static odfs_err_t pvd_scan_read(void *ctx, uint32_t lba,
+                                uint32_t count, void *buf)
+{
+    pvd_scan_media_t *m = ctx;
+    uint8_t *out = buf;
+    size_t i;
+
+    if (count != 1 || lba >= m->total_sectors || ++m->reads > 1000)
+        return ODFS_ERR_IO;
+
+    memset(out, 0, 2048);
+    for (i = 0; i < 2; i++) {
+        if (lba != m->pvd_lba[i])
+            continue;
+        out[0] = 0x01;
+        memcpy(&out[1], "CD001", 5);
+        out[80] = (uint8_t)m->vol_size[i];
+        out[81] = (uint8_t)(m->vol_size[i] >> 8);
+        out[82] = (uint8_t)(m->vol_size[i] >> 16);
+        out[83] = (uint8_t)(m->vol_size[i] >> 24);
+    }
+    return ODFS_OK;
+}
+
+static uint32_t pvd_scan_count(void *ctx)
+{
+    pvd_scan_media_t *m = ctx;
+    return m->total_sectors;
+}
+
+static const odfs_media_ops_t pvd_scan_ops = {
+    .read_sectors = pvd_scan_read,
+    .sector_size  = fake_sector_size,
+    .sector_count = pvd_scan_count,
+};
+
+TEST(find_last_session_pvd_scan_survives_wrapping_volume_size)
+{
+    pvd_scan_media_t pm;
+    odfs_media_t media = { &pvd_scan_ops, &pm };
+    uint32_t lba = 999;
+
+    /*
+     * Session 2 at LBA 100 claims a volume size that wraps the next PVD
+     * location back to LBA 16, the PVD of session 1, which in turn
+     * points at session 2 again.
+     */
+    memset(&pm, 0, sizeof(pm));
+    pm.total_sectors = 200;
+    pm.pvd_lba[0] = 16;
+    pm.vol_size[0] = 100;
+    pm.pvd_lba[1] = 116;
+    pm.vol_size[1] = 0u - 100u;
+
+    ASSERT_OK(odfs_find_last_session(&media, NULL, &lba));
+    ASSERT_EQ(lba, 100);
+    ASSERT(pm.reads <= 2);
+}
+
 TEST_MAIN()
