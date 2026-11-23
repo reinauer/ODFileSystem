@@ -1035,4 +1035,32 @@ TEST(cdda_audio_cache_is_allocated_on_first_audio_read)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+TEST(cdda_oversized_toc_length_keeps_header_consistent)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t track;
+    void *backend_ctx = NULL;
+    uint8_t hdr[CDDA_WAV_HEADER_SIZE];
+    size_t len = sizeof(hdr);
+    uint32_t riff_size;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].length = 0xffffffffu;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, NULL, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "Track01.wav", &track));
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &track, 0,
+                                    hdr, &len));
+    ASSERT_EQ(len, sizeof(hdr));
+    riff_size = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+    ASSERT_EQ((uint64_t)riff_size + 8u, track.size);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()
