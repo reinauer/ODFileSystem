@@ -23,6 +23,7 @@ enum {
 
 enum fmt_length {
     FMT_LEN_DEFAULT = 0,
+    FMT_LEN_CHAR,
     FMT_LEN_SHORT,
     FMT_LEN_LONG,
     FMT_LEN_LLONG,
@@ -271,8 +272,13 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
         }
 
         if (*fmt == 'h') {
-            length = FMT_LEN_SHORT;
             ++fmt;
+            if (*fmt == 'h') {
+                length = FMT_LEN_CHAR;
+                ++fmt;
+            } else {
+                length = FMT_LEN_SHORT;
+            }
         } else if (*fmt == 'l') {
             ++fmt;
             if (*fmt == 'l') {
@@ -328,6 +334,9 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
                 else
                     fmt_signed(buf, (long)va_arg(ap, ptrdiff_t), flags, width, precision, &count);
                 break;
+            case FMT_LEN_CHAR:
+                fmt_signed(buf, (signed char)va_arg(ap, int), flags, width, precision, &count);
+                break;
             case FMT_LEN_SHORT:
                 fmt_signed(buf, (short)va_arg(ap, int), flags, width, precision, &count);
                 break;
@@ -359,6 +368,9 @@ static int kvsnprintf(fmt_buf_t *buf, const char *fmt, va_list ap)
                 break;
             case FMT_LEN_PTRDIFF:
                 value = (uint64_t)va_arg(ap, ptrdiff_t);
+                break;
+            case FMT_LEN_CHAR:
+                value = (unsigned char)va_arg(ap, unsigned int);
                 break;
             case FMT_LEN_SHORT:
                 value = (unsigned short)va_arg(ap, unsigned int);
