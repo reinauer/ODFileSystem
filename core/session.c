@@ -140,7 +140,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
          * session_start + 16. We look for CD001 at byte 1 and type
          * 0x01 at byte 0. Track the highest LBA where we find one.
          */
-        for (uint32_t lba = ISO_VD_START_OFFSET; lba + ISO_VD_START_OFFSET < total; ) {
+        for (uint32_t lba = ISO_VD_START_OFFSET; lba < total; ) {
             err = odfs_media_read(media, lba, 1, buf);
             if (err != ODFS_OK)
                 break;
