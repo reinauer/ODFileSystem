@@ -146,6 +146,7 @@ typedef struct handler_global {
                                              LBA field is long-aligned */
     UBYTE                read_sense[32];
 
+#if !ODFS_AMIGA_OS4
     /* sector read ahead on Seek (handler task only) */
     struct MsgPort      *pf_port;
     struct IOStdReq     *pf_req;
@@ -167,6 +168,9 @@ typedef struct handler_global {
     struct SCSICmd       pf_scsi;
     ULONG                pf_cdb[3];       /* READ(10) at byte 2, as read_cdb */
     UBYTE                pf_sense[32];
+#else
+#define ODFS_PF_SECTORS  0                /* no read ahead on OS4 */
+#endif
 
     /* media change */
     struct MsgPort      *chgport;       /* media change signal port */
