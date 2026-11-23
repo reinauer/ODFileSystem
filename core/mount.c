@@ -101,10 +101,47 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
     return count;
 }
 
+/* media and allocation failures, as opposed to an unrecognised format */
+static int mount_is_fatal_err(odfs_err_t err)
+{
+    return err == ODFS_ERR_NOMEM || err == ODFS_ERR_IO ||
+           err == ODFS_ERR_NO_MEDIA || err == ODFS_ERR_BAD_SECTOR ||
+           err == ODFS_ERR_MEDIA_CHANGED;
+}
+
+/*
+ * Mount be unless another backend was chosen already. The first fatal
+ * error is kept in *last_err, so that a mount that fails on the media
+ * is not reported as an unrecognised format.
+ */
+static int mount_try_one(odfs_mount_t *mnt, const odfs_backend_ops_t *be,
+                         uint32_t session_start,
+                         const odfs_backend_ops_t **chosen,
+                         odfs_err_t *last_err)
+{
+    odfs_err_t err;
+
+    if (*chosen || !be)
+        return 0;
+
+    err = be->mount(&mnt->cache, &mnt->log, session_start,
+                    &mnt->root, &mnt->backend_ctx);
+    if (err == ODFS_OK) {
+        *chosen = be;
+        return 1;
+    }
+
+    mnt->backend_ctx = NULL;
+    if (mount_is_fatal_err(err) && *last_err == ODFS_ERR_BAD_FORMAT)
+        *last_err = err;
+    return 0;
+}
+
 static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
                                           uint32_t session_start)
 {
     odfs_err_t err;
+    odfs_err_t last_err = ODFS_ERR_BAD_FORMAT;
     const odfs_backend_ops_t *chosen = NULL;
     const odfs_backend_ops_t *iso_candidate = NULL;
     const odfs_backend_ops_t *joliet_candidate = NULL;
@@ -153,81 +190,46 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
                 hfs_candidate = be;
             else if (be->backend_type == ODFS_BACKEND_HFSPLUS)
                 hfsplus_candidate = be;
+        } else if (mount_is_fatal_err(err) &&
+                   last_err == ODFS_ERR_BAD_FORMAT) {
+            last_err = err;
         }
     }
 
-    if (!chosen && udf_candidate && mnt->opts.prefer_udf) {
-        err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = udf_candidate;
+    if (mnt->opts.prefer_udf) {
+        mount_try_one(mnt, udf_candidate, session_start, &chosen, &last_err);
+        udf_candidate = NULL;
     }
-    if (!chosen && hfsplus_candidate && mnt->opts.prefer_hfs) {
-        err = hfsplus_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                       &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = hfsplus_candidate;
-    }
-    if (!chosen && hfs_candidate && mnt->opts.prefer_hfs) {
-        err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = hfs_candidate;
+    if (mnt->opts.prefer_hfs) {
+        mount_try_one(mnt, hfsplus_candidate, session_start,
+                      &chosen, &last_err);
+        mount_try_one(mnt, hfs_candidate, session_start, &chosen, &last_err);
+        hfsplus_candidate = NULL;
+        hfs_candidate = NULL;
     }
 
-    if (!chosen && iso_candidate) {
-        err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK) {
-            if (mnt->root.backend == ODFS_BACKEND_ROCK_RIDGE ||
-                mnt->opts.disable_joliet || !joliet_candidate) {
-                chosen = iso_candidate;
-            } else {
-                iso_candidate->unmount(mnt->backend_ctx);
-                mnt->backend_ctx = NULL;
-            }
+    if (mount_try_one(mnt, iso_candidate, session_start, &chosen,
+                      &last_err)) {
+        if (mnt->root.backend != ODFS_BACKEND_ROCK_RIDGE &&
+            !mnt->opts.disable_joliet && joliet_candidate) {
+            iso_candidate->unmount(mnt->backend_ctx);
+            mnt->backend_ctx = NULL;
+            chosen = NULL;
         }
+    } else {
+        iso_candidate = NULL;
     }
 
-    if (!chosen && joliet_candidate) {
-        err = joliet_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                      &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = joliet_candidate;
-    }
-
-    if (!chosen && udf_candidate) {
-        err = udf_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = udf_candidate;
-    }
-
-    if (!chosen && hfsplus_candidate) {
-        err = hfsplus_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                       &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = hfsplus_candidate;
-    }
-
-    if (!chosen && hfs_candidate) {
-        err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = hfs_candidate;
-    }
-
-    if (!chosen && iso_candidate && !mnt->backend_ctx) {
-        err = iso_candidate->mount(&mnt->cache, &mnt->log, session_start,
-                                   &mnt->root, &mnt->backend_ctx);
-        if (err == ODFS_OK)
-            chosen = iso_candidate;
-    }
+    mount_try_one(mnt, joliet_candidate, session_start, &chosen, &last_err);
+    mount_try_one(mnt, udf_candidate, session_start, &chosen, &last_err);
+    mount_try_one(mnt, hfsplus_candidate, session_start, &chosen, &last_err);
+    mount_try_one(mnt, hfs_candidate, session_start, &chosen, &last_err);
+    mount_try_one(mnt, iso_candidate, session_start, &chosen, &last_err);
 
     if (!chosen) {
         mnt->backend_ctx = NULL;
         memset(&mnt->root, 0, sizeof(mnt->root));
-        return ODFS_ERR_BAD_FORMAT;
+        return last_err;
     }
 
     mnt->backend_ops = chosen;
@@ -336,6 +338,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
                         odfs_mount_t *mnt)
 {
     odfs_err_t err;
+    odfs_err_t fail_err = ODFS_ERR_BAD_FORMAT;
     uint32_t cache_size;
     uint32_t session_candidates[100];
     size_t session_count;
@@ -424,6 +427,8 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             session_start = candidate;
             break;
         }
+        if (fail_err == ODFS_ERR_BAD_FORMAT)
+            fail_err = err;
     }
 
     if (err != ODFS_OK) {
@@ -433,7 +438,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
         odfs_meta_cache_destroy(&mnt->meta);
 #endif
         odfs_cache_destroy(&mnt->cache);
-        return ODFS_ERR_BAD_FORMAT;
+        return fail_err;
     }
 
     odfs_mount_register_backend(mnt, mnt->root.backend, mnt->backend_ops,

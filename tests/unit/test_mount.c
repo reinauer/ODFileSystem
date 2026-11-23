@@ -318,6 +318,42 @@ TEST(mount_dispatches_virtual_backend_by_node_type)
     }
 }
 
+static odfs_err_t io_fail_read_sectors(void *ctx, uint32_t lba,
+                                       uint32_t count, void *buf)
+{
+    (void)ctx;
+    (void)lba;
+    (void)count;
+    (void)buf;
+    return ODFS_ERR_IO;
+}
+
+static uint32_t io_fail_sector_size(void *ctx)
+{
+    (void)ctx;
+    return 2048;
+}
+
+static uint32_t io_fail_sector_count(void *ctx)
+{
+    (void)ctx;
+    return 64;
+}
+
+static const odfs_media_ops_t io_fail_ops = {
+    .read_sectors = io_fail_read_sectors,
+    .sector_size  = io_fail_sector_size,
+    .sector_count = io_fail_sector_count,
+};
+
+TEST(mount_reports_media_errors)
+{
+    odfs_media_t media = { &io_fail_ops, NULL };
+    odfs_mount_t mnt;
+
+    ASSERT_ERR(odfs_mount(&media, NULL, NULL, &mnt), ODFS_ERR_IO);
+}
+
 #define IMG_RR "tests/images/test_rr.iso"
 
 /* test_rr.iso with an HFS+ volume header signature in its system area */
