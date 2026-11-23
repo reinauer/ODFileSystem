@@ -1665,31 +1665,40 @@ static struct DeviceList *volume_node_ptr(const odfs_volume_t *volume)
  * allocates and frees an entry plus a lock or file handle; popping a
  * free list avoids the Forbid-protected AllocMem walk on each packet.
  * Objects are recycled per handler process and returned to the system
- * at shutdown.
+ * at shutdown. Each list keeps at most ODFS_POOL_MAX objects, so a
+ * burst of open locks or files does not stay allocated afterwards.
  */
 #define ODFS_LOCK_MAGIC 0x4f4c4b31UL /* 'OLK1' */
 #define ODFS_FH_MAGIC   0x4f464831UL /* 'OFH1' */
+#define ODFS_POOL_MAX   16UL
 
-static void *pool_pop(void **head)
+static void *pool_pop(odfs_pool_t *pool)
 {
-    void *p = *head;
+    void *p = pool->head;
 
-    if (p)
-        *head = *(void **)p;
+    if (p) {
+        pool->head = *(void **)p;
+        pool->count--;
+    }
     return p;
 }
 
-static void pool_push(void **head, void *p)
+static void pool_push(odfs_pool_t *pool, void *p, ULONG obj_size)
 {
-    *(void **)p = *head;
-    *head = p;
+    if (pool->count >= ODFS_POOL_MAX) {
+        odfs_amiga_free_mem(p, obj_size);
+        return;
+    }
+    *(void **)p = pool->head;
+    pool->head = p;
+    pool->count++;
 }
 
-static void pool_drain(void **head, ULONG obj_size)
+static void pool_drain(odfs_pool_t *pool, ULONG obj_size)
 {
     void *p;
 
-    while ((p = pool_pop(head)) != NULL)
+    while ((p = pool_pop(pool)) != NULL)
         odfs_amiga_free_mem(p, obj_size);
 }
 
@@ -1771,7 +1780,7 @@ static void release_entry(handler_global_t *g, odfs_entry_t *entry)
     if (!entry)
         return;
     if (--entry->refcount == 0)
-        pool_push(&g->entry_pool, entry);
+        pool_push(&g->entry_pool, entry, sizeof(*entry));
 }
 
 static odfs_node_t *lock_node(odfs_lock_t *ol)
@@ -2373,7 +2382,7 @@ static void free_lock(handler_global_t *g, odfs_lock_t *ol)
     release_volume_object(g, ol->entry->volume);
     release_entry(g, ol->entry);
     ol->magic = 0;
-    pool_push(&g->lock_pool, ol);
+    pool_push(&g->lock_pool, ol, sizeof(*ol));
 }
 
 static odfs_lock_t *dup_lock(handler_global_t *g, odfs_lock_t *src)
@@ -2434,7 +2443,7 @@ static void free_fh(handler_global_t *g, odfs_fh_t *fh)
     release_volume_object(g, fh->entry->volume);
     release_entry(g, fh->entry);
     fh->magic = 0;
-    pool_push(&g->fh_pool, fh);
+    pool_push(&g->fh_pool, fh, sizeof(*fh));
 }
 
 /* ------------------------------------------------------------------ */
