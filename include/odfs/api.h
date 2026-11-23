@@ -137,9 +137,18 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
                                odfs_node_t *out);
 #endif
 
-/* multisession: find last session start LBA */
+#if !defined(AMIGA)
+/* multisession: find last session start LBA; odfs_mount() reads the
+ * TOC itself and calls odfs_find_last_session_toc() */
 odfs_err_t odfs_find_last_session(odfs_media_t *media,
                                     odfs_log_state_t *log,
                                     uint32_t *last_lba_out);
+#endif
+
+/* find last session start LBA in a TOC already read (NULL if none) */
+odfs_err_t odfs_find_last_session_toc(odfs_media_t *media,
+                                      odfs_log_state_t *log,
+                                      const odfs_toc_t *toc,
+                                      uint32_t *last_lba_out);
 
 #endif /* ODFS_API_H */
