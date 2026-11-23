@@ -146,6 +146,27 @@ TEST(resolve_parent_without_grandparent_out)
     odfs_unmount(&mnt);
 }
 
+TEST(resolve_parent_of_file)
+{
+    odfs_media_t media;
+    odfs_log_state_t log;
+    odfs_mount_t mnt;
+    odfs_node_t file, parent, grandparent;
+
+    if (!mount_image(IMG_PLAIN, ODFS_BACKEND_ISO9660, 0,
+                     &media, &log, &mnt)) {
+        printf("  (skipped: %s)\n", "fixture " IMG_PLAIN " unavailable");
+        return;
+    }
+
+    ASSERT_OK(odfs_resolve_path(&mnt, "/DEEP/SUBDIR/NESTED.TXT", &file));
+    ASSERT_OK(odfs_resolve_parent_node(&mnt, &file, &parent, &grandparent));
+    ASSERT_STR_EQ(parent.name, "SUBDIR");
+    ASSERT_STR_EQ(grandparent.name, "DEEP");
+
+    odfs_unmount(&mnt);
+}
+
 TEST(resolve_parent_joliet)
 {
     odfs_media_t media;
