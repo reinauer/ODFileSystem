@@ -10,6 +10,7 @@
 #define ODFS_HFS_H
 
 #include "odfs/backend.h"
+#include "hfs/hfs_common.h"
 #include <stdint.h>
 
 /* ---- MDB (Master Directory Block) ---- */
@@ -40,68 +41,9 @@
 
 #define HFS_APM_SIG           0x504D  /* "PM" */
 
-/* ---- B-Tree node ---- */
+/* volume_name buffer size, NUL included */
 
-#define HFS_NODE_INDEX    0x00
-#define HFS_NODE_HEADER   0x01
-#define HFS_NODE_MAP      0x02
-#define HFS_NODE_LEAF     0xFF
-
-/* ---- catalog record types ---- */
-
-#define HFS_CAT_DIR       1
-#define HFS_CAT_FILE      2
-#define HFS_CAT_DTHREAD   3
-#define HFS_CAT_FTHREAD   4
-
-/* ---- special CNIDs ---- */
-
-#define HFS_CNID_ROOT_PAR    1  /* parent of root directory */
-#define HFS_CNID_ROOT_DIR    2  /* root directory ID */
-
-/* ---- big-endian helpers ---- */
-
-static inline uint16_t hfs_be16(const uint8_t *p)
-{
-    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-
-static inline uint32_t hfs_be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8)  | p[3];
-}
-
-/* ---- HFS extent descriptor (4 bytes) ---- */
-
-typedef struct hfs_extent {
-    uint16_t start_ab;   /* starting allocation block */
-    uint16_t num_ab;     /* number of allocation blocks */
-} hfs_extent_t;
-
-/* ---- HFS mount context ---- */
-
-typedef struct hfs_context {
-    /* from partition map / direct detection */
-    uint32_t vol_start_512;    /* HFS volume start in 512-byte blocks */
-
-    /* from MDB */
-    uint16_t num_alloc_blocks;
-    uint32_t alloc_block_size;
-    uint16_t alloc_block_start; /* in 512-byte blocks from vol start */
-    char     volume_name[28];
-
-    /* catalog B-tree */
-    uint32_t cat_file_size;
-    hfs_extent_t cat_extents[3];
-    uint32_t cat_node_size;
-    uint32_t cat_root_node;
-    uint32_t cat_first_leaf;
-
-    /* node tracking */
-    uint32_t next_node_id;
-    odfs_node_t root;
-} hfs_context_t;
+#define HFS_VOLNAME_SIZE      28
 
 extern const odfs_backend_ops_t hfs_backend_ops;
 

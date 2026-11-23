@@ -17,6 +17,7 @@ ODFS_CORE_SRCS = \
     backends/rock_ridge/rock_ridge.c \
     backends/joliet/joliet.c \
     backends/udf/udf.c \
+    backends/hfs/hfs_common.c \
     backends/hfs/hfs.c \
     backends/hfsplus/hfsplus.c \
     backends/cdda/cdda.c
