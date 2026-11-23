@@ -6472,6 +6472,42 @@ static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
     g->pf_buf = g->dma_buf + g->dma_buf_size;
     return 1;
 }
+#else
+/*
+ * Bounce sectors plus the Seek read-ahead's. A fragmented de_BufMemType
+ * pool (Chip or 24-bit DMA RAM) may lack 32 bounce sectors in one piece
+ * but still have room for fewer, which only costs more device requests
+ * per large read: try 8 and 2 there before leaving DMA-safe memory.
+ */
+static int alloc_dma_buffer(handler_global_t *g, ULONG memtype)
+{
+    static const UBYTE bounce_sectors[] = { 32, 8, 2 };
+    ULONG ss = g->sector_size;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(bounce_sectors); i++) {
+        g->dma_buf_raw_size = (bounce_sectors[i] + ODFS_PF_SECTORS) * ss + 15;
+        g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(g->dma_buf_raw_size,
+                                                       memtype);
+        if (g->dma_buf_raw)
+            break;
+    }
+    if (!g->dma_buf_raw && memtype != MEMF_PUBLIC) {
+        /* fallback: full size without the specific memory type */
+        i = 0;
+        g->dma_buf_raw_size = (bounce_sectors[0] + ODFS_PF_SECTORS) * ss + 15;
+        g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(g->dma_buf_raw_size,
+                                                       MEMF_PUBLIC);
+    }
+    if (!g->dma_buf_raw)
+        return 0;
+
+    g->dma_buf = (uint8_t *)
+        (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
+    g->dma_buf_size = bounce_sectors[i] * ss;
+    g->pf_buf = g->dma_buf + g->dma_buf_size;
+    return 1;
+}
 #endif
 
 void handler_main_startup(struct Message *startup_msg)
@@ -6710,7 +6746,6 @@ void handler_main_startup(struct Message *startup_msg)
      * single device request while leaving room for larger callers.
      */
     {
-#ifdef __AROS__
         ULONG memtype = (ULONG)de->de_BufMemType | MEMF_PUBLIC;
 
         if (!alloc_dma_buffer(g, memtype)) {
@@ -6718,31 +6753,6 @@ void handler_main_startup(struct Message *startup_msg)
                        "AllocMem failed for DMA buffer size=%lu memtype=%lu",
                        (unsigned long)g->dma_buf_raw_size,
                        (unsigned long)memtype);
-#else
-        #define DMA_BUF_SECTORS  32
-        /* plus the Seek read-ahead's sectors */
-        #define DMA_BUF_RAW_SIZE(ss) \
-            ((DMA_BUF_SECTORS + ODFS_PF_SECTORS) * (ss) + 15)
-        ULONG memtype = (ULONG)de->de_BufMemType | MEMF_PUBLIC;
-        ULONG raw_size = DMA_BUF_RAW_SIZE(g->sector_size);
-        g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size, memtype);
-        if (!g->dma_buf_raw) {
-            /* fallback: try without specific memory type */
-            g->dma_buf_raw = (uint8_t *)odfs_amiga_alloc_mem(raw_size,
-                                                             MEMF_PUBLIC);
-        }
-        if (g->dma_buf_raw) {
-            /* 16-byte align */
-            g->dma_buf = (uint8_t *)
-                (((uintptr_t)g->dma_buf_raw + 15) & ~(uintptr_t)15);
-            g->dma_buf_size = DMA_BUF_SECTORS * g->sector_size;
-            g->pf_buf = g->dma_buf + g->dma_buf_size;
-        } else {
-            ODFS_ERROR(&g->log, ODFS_SUB_IO,
-                       "AllocMem failed for DMA buffer size=%lu memtype=%lu",
-                       (unsigned long)raw_size,
-                       (unsigned long)memtype);
-#endif
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_NO_FREE_STORE;
             return_packet(g, pkt);
@@ -7021,12 +7031,7 @@ shutdown:
 
     /* free DMA bounce buffer */
     if (g->dma_buf_raw)
-        odfs_amiga_free_mem(g->dma_buf_raw,
-#ifdef __AROS__
-                            g->dma_buf_raw_size);
-#else
-                            DMA_BUF_RAW_SIZE(g->sector_size));
-#endif
+        odfs_amiga_free_mem(g->dma_buf_raw, g->dma_buf_raw_size);
 
     if (g->devnode && g->devnode->dn_Task == g->dosport)
         g->devnode->dn_Task = NULL;
