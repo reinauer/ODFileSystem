@@ -55,6 +55,21 @@ static inline void *odfs_calloc(size_t count, size_t size)
 #endif
 }
 
+/*
+ * For large buffers the CPU reads all the time. On 68k Amigas a
+ * MEMF_PUBLIC request can be served from chip RAM, which the CPU
+ * reaches far more slowly than fast RAM, so ask for fast RAM only and
+ * let the caller fall back to smaller allocations.
+ */
+static inline void *odfs_malloc_fast(size_t size)
+{
+#if defined(__mc68000__)
+    return AllocVec((ULONG)size, MEMF_PUBLIC | MEMF_FAST);
+#else
+    return odfs_malloc(size);
+#endif
+}
+
 static inline void odfs_free(void *ptr)
 {
     if (ptr)
@@ -73,6 +88,11 @@ static inline void *odfs_malloc(size_t size)
 static inline void *odfs_calloc(size_t count, size_t size)
 {
     return calloc(count, size);
+}
+
+static inline void *odfs_malloc_fast(size_t size)
+{
+    return malloc(size);
 }
 
 static inline void odfs_free(void *ptr)
