@@ -580,8 +580,11 @@ static odfs_err_t scsi_read10_data(handler_global_t *g,
     req->io_Length  = sizeof(*scsi);
 
     if (DoIO((struct IORequest *)req) != 0 || scsi->scsi_Status != 0 ||
-        scsi->scsi_Actual != bytes)
+        scsi->scsi_Actual != bytes) {
+        /* not every driver stores a status on success */
+        scsi->scsi_Status = 0;
         return ODFS_ERR_IO;
+    }
     return ODFS_OK;
 }
 
@@ -3445,6 +3448,7 @@ static void prefetch_start(handler_global_t *g, odfs_fh_t *fh)
         ((UBYTE *)g->pf_cdb)[10] = (UBYTE)count;
         g->pf_scsi.scsi_Length = count << 11;
         g->pf_scsi.scsi_Actual = 0;
+        g->pf_scsi.scsi_Status = 0;
         req->io_Command = HD_SCSICMD;
         req->io_Data = &g->pf_scsi;
         req->io_Length = sizeof(g->pf_scsi);
