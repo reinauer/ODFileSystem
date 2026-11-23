@@ -1421,6 +1421,7 @@ static odfs_err_t amiga_read_cdtext(void *ctx, uint8_t **buf_out,
 static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
 {
     uint8_t cmd[6];
+    uint8_t sense[32];
     union {
         UWORD words[6];
         uint8_t bytes[12];
@@ -1430,6 +1431,7 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     LONG io_rc;
 
     memset(cmd, 0, sizeof(cmd));
+    memset(sense, 0, sizeof(sense));
     memset(&mode_data, 0, sizeof(mode_data));
     memset(&scsi, 0, sizeof(scsi));
 
@@ -1451,6 +1453,8 @@ static int scsi_mode_select(handler_global_t *g, uint32_t block_length)
     scsi.scsi_CmdLength  = 6;
     scsi.scsi_Command    = cmd;
     scsi.scsi_Flags      = SCSIF_WRITE | SCSIF_AUTOSENSE;
+    scsi.scsi_SenseData  = sense;
+    scsi.scsi_SenseLength = sizeof(sense);
 
     io_rc = scsi_do(g, &scsi, &io_err);
     if (io_rc != 0 || io_err != 0 || scsi.scsi_Status != 0) {
