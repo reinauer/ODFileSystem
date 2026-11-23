@@ -499,6 +499,34 @@ TEST(cache_init_rejects_non_pow2_sector_size)
     ASSERT(cache.buckets == NULL);
 }
 
+TEST(cache_read_bytes_zeroes_len_on_error)
+{
+    odfs_cache_t cache;
+    odfs_media_t media;
+    uint8_t buf[64];
+    size_t len;
+    int reads = 0;
+
+    make_mock_media(&media, &reads);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+
+    len = sizeof(buf);
+    ASSERT_EQ(odfs_cache_read_bytes(NULL, 0, 0, buf, &len), ODFS_ERR_INVAL);
+    ASSERT_EQ(len, 0);
+
+    len = sizeof(buf);
+    ASSERT_EQ(odfs_cache_read_bytes(&cache, 0, 0, NULL, &len), ODFS_ERR_INVAL);
+    ASSERT_EQ(len, 0);
+
+    len = sizeof(buf);
+    ASSERT_EQ(odfs_cache_read_bytes(&cache, 10, UINT64_MAX, buf, &len),
+              ODFS_ERR_RANGE);
+    ASSERT_EQ(len, 0);
+    ASSERT_EQ(reads, 0);
+
+    odfs_cache_destroy(&cache);
+}
+
 #if ODFS_FEATURE_CACHE_RETAIN
 TEST(cache_retain_external_read)
 {
