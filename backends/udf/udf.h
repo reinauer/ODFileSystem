@@ -82,18 +82,6 @@ static inline uint64_t udf_le64(const uint8_t *p)
     return (uint64_t)udf_le32(p) | ((uint64_t)udf_le32(p + 4) << 32);
 }
 
-/* ---- descriptor tag (ECMA-167 7.2.1) ---- */
-
-typedef struct udf_tag {
-    uint16_t id;
-    uint16_t version;
-    uint8_t  checksum;
-    uint16_t serial;
-    uint16_t crc;
-    uint16_t crc_length;
-    uint32_t location;
-} udf_tag_t;
-
 /* ---- extent (ECMA-167 7.1) ---- */
 
 typedef struct udf_extent {
