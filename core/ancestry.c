@@ -11,6 +11,14 @@
 
 #include <string.h>
 
+/*
+ * Deepest directory level the search descends to. Plain ISO 9660 stops
+ * at 8 levels, but Rock Ridge relocation, UDF and HFS allow deeper
+ * trees; the cap only has to keep a malformed tree from growing the
+ * frame array without bound.
+ */
+#define ANCESTRY_MAX_DEPTH 256
+
 typedef struct ancestry_frame {
     odfs_node_t dir;
     uint32_t    resume;
@@ -19,8 +27,10 @@ typedef struct ancestry_frame {
 typedef struct ancestry_search_ctx {
     const odfs_node_t *target;
     ancestry_frame_t  *child_frame;
+    size_t             depth;
     int                found;
     int                descend;
+    int                truncated;
 } ancestry_search_ctx_t;
 
 static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
@@ -33,6 +43,10 @@ static odfs_err_t ancestry_search_cb(const odfs_node_t *entry, void *ctx)
     }
 
     if (!asc->descend && entry->kind == ODFS_NODE_DIR) {
+        if (asc->depth >= ANCESTRY_MAX_DEPTH) {
+            asc->truncated = 1;
+            return ODFS_OK;
+        }
         asc->child_frame->dir = *entry;
         asc->child_frame->resume = 0;
         asc->descend = 1;
@@ -53,6 +67,7 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
                                       odfs_node_t *grandparent_out)
 {
     ancestry_frame_t *frames;
+    ancestry_search_ctx_t asc;
     size_t cap = 8;
     size_t depth = 1;
     odfs_err_t err = ODFS_ERR_NOT_FOUND;
@@ -64,9 +79,9 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
     frames[0].dir = mnt->root;
     frames[0].resume = 0;
 
-    while (depth > 0) {
-        ancestry_search_ctx_t asc;
+    asc.truncated = 0;
 
+    while (depth > 0) {
         if (depth == cap) {
             ancestry_frame_t *grown;
             size_t new_cap = cap * 2;
@@ -84,6 +99,7 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
 
         asc.target = node;
         asc.child_frame = &frames[depth];
+        asc.depth = depth;
         asc.found = 0;
         asc.descend = 0;
 
@@ -115,9 +131,10 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
         depth--;
     }
 
-    /* every directory was read to its end without a match */
+    /* every directory was read to its end without a match; if some
+     * were too deep to enter, the tree is malformed or looped */
     if (depth == 0)
-        err = ODFS_ERR_NOT_FOUND;
+        err = asc.truncated ? ODFS_ERR_LOOP : ODFS_ERR_NOT_FOUND;
 
     odfs_free(frames);
     return err;

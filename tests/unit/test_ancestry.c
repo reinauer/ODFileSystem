@@ -294,4 +294,86 @@ TEST(resolve_parent_search_reports_missing_node)
                ODFS_ERR_NOT_FOUND);
 }
 
+/*
+ * Root (LBA 10) holds an endless chain of directories, each with one
+ * subdirectory at the next LBA, followed by a file "target".
+ */
+typedef struct chain_tree_ctx {
+    unsigned int readdirs;
+} chain_tree_ctx_t;
+
+static odfs_err_t chain_readdir(void *backend_ctx, odfs_cache_t *cache,
+                                odfs_log_state_t *log, const odfs_node_t *dir,
+                                odfs_dir_iter_fn callback, void *cb_ctx,
+                                uint32_t *resume_offset)
+{
+    chain_tree_ctx_t *ctx = backend_ctx;
+    odfs_node_t children[2];
+    uint32_t count = 1;
+    uint32_t index = *resume_offset;
+
+    (void)cache;
+    (void)log;
+
+    if (++ctx->readdirs > 100000)
+        return ODFS_ERR_IO;
+
+    fake_init_node(&children[0], dir->extent.lba + 1000, "sub",
+                   ODFS_NODE_DIR,
+                   dir->extent.lba == 10 ? 100 : dir->extent.lba + 1);
+    if (dir->extent.lba == 10) {
+        fake_init_node(&children[1], 50, "target", ODFS_NODE_FILE, 50);
+        count = 2;
+    }
+
+    while (index < count) {
+        odfs_err_t err = callback(&children[index++], cb_ctx);
+
+        if (err != ODFS_OK) {
+            *resume_offset = index;
+            return err;
+        }
+    }
+    *resume_offset = count;
+    return ODFS_OK;
+}
+
+static const odfs_backend_ops_t chain_backend_ops = {
+    .name = "chain-tree",
+    .backend_type = ODFS_BACKEND_ISO9660,
+    .readdir = chain_readdir,
+};
+
+static void chain_init_mount(odfs_mount_t *mnt, chain_tree_ctx_t *ctx)
+{
+    memset(mnt, 0, sizeof(*mnt));
+    memset(ctx, 0, sizeof(*ctx));
+    fake_init_node(&mnt->root, 1, "/", ODFS_NODE_DIR, 10);
+    mnt->active_backend = ODFS_BACKEND_ISO9660;
+    mnt->backend_ops = &chain_backend_ops;
+    mnt->backend_ctx = ctx;
+    mnt->backend_map[ODFS_BACKEND_ISO9660] = &chain_backend_ops;
+    mnt->backend_ctx_map[ODFS_BACKEND_ISO9660] = ctx;
+}
+
+TEST(resolve_parent_search_bounds_depth)
+{
+    chain_tree_ctx_t ctx;
+    odfs_mount_t mnt;
+    odfs_node_t probe;
+    odfs_node_t parent;
+
+    /* a node after the endless branch is still found */
+    chain_init_mount(&mnt, &ctx);
+    fake_init_node(&probe, 50, "target", ODFS_NODE_FILE, 50);
+    ASSERT_OK(odfs_resolve_parent_node(&mnt, &probe, &parent, NULL));
+    ASSERT_STR_EQ(parent.name, "/");
+
+    /* a missing node is reported as a loop, not searched for forever */
+    chain_init_mount(&mnt, &ctx);
+    fake_init_node(&probe, 999, "missing", ODFS_NODE_FILE, 999);
+    ASSERT_ERR(odfs_resolve_parent_node(&mnt, &probe, &parent, NULL),
+               ODFS_ERR_LOOP);
+}
+
 TEST_MAIN()
