@@ -70,6 +70,14 @@ typedef struct hfs_btree {
     uint32_t     total_nodes;
 } hfs_btree_t;
 
+/* extent map of the file read last, past its first extent */
+typedef struct hfs_extent_map {
+    uint32_t     file_id;        /* CNID, 0 if empty */
+    hfs_extent_t inline_ext[8];  /* from the catalog record */
+    hfs_extent_t ov_ext[8];      /* last extents overflow record used */
+    uint64_t     ov_base;        /* fork offset of ov_ext[0] */
+} hfs_extent_map_t;
+
 typedef struct hfs_volume hfs_volume_t;
 
 /*
@@ -93,6 +101,7 @@ struct hfs_volume {
     hfs_btree_t        ext;           /* extents overflow B-tree;
                                          node_size 0 if unusable */
     uint8_t           *node_buf;      /* one node of either tree */
+    hfs_extent_map_t   map;
     odfs_node_t        root;
     char               volume_name[]; /* sized by the backend */
 };
