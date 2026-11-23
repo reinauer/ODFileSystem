@@ -173,7 +173,6 @@ typedef struct iso_pvd_info {
 typedef struct iso_context {
     iso_pvd_info_t pvd;
     uint32_t       session_start;
-    uint32_t       next_node_id;
     int            lowercase;     /* lowercase ISO names for display */
     int            high_sierra;   /* High Sierra variant, not ISO 9660 */
     int            joliet;        /* Joliet mount: UCS-2 names, no RR/HS */
