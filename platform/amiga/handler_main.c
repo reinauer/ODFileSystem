@@ -194,6 +194,7 @@ static void amiga_init_max_transfer(handler_global_t *g)
 #else
     ULONG max = g->envec->de_MaxTransfer;
 #endif
+    uintptr_t range;
 
     if (max == 0)
         max = 0xffffffffUL;
@@ -203,6 +204,10 @@ static void amiga_init_max_transfer(handler_global_t *g)
     g->max_transfer = g->max_transfer_blocks * g->sector_size;
 
     g->direct_buf_blocked = ~(uintptr_t)g->envec->de_Mask;
+    /* below the lowest blocked range bit: exact for the usual masks, which
+     * clear only high bits, and on the safe side for any other */
+    range = g->direct_buf_blocked & ~(uintptr_t)0x7ff;
+    g->direct_buf_last = range ? (range & (0 - range)) - 1 : ~(uintptr_t)0;
 #if !ODFS_AMIGA_OS4
     g->direct_mem_need = (ULONG)g->envec->de_BufMemType &
                          (MEMF_PUBLIC | MEMF_CHIP | MEMF_FAST | MEMF_LOCAL |
@@ -283,13 +288,26 @@ static int amiga_direct_memtype_ok(handler_global_t *g, const void *buf,
 }
 #endif
 
+/*
+ * Whether a transfer of len bytes into buf stays within de_Mask. The
+ * mask's low bits constrain the alignment of the start address, which
+ * the end address of a transfer never meets; its high bits bound the
+ * address range, which the whole buffer has to lie in.
+ */
+static int amiga_buf_mask_ok(const handler_global_t *g, const void *buf,
+                             uint32_t len)
+{
+    uintptr_t start = (uintptr_t)buf;
+
+    return (start & g->direct_buf_blocked) == 0 &&
+           start + len - 1 <= g->direct_buf_last;
+}
+
 static int amiga_can_read_direct(handler_global_t *g, const void *buf,
                                  uint32_t len, uint32_t sectors)
 {
-    struct DosEnvec *de;
     uintptr_t start;
     uintptr_t end;
-    uintptr_t blocked;
 
     if (!g || !g->envec || !buf || len == 0)
         return 0;
@@ -305,14 +323,9 @@ static int amiga_can_read_direct(handler_global_t *g, const void *buf,
         return 0;
 #endif
 
-    de = g->envec;
     start = (uintptr_t)buf;
     end = start + len - 1;
-    if (end < start)
-        return 0;
-
-    blocked = ~(uintptr_t)de->de_Mask;
-    if ((start & blocked) != 0)
+    if (end < start || !amiga_buf_mask_ok(g, buf, len))
         return 0;
 
 #if ODFS_AMIGA_OS4
@@ -3562,7 +3575,7 @@ fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
         want = len;
     if (((pos | want) & 2047) != 0 || want < 2 * 2048 ||
         want > g->max_transfer ||
-        ((uintptr_t)buf & g->direct_buf_blocked) != 0)
+        !amiga_buf_mask_ok(g, buf, want))
         return 0;
 #if !ODFS_AMIGA_OS4
     if (g->direct_mem_need != 0 &&
