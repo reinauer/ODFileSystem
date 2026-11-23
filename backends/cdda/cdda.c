@@ -1206,6 +1206,24 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
 /* read — synthesize header + read audio frames                        */
 /* ------------------------------------------------------------------ */
 
+/* serve a read from one of the in-memory metadata files */
+static odfs_err_t cdda_read_mem(const void *data, size_t size,
+                                uint64_t offset, void *buf, size_t *len)
+{
+    size_t want = *len;
+
+    if (!data || offset >= size) {
+        *len = 0;
+        return ODFS_OK;
+    }
+    if (offset + want > size)
+        want = size - (size_t)offset;
+
+    memcpy(buf, (const uint8_t *)data + (size_t)offset, want);
+    *len = want;
+    return ODFS_OK;
+}
+
 static odfs_err_t cdda_read(void *backend_ctx,
                               odfs_cache_t *cache,
                               odfs_log_state_t *log,
@@ -1218,50 +1236,15 @@ static odfs_err_t cdda_read(void *backend_ctx,
     (void)cache;
     (void)log;
 
-    if (file->id == CDDA_CDDB_NODE_ID) {
-        size_t want = *len;
-
-        if (!ctx->cddb_text || offset >= ctx->cddb_size) {
-            *len = 0;
-            return ODFS_OK;
-        }
-        if (offset + want > ctx->cddb_size)
-            want = ctx->cddb_size - (size_t)offset;
-
-        memcpy(buf, ctx->cddb_text + (size_t)offset, want);
-        *len = want;
-        return ODFS_OK;
-    }
-
-    if (file->id == CDDA_CDTEXT_NODE_ID) {
-        size_t want = *len;
-
-        if (!ctx->cdtext_text || offset >= ctx->cdtext_size) {
-            *len = 0;
-            return ODFS_OK;
-        }
-        if (offset + want > ctx->cdtext_size)
-            want = ctx->cdtext_size - (size_t)offset;
-
-        memcpy(buf, ctx->cdtext_text + (size_t)offset, want);
-        *len = want;
-        return ODFS_OK;
-    }
-
-    if (file->id == CDDA_DISK_ICON_NODE_ID) {
-        size_t want = *len;
-
-        if (!ctx->disk_icon || offset >= ctx->disk_icon_size) {
-            *len = 0;
-            return ODFS_OK;
-        }
-        if (offset + want > ctx->disk_icon_size)
-            want = ctx->disk_icon_size - (size_t)offset;
-
-        memcpy(buf, ctx->disk_icon + (size_t)offset, want);
-        *len = want;
-        return ODFS_OK;
-    }
+    if (file->id == CDDA_CDDB_NODE_ID)
+        return cdda_read_mem(ctx->cddb_text, ctx->cddb_size,
+                             offset, buf, len);
+    if (file->id == CDDA_CDTEXT_NODE_ID)
+        return cdda_read_mem(ctx->cdtext_text, ctx->cdtext_size,
+                             offset, buf, len);
+    if (file->id == CDDA_DISK_ICON_NODE_ID)
+        return cdda_read_mem(ctx->disk_icon, ctx->disk_icon_size,
+                             offset, buf, len);
 
     int track_idx = (int)file->extent.lba - 2;
     if (track_idx < 0 || track_idx >= ctx->track_count) {
