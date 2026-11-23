@@ -285,4 +285,27 @@ TEST(hfs_index_pointer_follows_padded_key)
     odfs_free(img);
 }
 
+/* ---- node ids ---- */
+
+TEST(hfs_node_ids_are_catalog_ids)
+{
+    uint8_t *img = hfs_image(2);
+    odfs_mount_t mnt;
+    odfs_node_t a, b2;
+    bt_builder_t b;
+
+    ASSERT(img != NULL);
+    bt_header(hfs_ab(img, 0), 512, 1, 2);
+    bt_init(&b, hfs_ab(img, 1), 512, HFS_NODE_LEAF, 0, 0);
+    hfs_add_file(&b, HFS_CNID_ROOT_DIR, "FILE.TXT", 23, 0, NULL);
+
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "FILE.TXT", &a));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "file.txt", &b2));
+    ASSERT_EQ(a.id, 23u);
+    ASSERT_EQ(b2.id, 23u);
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 TEST_MAIN()

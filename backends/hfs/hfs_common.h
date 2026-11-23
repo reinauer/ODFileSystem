@@ -83,7 +83,6 @@ struct hfs_volume {
     hfs_parse_entry_fn parse_entry;
     hfs_btree_t        cat;           /* catalog B-tree */
     uint8_t           *node_buf;      /* one B-tree node, for the walk */
-    uint32_t           next_node_id;
     odfs_node_t        root;
     char               volume_name[]; /* sized by the backend */
 };

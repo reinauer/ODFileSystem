@@ -134,10 +134,12 @@ static int hfs_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
 
     if (rec_type == HFS_CAT_DIR && data_len >= 22) {
         node->kind = ODFS_NODE_DIR;
-        node->extent.lba = hfs_be32(&data[6]); /* store CNID for readdir */
+        node->id = hfs_be32(&data[6]);         /* dirDirID */
+        node->extent.lba = node->id;           /* store CNID for readdir */
         odfs_timestamp_from_mac_time(hfs_be32(&data[14]), &node->mtime);
     } else if (rec_type == HFS_CAT_FILE && data_len >= 52) {
         node->kind = ODFS_NODE_FILE;
+        node->id = hfs_be32(&data[20]);   /* filFlNum */
         node->size = hfs_be32(&data[26]); /* data fork logical length */
         /* data fork first extent: at offset 74 in file record */
         if (data_len >= 78) {
@@ -170,7 +172,6 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     vol = odfs_calloc(1, sizeof(*vol) + HFS_VOLNAME_SIZE);
     if (!vol) return ODFS_ERR_NOMEM;
 
-    vol->next_node_id = 1;
     vol->parse_entry = hfs_parse_entry;
 
     /* find MDB — try direct first, then APM */
