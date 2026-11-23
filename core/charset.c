@@ -47,8 +47,11 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
     size_t di = 0;
     size_t si;
 
+    if (out_len)
+        *out_len = 0;
     if (!src || !dst || dst_size == 0)
         return ODFS_ERR_INVAL;
+    dst[0] = '\0';
 
     /* UCS-2 / UTF-16 is 2 bytes per code unit */
     if (src_len & 1)
