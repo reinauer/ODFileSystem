@@ -215,6 +215,20 @@ assert_contains "audio cue: imgstat mounts" "backend: cdda" "$STAT"
 BENCH=$("$TOOLS/imgbench" "$WORK_DIR/audio.cue" 2>/dev/null || true)
 assert_contains "audio cue: imgbench mounts" "reads:" "$BENCH"
 
+# ---- imgdump ----
+if "$TOOLS/imgdump" "$IMAGES/test_plain.iso" 16 0 >/dev/null 2>&1; then
+    STATUS=0
+else
+    STATUS=$?
+fi
+assert_eq "imgdump: zero count fails" "1" "$STATUS"
+
+# sparse image with a sector at 4 GiB: the address column must not wrap
+dd if=/dev/zero of="$WORK_DIR/big.iso" bs=2048 count=1 seek=2097152 \
+    2>/dev/null
+DUMP=$("$TOOLS/imgdump" "$WORK_DIR/big.iso" 2097152 1 2>/dev/null || true)
+assert_contains "imgdump: 64-bit offset" "100000000  00 00" "$DUMP"
+
 # ---- summary ----
 echo ""
 echo "$PASS passed, $FAIL failed, $((PASS + FAIL)) total"
