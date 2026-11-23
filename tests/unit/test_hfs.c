@@ -6,6 +6,7 @@
 
 #include "odfs/api.h"
 #include "odfs/alloc.h"
+#include "odfs/cache.h"
 #include "hfs/hfs.h"
 #include "hfsplus/hfsplus.h"
 #include "test_harness.h"
@@ -512,6 +513,40 @@ TEST(hfsplus_mounts_volume_embedded_in_hfs_wrapper)
     ASSERT_EQ(list.count, 1);
     ASSERT_STR_EQ(list.nodes[0].name, "inner.txt");
     odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
+/* ---- Volume Header validation ---- */
+
+TEST(hfsplus_probe_rejects_stray_signatures)
+{
+    uint8_t *img = odfs_calloc(1, IMG_BYTES);
+    odfs_media_t media;
+    odfs_cache_t cache;
+
+    ASSERT(img != NULL);
+    memset(&media, 0, sizeof(media));
+    media.ops = &mem_media_ops;
+    media.ctx = img;
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    /* at byte 0 the volume would start 1024 bytes before the image */
+    put_be16(&img[0], HFSPLUS_SIG);
+    put_be16(&img[2], 4);
+    put_be32(&img[40], 4096);
+    /* unknown version */
+    put_be16(&img[2048], HFSPLUS_SIG);
+    put_be16(&img[2050], 99);
+    put_be32(&img[2088], 4096);
+    /* block size not a power of two */
+    put_be16(&img[4096], HFSPLUS_SIG);
+    put_be16(&img[4098], 4);
+    put_be32(&img[4136], 1000);
+    /* 'H+' in the middle of data */
+    put_be16(&img[6144], HFSPLUS_SIG);
+
+    ASSERT_EQ(hfsplus_backend_ops.probe(&cache, NULL, 0), ODFS_ERR_BAD_FORMAT);
+    odfs_cache_destroy(&cache);
     odfs_free(img);
 }
 
