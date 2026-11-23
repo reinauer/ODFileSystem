@@ -891,21 +891,6 @@ static int32 vp_volume_info_data(struct FSVP *vp,
     return return_dos_status(res2, err);
 }
 
-static int32 vp_device_info_data(struct FSVP *vp,
-                                 int32 *res2,
-                                 struct InfoData *info)
-{
-    handler_global_t *g = vp_require_global(vp, res2);
-    LONG err;
-
-    if (!g)
-        return DOSFALSE;
-
-    err = odfs_handler_fill_info(g, NULL, info);
-    fs_unlock(g);
-    return return_dos_status(res2, err);
-}
-
 static struct ExamineData *vp_examine_obj(struct FSVP *vp,
                                           int32 *res2,
                                           struct Lock *lock,
@@ -1106,18 +1091,6 @@ static int32 vp_format(struct FSVP *vp,
     return DOSFALSE;
 }
 
-static int32 vp_serialize(struct FSVP *vp, int32 *res2)
-{
-    handler_global_t *g = vp_require_global(vp, res2);
-
-    if (!g)
-        return DOSFALSE;
-
-    fs_unlock(g);
-    set_dos_error(res2, 0);
-    return DOSTRUE;
-}
-
 static int32 vp_relabel(struct FSVP *vp,
                         int32 *res2,
                         CONST_STRPTR new_volumename)
@@ -1130,15 +1103,6 @@ static int32 vp_relabel(struct FSVP *vp,
 static int32 vp_add_notify(struct FSVP *vp,
                            int32 *res2,
                            struct NotifyRequest *nr)
-{
-    set_unsupported(vp, res2);
-    (void)nr;
-    return DOSFALSE;
-}
-
-static int32 vp_remove_notify(struct FSVP *vp,
-                              int32 *res2,
-                              struct NotifyRequest *nr)
 {
     set_unsupported(vp, res2);
     (void)nr;
@@ -1215,7 +1179,7 @@ static const struct FileSystemVectors odfs_os4_vectors = {
     .FSSameFile = vp_same_file,
     .FSFileSystemAttr = vp_filesystem_attr,
     .FSVolumeInfoData = vp_volume_info_data,
-    .FSDeviceInfoData = vp_device_info_data,
+    .FSDeviceInfoData = vp_volume_info_data, /* one volume per device */
     .FSReserved1 = NULL,
     .FSExamineObj = vp_examine_obj,
     .FSExamineLock = vp_examine_lock,
@@ -1224,11 +1188,11 @@ static const struct FileSystemVectors odfs_os4_vectors = {
     .FSInhibit = vp_inhibit,
     .FSWriteProtect = vp_write_protect,
     .FSFormat = vp_format,
-    .FSSerialize = vp_serialize,
+    .FSSerialize = vp_flush,           /* both a no-op */
     .FSRelabel = vp_relabel,
     .FSReserved3 = NULL,
     .FSAddNotify = vp_add_notify,
-    .FSRemoveNotify = vp_remove_notify,
+    .FSRemoveNotify = vp_add_notify,   /* both unsupported */
     .FSLockRecord = vp_lock_record,
     .FSUnLockRecord = vp_unlock_record,
     .End_Marker = -1
