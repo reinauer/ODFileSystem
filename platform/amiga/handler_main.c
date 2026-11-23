@@ -5648,6 +5648,19 @@ static void schedule_volume_publish_retry(handler_global_t *g)
         !g->current_volume || g->current_volume->listed)
         return;
 
+#if ODFS_AMIGA_OS4
+    /*
+     * FSInhibit() mounts from the caller's task, which must not make
+     * the timer port: its signal would belong to that task, and the
+     * handler task would never wait for it. Leave it to the handler.
+     */
+    if (FindTask(NULL) != g->handler_task) {
+        g->publish_retry_needed = 1;
+        Signal(g->handler_task, (ULONG)1 << g->dosport->mp_SigBit);
+        return;
+    }
+#endif
+
     if (!init_volume_publish_timer(g)) {
         ODFS_WARN(&g->log, ODFS_SUB_MOUNT,
                   "volume publication retry timer unavailable");
@@ -5664,11 +5677,21 @@ static void schedule_volume_publish_retry(handler_global_t *g)
 
 static void cancel_volume_publish_retry(handler_global_t *g)
 {
-    if (!g || !g->publish_timer_pending)
+    if (!g)
+        return;
+#if ODFS_AMIGA_OS4
+    g->publish_retry_needed = 0;
+#endif
+    if (!g->publish_timer_pending)
         return;
 
     if (!CheckIO(g->publish_timer_req))
         AbortIO(g->publish_timer_req);
+#if ODFS_AMIGA_OS4
+    /* WaitIO() needs the port's task; the handler reaps the reply */
+    if (FindTask(NULL) != g->handler_task)
+        return;
+#endif
     WaitIO(g->publish_timer_req);
     g->publish_timer_pending = 0;
 }
@@ -6891,6 +6914,15 @@ void handler_main_startup(struct Message *startup_msg)
             handle_volume_publish_retry(g);
             ODFS_FS_UNLOCK(g);
         }
+
+#if ODFS_AMIGA_OS4
+        if (g->publish_retry_needed) {
+            ODFS_FS_LOCK(g);
+            g->publish_retry_needed = 0;
+            schedule_volume_publish_retry(g);
+            ODFS_FS_UNLOCK(g);
+        }
+#endif
     }
 
     /*
