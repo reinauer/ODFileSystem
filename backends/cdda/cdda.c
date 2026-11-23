@@ -1349,22 +1349,10 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
     (void)log;
     (void)dir;
 
-    if (odfs_strcasecmp(name, CDDA_CDDB_NAME) == 0) {
-        if (cdda_fill_cddb_node(ctx, out))
+    for (int i = 0; i < cdda_metadata_count(ctx); i++) {
+        if (cdda_fill_metadata_node(ctx, i, out) &&
+            odfs_strcasecmp(name, out->name) == 0)
             return ODFS_OK;
-        return ODFS_ERR_NOT_FOUND;
-    }
-
-    if (odfs_strcasecmp(name, CDDA_CDTEXT_NAME) == 0) {
-        if (cdda_fill_cdtext_node(ctx, out))
-            return ODFS_OK;
-        return ODFS_ERR_NOT_FOUND;
-    }
-
-    if (odfs_strcasecmp(name, CDDA_DISK_ICON_NAME) == 0) {
-        if (cdda_fill_disk_icon_node(ctx, out))
-            return ODFS_OK;
-        return ODFS_ERR_NOT_FOUND;
     }
 
     for (int i = 0; i < ctx->track_count; i++) {
