@@ -480,4 +480,36 @@ TEST(mount_applies_iso_options)
     odfs_unmount(&mnt);
 }
 
+TEST(mount_force_backend_selects_rock_ridge)
+{
+    odfs_media_t media;
+    odfs_mount_opts_t opts;
+    odfs_mount_t mnt;
+    int rc;
+
+    odfs_mount_opts_default(&opts);
+    opts.force_backend = ODFS_BACKEND_ROCK_RIDGE;
+    rc = mount_image(IMG_RR, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ROCK_RIDGE);
+    odfs_unmount(&mnt);
+
+    /* a disc without Rock Ridge does not mount */
+    rc = mount_image(IMG_PLAIN, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, -1);
+
+    /* forcing ISO 9660 still detects Rock Ridge inside it */
+    opts.force_backend = ODFS_BACKEND_ISO9660;
+    rc = mount_image(IMG_RR, &opts, &media, &mnt);
+    if (rc == 0)
+        return;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ROCK_RIDGE);
+    odfs_unmount(&mnt);
+}
+
 TEST_MAIN()
