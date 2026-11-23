@@ -95,7 +95,7 @@ void odfs_meta_cache_flush(odfs_meta_cache_t *mc)
 {
     while (mc->lru_tail)
         meta_evict(mc, mc->lru_tail);
-    memset(mc->oversize_len, 0, sizeof(mc->oversize_len));
+    memset(mc->oversize_backend, 0, sizeof(mc->oversize_backend));
 }
 
 void odfs_meta_cache_destroy(odfs_meta_cache_t *mc)
@@ -505,7 +505,8 @@ static odfs_meta_dir_t *meta_get(odfs_meta_cache_t *mc,
     mc->stats.misses++;
 
     for (i = 0; i < ODFS_META_OVERSIZE_SLOTS; i++) {
-        if (mc->oversize_len[i] == dir->extent.length &&
+        if (mc->oversize_backend[i] == (uint8_t)dir->backend &&
+            mc->oversize_len[i] == dir->extent.length &&
             mc->oversize_lba[i] == dir->extent.lba)
             return NULL;
     }
@@ -516,6 +517,7 @@ static odfs_meta_dir_t *meta_get(odfs_meta_cache_t *mc,
             i = mc->oversize_next++ % ODFS_META_OVERSIZE_SLOTS;
             mc->oversize_lba[i] = dir->extent.lba;
             mc->oversize_len[i] = dir->extent.length;
+            mc->oversize_backend[i] = (uint8_t)dir->backend;
         }
         return NULL;
     }

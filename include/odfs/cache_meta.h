@@ -85,9 +85,10 @@ typedef struct odfs_meta_cache {
     uint32_t          total;      /* bytes currently held */
     odfs_meta_cache_stats_t stats;
     /* extents of directories that overflowed the budget, so lookups
-     * there skip a build that is bound to fail; length 0 = unused */
+     * there skip a build that is bound to fail; backend 0 = unused */
     uint32_t          oversize_lba[ODFS_META_OVERSIZE_SLOTS];
     uint32_t          oversize_len[ODFS_META_OVERSIZE_SLOTS];
+    uint8_t           oversize_backend[ODFS_META_OVERSIZE_SLOTS];
     uint32_t          oversize_next;
 } odfs_meta_cache_t;
 

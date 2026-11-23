@@ -103,6 +103,87 @@ TEST(meta_cache_evicts_least_recently_used_directory)
     odfs_meta_cache_destroy(&mc);
 }
 
+/* HFS+ directories hold eight files, HFS directories one */
+static odfs_err_t by_backend_readdir(void *backend_ctx, odfs_cache_t *cache,
+                                     odfs_log_state_t *log,
+                                     const odfs_node_t *dir,
+                                     odfs_dir_iter_fn callback, void *cb_ctx,
+                                     uint32_t *resume_offset)
+{
+    odfs_node_t child;
+    int *readdirs = backend_ctx;
+    unsigned int i, n = dir->backend == ODFS_BACKEND_HFSPLUS ? 8 : 1;
+    odfs_err_t err;
+
+    (void)cache;
+    (void)log;
+    (void)resume_offset;
+    (*readdirs)++;
+
+    for (i = 0; i < n; i++) {
+        memset(&child, 0, sizeof(child));
+        child.id = i + 1;
+        child.parent_id = dir->id;
+        child.backend = dir->backend;
+        child.kind = ODFS_NODE_FILE;
+        child.extent.lba = 100 + i;
+        child.extent.length = 1;
+        child.size = 1;
+        snprintf(child.name, sizeof(child.name), "f%u", i);
+        err = callback(&child, cb_ctx);
+        if (err != ODFS_OK)
+            return err;
+    }
+    return ODFS_OK;
+}
+
+static const odfs_backend_ops_t by_backend_ops = {
+    .name = "by-backend",
+    .backend_type = ODFS_BACKEND_HFSPLUS,
+    .readdir = by_backend_readdir,
+};
+
+TEST(meta_cache_oversize_ring_is_keyed_by_backend)
+{
+    static odfs_meta_cache_t mc;
+    odfs_log_state_t log;
+    odfs_node_t plus, hfs, out;
+    int readdirs = 0;
+
+    odfs_log_init(&log);
+    odfs_meta_cache_init(&mc, sizeof(odfs_meta_dir_t) +
+                              2u * sizeof(odfs_meta_entry_t) + 16u);
+
+    /* the same folder CNID under HFS+ and under HFS */
+    memset(&plus, 0, sizeof(plus));
+    plus.backend = ODFS_BACKEND_HFSPLUS;
+    plus.kind = ODFS_NODE_DIR;
+    plus.extent.lba = 2;
+    hfs = plus;
+    hfs.backend = ODFS_BACKEND_HFS;
+
+    /* the HFS+ directory does not fit and is remembered as oversize */
+    ASSERT_ERR(odfs_meta_lookup(&mc, &by_backend_ops, &readdirs, NULL,
+                                &log, &plus, "f0", &out),
+               ODFS_ERR_UNSUPPORTED);
+    ASSERT_EQ(readdirs, 1);
+    ASSERT_ERR(odfs_meta_lookup(&mc, &by_backend_ops, &readdirs, NULL,
+                                &log, &plus, "f0", &out),
+               ODFS_ERR_UNSUPPORTED);
+    ASSERT_EQ(readdirs, 1);
+
+    /* which must not keep the HFS directory out of the cache */
+    ASSERT_OK(odfs_meta_lookup(&mc, &by_backend_ops, &readdirs, NULL,
+                               &log, &hfs, "f0", &out));
+    ASSERT_EQ(readdirs, 2);
+    ASSERT_EQ(out.backend, ODFS_BACKEND_HFS);
+    ASSERT_OK(odfs_meta_lookup(&mc, &by_backend_ops, &readdirs, NULL,
+                               &log, &hfs, "f0", &out));
+    ASSERT_EQ(readdirs, 2);
+
+    odfs_meta_cache_destroy(&mc);
+}
+
 /*
  * HFS and HFS+ directories: a backend wrapper records the nodes the
  * backend delivers while the cache builds a directory, and the cached
