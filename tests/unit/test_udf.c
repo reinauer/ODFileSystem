@@ -1164,6 +1164,80 @@ TEST(udf_readdir_reports_truncated_deleted_fid)
     odfs_cache_destroy(&cache);
 }
 
+/* directory FE in sector fe_lba with a ".." FID and one child dir FID */
+static void udf_make_dir_level(udf_mock_media_t *mock, uint32_t fe_lba,
+                               uint32_t parent_lba, const char *child,
+                               uint32_t child_lba)
+{
+    uint8_t fid[40];
+    uint32_t size = child ? 80 : 40;
+
+    udf_make_fe(mock->sectors[fe_lba], UDF_ICB_FILETYPE_DIR, size,
+                fe_lba + 1);
+    udf_make_parent_fid(fid, parent_lba);
+    memcpy(&mock->sectors[fe_lba + 1][0], fid, sizeof(fid));
+    if (child) {
+        udf_make_fid(fid, child, child_lba);
+        fid[18] = UDF_FID_FLAG_DIRECTORY;
+        udf_write_tag(fid, UDF_TAG_FID);
+        memcpy(&mock->sectors[fe_lba + 1][40], fid, sizeof(fid));
+    }
+}
+
+TEST(udf_resolve_parent_returns_parent_and_grandparent)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t a, b, c, parent, grandparent;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    /* / (FE 0) -> a (FE 2) -> b (FE 4) -> c (FE 6) */
+    udf_make_dir_level(&mock, 0, 0, "a", 2);
+    udf_make_dir_level(&mock, 2, 0, "b", 4);
+    udf_make_dir_level(&mock, 4, 2, "c", 6);
+    udf_make_dir_level(&mock, 6, 4, NULL, 0);
+
+    ctx.root.backend = ODFS_BACKEND_UDF;
+    ctx.root.kind = ODFS_NODE_DIR;
+    ctx.root.name[0] = '/';
+    ctx.root.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &ctx.root, "a", &a));
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &a, "b", &b));
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &b, "c", &c));
+
+    ASSERT_OK(udf_backend_ops.resolve_parent(&ctx, &cache, &log, &c,
+                                             &parent, &grandparent));
+    ASSERT_STR_EQ(parent.name, "b");
+    ASSERT_EQ(parent.extent.lba, 4);
+    ASSERT_STR_EQ(grandparent.name, "a");
+    ASSERT_EQ(grandparent.extent.lba, 2);
+
+    ASSERT_OK(udf_backend_ops.resolve_parent(&ctx, &cache, &log, &b,
+                                             &parent, &grandparent));
+    ASSERT_STR_EQ(parent.name, "a");
+    ASSERT_STR_EQ(grandparent.name, "/");
+
+    ASSERT_OK(udf_backend_ops.resolve_parent(&ctx, &cache, &log, &a,
+                                             &parent, NULL));
+    ASSERT_STR_EQ(parent.name, "/");
+
+    ASSERT_ERR(udf_backend_ops.resolve_parent(&ctx, &cache, &log, &ctx.root,
+                                              &parent, NULL),
+               ODFS_ERR_NOT_FOUND);
+
+    odfs_cache_destroy(&cache);
+}
+
 /* ---- mounting a whole volume ---- */
 
 #define VOL_SECTOR_COUNT 300
