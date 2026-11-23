@@ -60,8 +60,8 @@ The ISO9660 backend is probed first because Rock Ridge detection happens during 
 
 ### Hybrid HFS/ISO Discs
 
-- Default policy: prefer ISO-family content on Amiga
-- `prefer_hfs`: prefer HFS instead
+- Default policy: prefer ISO-family content over HFS+ and HFS
+- `prefer_hfs`: prefer HFS+ or HFS instead
 
 ### HFS-Family Limits
 
@@ -76,4 +76,4 @@ The ISO9660 backend is probed first because Rock Ridge detection happens during 
 - `disable_rr`: disable Rock Ridge
 - `disable_joliet`: disable Joliet
 - `prefer_udf`: prefer UDF on bridge discs
-- `prefer_hfs`: prefer HFS on hybrid discs
+- `prefer_hfs`: prefer HFS+ or HFS on hybrid discs

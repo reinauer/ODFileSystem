@@ -60,8 +60,8 @@ Features
 
 For ISO-family hybrid discs, ODFileSystem prefers Rock Ridge, then
 Joliet, then plain ISO 9660.  For bridge discs it prefers the ISO view
-by default; UDF and HFS can be selected explicitly through mount
-options.
+by default; UDF, HFS and HFS+ can be selected explicitly through
+mount options.
 
 
 Installation
@@ -131,7 +131,7 @@ Supported options include:
   Prefer UDF on bridge discs.
 
 - HFSFIRST or HF
-  Prefer HFS on hybrid HFS/ISO discs.
+  Prefer HFS or HFS+ on hybrid HFS/ISO discs.
 
 - FILEBUFFERS=n or FB=n
   Set the block-cache size in sectors (default 128, 256 KiB).

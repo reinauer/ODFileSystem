@@ -31,7 +31,7 @@ extern const odfs_backend_ops_t hfsplus_backend_ops;
  * Backend probe table — order defines precedence.
  *
  * ISO9660 first (RR detected inside mount). Joliet second.
- * UDF and HFS probed independently for standalone media.
+ * UDF, HFS and HFS+ probed independently for standalone media.
  * For hybrid discs, ISO-family wins unless overridden.
  */
 static const odfs_backend_ops_t *const backend_table[] = {
@@ -110,6 +110,7 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
     const odfs_backend_ops_t *joliet_candidate = NULL;
     const odfs_backend_ops_t *udf_candidate = NULL;
     const odfs_backend_ops_t *hfs_candidate = NULL;
+    const odfs_backend_ops_t *hfsplus_candidate = NULL;
     int i;
 
     mnt->backend_ctx = NULL;
@@ -120,11 +121,13 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
     /*
      * Probe backends and select best match.
      *
-     * Precedence (highest first): Rock Ridge > Joliet > plain ISO.
-     * ISO9660 is always probed first because RR detection happens
-     * inside its mount. If RR is found, we're done. If not, and
-     * Joliet is available, prefer Joliet over plain ISO for its
-     * Unicode names. User can force a specific backend.
+     * Precedence (highest first): Rock Ridge > Joliet > plain ISO >
+     * UDF > HFS+ > HFS. ISO9660 is always probed first because RR
+     * detection happens inside its mount. If RR is found, we're done.
+     * If not, and Joliet is available, prefer Joliet over plain ISO
+     * for its Unicode names. prefer_udf moves UDF, and prefer_hfs
+     * moves HFS+ and HFS, ahead of the ISO family. User can force a
+     * specific backend.
      */
     for (i = 0; backend_table[i] != NULL; i++) {
         const odfs_backend_ops_t *be = backend_table[i];
@@ -148,8 +151,8 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
                 udf_candidate = be;
             else if (be->backend_type == ODFS_BACKEND_HFS)
                 hfs_candidate = be;
-            else
-                { chosen = be; break; }
+            else if (be->backend_type == ODFS_BACKEND_HFSPLUS)
+                hfsplus_candidate = be;
         }
     }
 
@@ -158,6 +161,12 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
                                    &mnt->root, &mnt->backend_ctx);
         if (err == ODFS_OK)
             chosen = udf_candidate;
+    }
+    if (!chosen && hfsplus_candidate && mnt->opts.prefer_hfs) {
+        err = hfsplus_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                       &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = hfsplus_candidate;
     }
     if (!chosen && hfs_candidate && mnt->opts.prefer_hfs) {
         err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
@@ -194,6 +203,13 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
             chosen = udf_candidate;
     }
 
+    if (!chosen && hfsplus_candidate) {
+        err = hfsplus_candidate->mount(&mnt->cache, &mnt->log, session_start,
+                                       &mnt->root, &mnt->backend_ctx);
+        if (err == ODFS_OK)
+            chosen = hfsplus_candidate;
+    }
+
     if (!chosen && hfs_candidate) {
         err = hfs_candidate->mount(&mnt->cache, &mnt->log, session_start,
                                    &mnt->root, &mnt->backend_ctx);
@@ -212,19 +228,6 @@ static odfs_err_t mount_try_session_start(odfs_mount_t *mnt,
         mnt->backend_ctx = NULL;
         memset(&mnt->root, 0, sizeof(mnt->root));
         return ODFS_ERR_BAD_FORMAT;
-    }
-
-    if (!mnt->backend_ctx) {
-        err = chosen->mount(&mnt->cache, &mnt->log, session_start,
-                            &mnt->root, &mnt->backend_ctx);
-        if (err != ODFS_OK) {
-            ODFS_ERROR(&mnt->log, ODFS_SUB_MOUNT,
-                        "backend %s mount failed: %s", chosen->name,
-                        odfs_err_str(err));
-            mnt->backend_ctx = NULL;
-            memset(&mnt->root, 0, sizeof(mnt->root));
-            return err;
-        }
     }
 
     mnt->backend_ops = chosen;

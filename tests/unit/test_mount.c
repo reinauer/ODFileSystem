@@ -318,4 +318,67 @@ TEST(mount_dispatches_virtual_backend_by_node_type)
     }
 }
 
+#define IMG_RR "tests/images/test_rr.iso"
+
+/* test_rr.iso with an HFS+ volume header signature in its system area */
+static odfs_err_t hybrid_read_sectors(void *ctx, uint32_t lba,
+                                      uint32_t count, void *buf)
+{
+    odfs_media_t *inner = ctx;
+    uint8_t *out = buf;
+    odfs_err_t err = odfs_media_read(inner, lba, count, buf);
+
+    /* probe accepts 'H+' version 4 with 4 KiB blocks; the catalog
+     * fields stay zero, so mounting the HFS+ view fails */
+    if (err == ODFS_OK && lba == 0) {
+        out[1024] = 'H';
+        out[1025] = '+';
+        out[1026] = 0;
+        out[1027] = 4;
+        out[1024 + 42] = 0x10;
+    }
+    return err;
+}
+
+static uint32_t hybrid_sector_size(void *ctx)
+{
+    return odfs_media_sector_size(ctx);
+}
+
+static uint32_t hybrid_sector_count(void *ctx)
+{
+    return odfs_media_sector_count(ctx);
+}
+
+TEST(mount_prefers_iso_family_over_hfsplus_on_hybrid)
+{
+    static const odfs_media_ops_t hybrid_ops = {
+        .read_sectors = hybrid_read_sectors,
+        .sector_size  = hybrid_sector_size,
+        .sector_count = hybrid_sector_count,
+    };
+    odfs_media_t inner;
+    odfs_media_t media = { &hybrid_ops, &inner };
+    odfs_mount_opts_t opts;
+    odfs_mount_t mnt;
+
+    if (odfs_media_open_image(IMG_RR, &inner) != ODFS_OK) {
+        printf("  (skipped: fixture " IMG_RR " unavailable)\n");
+        return;
+    }
+
+    odfs_mount_opts_default(&opts);
+    ASSERT_OK(odfs_mount(&media, &opts, NULL, &mnt));
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ROCK_RIDGE);
+    odfs_unmount(&mnt);
+
+    /* HFSFIRST tries HFS+ first and falls back when it cannot mount */
+    opts.prefer_hfs = 1;
+    ASSERT_OK(odfs_mount(&media, &opts, NULL, &mnt));
+    ASSERT_EQ(mnt.active_backend, ODFS_BACKEND_ROCK_RIDGE);
+    odfs_unmount(&mnt);
+
+    odfs_media_close(&inner);
+}
+
 TEST_MAIN()
