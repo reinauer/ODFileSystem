@@ -97,6 +97,8 @@ typedef struct handler_global {
     ULONG                sector_size;   /* device block size */
     ULONG                max_transfer;  /* largest request in bytes */
     ULONG                max_transfer_blocks; /* the same in sectors */
+    ULONG                read10_max;    /* largest data READ(10): MaxTransfer,
+                                           at most 0xffff sectors */
     char                 devname[128];  /* device name */
     IPTR                 devunit;       /* device unit */
     ULONG                devflags;      /* device open flags */
