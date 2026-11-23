@@ -905,4 +905,78 @@ TEST(cdda_cdtext_without_packs_has_no_file)
     cdda_backend_ops.unmount(backend_ctx);
 }
 
+static odfs_err_t fake_read_cdtext_dense_short(void *ctx, uint8_t **buf_out,
+                                               size_t *len_out)
+{
+    /*
+     * Four packs of six one-character strings render 24 lines of about
+     * 30 bytes each, several times the size of the raw packs.
+     */
+    static const uint8_t response[] = {
+        0x00, 0x5a, 0x00, 0x00,
+        0x82, 0x01, 0x00, 0x10, /* block 1 SONGWRITER tracks 1..6 */
+        'A', 0, 'B', 0, 'C', 0, 'D', 0, 'E', 0, 'F', 0,
+        0x00, 0x00,
+        0x82, 0x07, 0x01, 0x10, /* block 1 SONGWRITER tracks 7..12 */
+        'G', 0, 'H', 0, 'I', 0, 'J', 0, 'K', 0, 'L', 0,
+        0x00, 0x00,
+        0x83, 0x01, 0x02, 0x10, /* block 1 COMPOSER tracks 1..6 */
+        'M', 0, 'N', 0, 'O', 0, 'P', 0, 'Q', 0, 'R', 0,
+        0x00, 0x00,
+        0x83, 0x07, 0x03, 0x10, /* block 1 COMPOSER tracks 7..12 */
+        'S', 0, 'T', 0, 'U', 0, 'V', 0, 'W', 0, 'X', 0,
+        0x00, 0x00,
+        0x80, 0xfa, 0x04, 0x00, /* track 250 */
+        'H', 'i', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x00, 0x00
+    };
+    uint8_t *buf;
+
+    (void)ctx;
+    buf = odfs_malloc(sizeof(response));
+    if (!buf)
+        return ODFS_ERR_NOMEM;
+    memcpy(buf, response, sizeof(response));
+    *buf_out = buf;
+    *len_out = sizeof(response);
+    return ODFS_OK;
+}
+
+TEST(cdda_cdtext_file_holds_dense_short_strings)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t cdtext;
+    void *backend_ctx = NULL;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+    char buf[1024];
+    size_t len = sizeof(buf) - 1;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].start_lba = 0;
+    toc.sessions[0].length = 10;
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    media_ops.read_cdtext = fake_read_cdtext_dense_short;
+    media.ops = &media_ops;
+    media.ctx = NULL;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &media, &root, &backend_ctx));
+    ASSERT_OK(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "CD-TEXT.txt", &cdtext));
+    ASSERT_OK(cdda_backend_ops.read(backend_ctx, NULL, NULL, &cdtext, 0,
+                                    buf, &len));
+    ASSERT_EQ(len, (size_t)cdtext.size);
+    buf[len] = '\0';
+    ASSERT(strstr(buf, "BLOCK01.TRACK01.SONGWRITER=A\n") != NULL);
+    ASSERT(strstr(buf, "BLOCK01.TRACK12.COMPOSER=X\n") != NULL);
+    ASSERT(strstr(buf, "TRACK250.TITLE=Hi\n") != NULL);
+    ASSERT_EQ(strlen(buf), len);
+
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()
