@@ -10,6 +10,7 @@
 
 #define ODFS_CACHE_STREAM_MIN_SECTORS 2u
 
+#if ODFS_FEATURE_CACHE_STREAM
 /*
  * Clustered miss reads: on a cache miss, read up to this many contiguous
  * sectors in one device request and install them all. Directory extents
@@ -23,6 +24,7 @@
 #define ODFS_CACHE_READAHEAD 32u
 #else
 #define ODFS_CACHE_READAHEAD 8u
+#endif
 #endif
 
 static void cache_reset_indices(odfs_cache_t *cache)
@@ -264,6 +266,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     }
     cache->clock = 0;
     cache->media = media;
+#if ODFS_FEATURE_CACHE_STREAM
     cache->stream_buf = NULL;
     cache->last_miss_lba = UINT32_MAX;
     if (capacity >= 4u * ODFS_CACHE_READAHEAD) {
@@ -271,6 +274,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
         cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD <<
                                         cache->sector_shift);
     }
+#endif
     cache_reset_indices(cache);
 
     return ODFS_OK;
@@ -283,7 +287,9 @@ void odfs_cache_destroy(odfs_cache_t *cache)
 
     for (uint32_t i = 0; i < cache->capacity; i++)
         odfs_free(cache->entries[i].data);
+#if ODFS_FEATURE_CACHE_STREAM
     odfs_free(cache->stream_buf);
+#endif
     odfs_free(cache->buckets);
     odfs_free(cache->next);
     odfs_free(cache->entries);
@@ -300,7 +306,9 @@ void odfs_cache_flush(odfs_cache_t *cache)
     for (uint32_t i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
+#if ODFS_FEATURE_CACHE_STREAM
     cache->last_miss_lba = UINT32_MAX;
+#endif
     cache->generation++;
     cache_reset_indices(cache);
 }
@@ -352,6 +360,7 @@ static int32_t cache_commit(odfs_cache_t *cache, int32_t victim,
     return victim;
 }
 
+#if ODFS_FEATURE_CACHE_RETAIN || ODFS_FEATURE_CACHE_STREAM
 /* place one sector's data into a victim entry and index it */
 static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
                              const uint8_t *src)
@@ -364,6 +373,7 @@ static int32_t cache_install(odfs_cache_t *cache, uint32_t lba,
     memcpy(cache->entries[victim].data, src, cache->sector_size);
     return cache_commit(cache, victim, lba);
 }
+#endif
 
 int odfs_cache_contains(const odfs_cache_t *cache, uint32_t lba)
 {
@@ -427,6 +437,7 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     /* miss — find victim (LRU or first invalid) */
     cache->stats.misses++;
 
+#if ODFS_FEATURE_CACHE_STREAM
     /* Cluster only sequential miss patterns (directory scans, small
      * sequential reads); random misses would fetch data that is
      * evicted unused while paying for the larger transfer. */
@@ -464,6 +475,7 @@ odfs_err_t odfs_cache_read(odfs_cache_t *cache,
     }
 
     cache->last_miss_lba = lba;
+#endif
 
     victim = cache_reserve(cache);
     if (victim < 0)

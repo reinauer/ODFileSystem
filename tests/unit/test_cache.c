@@ -456,6 +456,7 @@ TEST(cache_failed_read_does_not_commit_victim)
     odfs_cache_destroy(&cache);
 }
 
+#if ODFS_FEATURE_CACHE_STREAM
 TEST(cache_sequential_miss_installs_readahead)
 {
     odfs_cache_t cache;
@@ -505,6 +506,7 @@ TEST(cache_first_miss_is_not_sequential)
 
     odfs_cache_destroy(&cache);
 }
+#endif
 
 static uint32_t raw_sector_size(void *ctx)
 {
