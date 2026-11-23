@@ -23,23 +23,19 @@
 /* tag parsing                                                         */
 /* ------------------------------------------------------------------ */
 
-static int udf_read_tag(const uint8_t *data, udf_tag_t *tag)
+/*
+ * Return the descriptor tag identifier, or 0 (not a valid identifier)
+ * if the tag checksum does not match.
+ */
+static __attribute__((noinline)) uint16_t udf_tag_id(const uint8_t *data)
 {
-    tag->id         = udf_le16(&data[0]);
-    tag->version    = udf_le16(&data[2]);
-    tag->checksum   = data[4];
-    tag->serial     = udf_le16(&data[6]);
-    tag->crc        = udf_le16(&data[8]);
-    tag->crc_length = udf_le16(&data[10]);
-    tag->location   = udf_le32(&data[12]);
-
     /* verify tag checksum (sum of bytes 0-3,5-15 mod 256) */
     uint32_t sum = 0;
     for (int i = 0; i < 16; i++) {
         if (i != 4)
             sum += data[i];
     }
-    return ((uint8_t)sum == tag->checksum) ? 1 : 0;
+    return ((uint8_t)sum == data[4]) ? udf_le16(&data[0]) : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -153,7 +149,6 @@ static odfs_err_t udf_probe(odfs_cache_t *cache,
                               uint32_t session_start)
 {
     const uint8_t *sector;
-    udf_tag_t tag;
 
     odfs_err_t err = odfs_cache_read(cache,
                                         session_start + UDF_AVDP_LBA,
@@ -161,7 +156,7 @@ static odfs_err_t udf_probe(odfs_cache_t *cache,
     if (err != ODFS_OK)
         return err;
 
-    if (!udf_read_tag(sector, &tag) || tag.id != UDF_TAG_AVDP) {
+    if (udf_tag_id(sector) != UDF_TAG_AVDP) {
         ODFS_DEBUG(log, ODFS_SUB_UDF,
                     "no AVDP at LBA %" PRIu32,
                     session_start + UDF_AVDP_LBA);
@@ -186,7 +181,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
 {
     udf_context_t *ctx;
     const uint8_t *sector;
-    udf_tag_t tag;
+    uint16_t tag;
     odfs_err_t err;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
@@ -199,7 +194,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
     err = odfs_cache_read(cache, session_start + UDF_AVDP_LBA, &sector);
     if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
-    if (!udf_read_tag(sector, &tag) || tag.id != UDF_TAG_AVDP) {
+    if (udf_tag_id(sector) != UDF_TAG_AVDP) {
         odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
@@ -223,10 +218,7 @@ static odfs_err_t udf_mount(odfs_cache_t *cache,
         if (err != ODFS_OK)
             continue;
 
-        if (!udf_read_tag(sector, &tag))
-            continue;
-
-        switch (tag.id) {
+        switch (udf_tag_id(sector)) {
         case UDF_TAG_PVD:
             /* Primary Volume Descriptor: volume id at offset 24, 32 bytes d-string */
             udf_decode_dstring(&sector[24], 32,
@@ -289,7 +281,7 @@ vds_done:
     err = odfs_cache_read(cache, fsd_phys, &sector);
     if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
-    if (!udf_read_tag(sector, &tag) || tag.id != UDF_TAG_FSD) {
+    if (udf_tag_id(sector) != UDF_TAG_FSD) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
                     "FSD not found at LBA %" PRIu32, fsd_phys);
         odfs_free(ctx);
@@ -308,10 +300,10 @@ vds_done:
     err = odfs_cache_read(cache, root_phys, &sector);
     if (err != ODFS_OK) { odfs_free(ctx); return err; }
 
-    if (!udf_read_tag(sector, &tag) ||
-        (tag.id != UDF_TAG_FE && tag.id != UDF_TAG_EFE)) {
+    tag = udf_tag_id(sector);
+    if (tag != UDF_TAG_FE && tag != UDF_TAG_EFE) {
         ODFS_ERROR(log, ODFS_SUB_UDF,
-                    "root ICB tag %" PRIu16 " (expected FE/EFE)", tag.id);
+                    "root ICB tag %" PRIu16 " (expected FE/EFE)", tag);
         odfs_free(ctx);
         return ODFS_ERR_BAD_FORMAT;
     }
@@ -325,7 +317,7 @@ vds_done:
     root_out->name[0]    = '/';
     root_out->name[1]    = '\0';
 
-    if (tag.id == UDF_TAG_FE) {
+    if (tag == UDF_TAG_FE) {
         root_out->size = udf_le64(&sector[56]);
         udf_parse_timestamp(&sector[84], &root_out->mtime);
     } else { /* EFE */
@@ -371,7 +363,7 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
                                    uint32_t *embed_off_out)
 {
     const uint8_t *sector;
-    udf_tag_t tag;
+    uint16_t tag;
 
     if (embed_off_out)
         *embed_off_out = 0;
@@ -380,7 +372,8 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
     if (err != ODFS_OK)
         return err;
 
-    if (!udf_read_tag(sector, &tag))
+    tag = udf_tag_id(sector);
+    if (tag == 0)
         return ODFS_ERR_CORRUPT;
 
     uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
@@ -390,7 +383,7 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
     uint32_t ad_base;
     uint32_t ea_len;
 
-    if (tag.id == UDF_TAG_FE) {
+    if (tag == UDF_TAG_FE) {
         /* File Entry (ECMA-167 14.9) */
         if (block_size < 176)
             return ODFS_ERR_CORRUPT;
@@ -403,7 +396,7 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
         ea_len = udf_le32(&sector[168]);
         ad_length = udf_le32(&sector[172]);
         ad_base = 176;
-    } else if (tag.id == UDF_TAG_EFE) {
+    } else if (tag == UDF_TAG_EFE) {
         /* Extended File Entry (ECMA-167 14.17) */
         if (block_size < 216)
             return ODFS_ERR_CORRUPT;
@@ -486,7 +479,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
                                   size_t *len)
 {
     const uint8_t *sector;
-    udf_tag_t tag;
+    uint16_t tag;
     uint8_t ad_buf[2048];
     uint8_t *out = buf;
     size_t want = *len;
@@ -506,10 +499,11 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
     err = odfs_cache_read(cache, icb_phys, &sector);
     if (err != ODFS_OK)
         return err;
-    if (!udf_read_tag(sector, &tag))
+    tag = udf_tag_id(sector);
+    if (tag == 0)
         return ODFS_ERR_CORRUPT;
 
-    if (tag.id == UDF_TAG_FE) {
+    if (tag == UDF_TAG_FE) {
         if (block_size < 176)
             return ODFS_ERR_CORRUPT;
         file_type  = sector[16 + 11];
@@ -518,7 +512,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
         ea_len     = udf_le32(&sector[168]);
         ad_length  = udf_le32(&sector[172]);
         ad_base    = 176;
-    } else if (tag.id == UDF_TAG_EFE) {
+    } else if (tag == UDF_TAG_EFE) {
         if (block_size < 216)
             return ODFS_ERR_CORRUPT;
         file_type  = sector[16 + 11];
@@ -579,7 +573,6 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
 
         if (etype == UDF_EXT_CONTINUATION) {
             const uint8_t *aed;
-            udf_tag_t atag;
             uint32_t alen;
 
             if (++guard > 4096)
@@ -588,7 +581,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
             err = odfs_cache_read(cache, udf_phys_lba(ctx, elba), &aed);
             if (err != ODFS_OK)
                 return err;
-            if (!udf_read_tag(aed, &atag) || atag.id != UDF_TAG_AED)
+            if (udf_tag_id(aed) != UDF_TAG_AED)
                 return ODFS_ERR_CORRUPT;
 
             alen = udf_le32(&aed[20]); /* Length of Allocation Descriptors */
@@ -760,7 +753,6 @@ static odfs_err_t udf_walk_fids(udf_context_t *ctx,
         uint8_t header[38];
         uint32_t remaining = dir_size32 - offset;
         udf_fid_info_t fid;
-        udf_tag_t tag;
 
         if (remaining < sizeof(header))
             break;
@@ -770,7 +762,7 @@ static odfs_err_t udf_walk_fids(udf_context_t *ctx,
         if (err != ODFS_OK)
             return err;
 
-        if (!udf_read_tag(header, &tag) || tag.id != UDF_TAG_FID)
+        if (udf_tag_id(header) != UDF_TAG_FID)
             break;
 
         fid.header = header;
