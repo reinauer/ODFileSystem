@@ -4,11 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#define _POSIX_C_SOURCE 200809L
+#define _FILE_OFFSET_BITS 64
+
 #include "odfs/media.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #define HOST_SECTOR_SIZE 2048
 #define HOST_MAX_CUE_TRACKS 99
@@ -250,14 +254,14 @@ static int host_riff_data_range(FILE *fp, uint64_t *base_out, uint64_t *size_out
 
     for (;;) {
         uint32_t csize;
-        long pos;
+        off_t pos;
 
         if (fread(chdr, 1, sizeof(chdr), fp) != sizeof(chdr))
             return 0;
         csize = (uint32_t)chdr[4] | ((uint32_t)chdr[5] << 8) |
                 ((uint32_t)chdr[6] << 16) | ((uint32_t)chdr[7] << 24);
         if (memcmp(chdr, "data", 4) == 0) {
-            pos = ftell(fp);
+            pos = ftello(fp);
             if (pos < 0)
                 return 0;
             *base_out = (uint64_t)pos;
@@ -283,7 +287,7 @@ static odfs_err_t cue_media_open(const char *path, odfs_media_t *out)
     char *bin_path = NULL;
     size_t track_count = 0;
     size_t i;
-    long file_size;
+    off_t file_size;
     uint64_t payload_base = 0;
     uint64_t payload_size;
     uint32_t sector_count = 0;
@@ -407,12 +411,12 @@ static odfs_err_t cue_media_open(const char *path, odfs_media_t *out)
         return ODFS_ERR_IO;
     }
 
-    if (fseek(fm->fp, 0, SEEK_END) != 0) {
+    if (fseeko(fm->fp, 0, SEEK_END) != 0) {
         fclose(fm->fp);
         free(fm);
         return ODFS_ERR_IO;
     }
-    file_size = ftell(fm->fp);
+    file_size = ftello(fm->fp);
     if (file_size < 0) {
         fclose(fm->fp);
         free(fm);
@@ -489,13 +493,13 @@ static odfs_err_t file_read_sectors(void *ctx, uint32_t lba,
                                      uint32_t count, void *buf)
 {
     file_media_ctx_t *fm = ctx;
-    long offset = (long)lba * HOST_SECTOR_SIZE;
 
     if (!fm->is_cue) {
+        off_t offset = (off_t)((uint64_t)lba * HOST_SECTOR_SIZE);
         size_t total = (size_t)count * HOST_SECTOR_SIZE;
         size_t got;
 
-        if (fseek(fm->fp, offset, SEEK_SET) != 0)
+        if (fseeko(fm->fp, offset, SEEK_SET) != 0)
             return ODFS_ERR_IO;
 
         got = fread(buf, 1, total, fm->fp);
@@ -534,14 +538,14 @@ static odfs_err_t file_read_sectors(void *ctx, uint32_t lba,
                      (uint64_t)sector_in_track * (uint64_t)track->raw_sector_size;
 
         if (track->raw_sector_size == HOST_SECTOR_SIZE && track->data_offset == 0u) {
-            if (fseek(fm->fp, (long)raw_offset, SEEK_SET) != 0)
+            if (fseeko(fm->fp, (off_t)raw_offset, SEEK_SET) != 0)
                 return ODFS_ERR_IO;
             if (fread(out, 1, HOST_SECTOR_SIZE, fm->fp) != HOST_SECTOR_SIZE)
                 return feof(fm->fp) ? ODFS_ERR_EOF : ODFS_ERR_IO;
         } else {
             if (track->raw_sector_size > sizeof(sector_buf))
                 return ODFS_ERR_UNSUPPORTED;
-            if (fseek(fm->fp, (long)raw_offset, SEEK_SET) != 0)
+            if (fseeko(fm->fp, (off_t)raw_offset, SEEK_SET) != 0)
                 return ODFS_ERR_IO;
             if (fread(sector_buf, 1, track->raw_sector_size, fm->fp) !=
                 track->raw_sector_size)
@@ -610,7 +614,7 @@ static odfs_err_t file_read_audio(void *ctx, uint32_t lba,
         raw_offset = track->file_offset +
                      (uint64_t)(lba - track->start_lba) *
                      HOST_AUDIO_FRAME_SIZE;
-        if (fseek(fm->fp, (long)raw_offset, SEEK_SET) != 0)
+        if (fseeko(fm->fp, (off_t)raw_offset, SEEK_SET) != 0)
             return ODFS_ERR_IO;
         if (fread(out, 1, HOST_AUDIO_FRAME_SIZE, fm->fp) !=
             HOST_AUDIO_FRAME_SIZE)
@@ -801,7 +805,8 @@ static const odfs_media_ops_t file_media_ops = {
 odfs_err_t odfs_media_open_image(const char *path, odfs_media_t *out)
 {
     file_media_ctx_t *fm;
-    long file_size;
+    off_t file_size;
+    uint64_t sectors;
 
     if (!path || !out)
         return ODFS_ERR_INVAL;
@@ -820,12 +825,12 @@ odfs_err_t odfs_media_open_image(const char *path, odfs_media_t *out)
     }
 
     /* determine size */
-    if (fseek(fm->fp, 0, SEEK_END) != 0) {
+    if (fseeko(fm->fp, 0, SEEK_END) != 0) {
         fclose(fm->fp);
         free(fm);
         return ODFS_ERR_IO;
     }
-    file_size = ftell(fm->fp);
+    file_size = ftello(fm->fp);
     if (file_size < 0) {
         fclose(fm->fp);
         free(fm);
@@ -833,7 +838,8 @@ odfs_err_t odfs_media_open_image(const char *path, odfs_media_t *out)
     }
     rewind(fm->fp);
 
-    fm->sector_count = (uint32_t)(file_size / HOST_SECTOR_SIZE);
+    sectors = (uint64_t)file_size / HOST_SECTOR_SIZE;
+    fm->sector_count = sectors > UINT32_MAX ? UINT32_MAX : (uint32_t)sectors;
 
     out->ops = &file_media_ops;
     out->ctx = fm;
