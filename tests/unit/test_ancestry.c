@@ -280,4 +280,18 @@ TEST(resolve_parent_node_backtracks_to_later_sibling_without_grandparent)
     ASSERT_STR_EQ(parent.name, "a");
 }
 
+TEST(resolve_parent_search_reports_missing_node)
+{
+    fake_tree_ctx_t ctx;
+    odfs_mount_t mnt;
+    odfs_node_t probe;
+    odfs_node_t parent;
+
+    fake_init_mount(&mnt, &ctx);
+    fake_init_node(&probe, 999, "missing", ODFS_NODE_FILE, 999);
+
+    ASSERT_ERR(odfs_resolve_parent_node(&mnt, &probe, &parent, NULL),
+               ODFS_ERR_NOT_FOUND);
+}
+
 TEST_MAIN()

@@ -115,6 +115,10 @@ odfs_err_t odfs_resolve_parent_search(odfs_mount_t *mnt,
         depth--;
     }
 
+    /* every directory was read to its end without a match */
+    if (depth == 0)
+        err = ODFS_ERR_NOT_FOUND;
+
     odfs_free(frames);
     return err;
 }
