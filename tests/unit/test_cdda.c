@@ -865,4 +865,44 @@ TEST(cdda_single_session_trailing_data_track_keeps_length)
     ASSERT_EQ(mount_audio_then_data(NULL), 20000u);
 }
 
+static odfs_err_t fake_read_cdtext_header_only(void *ctx, uint8_t **buf_out,
+                                               size_t *len_out)
+{
+    static const uint8_t response[] = { 0x00, 0x02, 0x00, 0x00 };
+
+    (void)ctx;
+    *buf_out = odfs_malloc(sizeof(response));
+    if (!*buf_out)
+        return ODFS_ERR_NOMEM;
+    memcpy(*buf_out, response, sizeof(response));
+    *len_out = sizeof(response);
+    return ODFS_OK;
+}
+
+TEST(cdda_cdtext_without_packs_has_no_file)
+{
+    odfs_toc_t toc;
+    odfs_node_t root;
+    odfs_node_t node;
+    void *backend_ctx = NULL;
+    odfs_media_ops_t media_ops;
+    odfs_media_t media;
+
+    memset(&toc, 0, sizeof(toc));
+    toc.session_count = 1;
+    toc.sessions[0].number = 1;
+    toc.sessions[0].length = 10;
+
+    memset(&media_ops, 0, sizeof(media_ops));
+    media_ops.read_cdtext = fake_read_cdtext_header_only;
+    media.ops = &media_ops;
+    media.ctx = NULL;
+
+    ASSERT_OK(cdda_mount_from_toc(&toc, 0, NULL, &media, &root, &backend_ctx));
+    ASSERT_EQ(cdda_backend_ops.lookup(backend_ctx, NULL, NULL, &root,
+                                      "CD-TEXT.txt", &node),
+              ODFS_ERR_NOT_FOUND);
+    cdda_backend_ops.unmount(backend_ctx);
+}
+
 TEST_MAIN()
