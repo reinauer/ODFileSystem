@@ -703,25 +703,61 @@ odfs_err_t odfs_iso_read(void *backend_ctx,
 /* lookup                                                              */
 /* ------------------------------------------------------------------ */
 
-typedef struct lookup_ctx {
-    const char   *name;
-    odfs_node_t *result;
-    int           found;
-} lookup_ctx_t;
+/* search state shared by the name and the extent matchers */
+typedef struct iso_match {
+    const char  *name;
+    uint32_t     want_lba;
+    odfs_node_t *out;
+    int          found;
+} iso_match_t;
 
 static odfs_err_t lookup_cb(const odfs_node_t *entry, void *cb_ctx)
 {
-    lookup_ctx_t *lctx = cb_ctx;
+    iso_match_t *m = cb_ctx;
 
     /* case-insensitive comparison for ISO names */
-    if (odfs_strcasecmp(entry->name, lctx->name) == 0) {
-        *lctx->result = *entry;
-        lctx->found = 1;
+    if (odfs_strcasecmp(entry->name, m->name) == 0) {
+        *m->out = *entry;
+        m->found = 1;
         /* we could return an error to stop iteration early,
            but ODFS_OK lets us find duplicates — stop on first match */
         return ODFS_ERR_EOF; /* signal: stop iterating */
     }
     return ODFS_OK;
+}
+
+static odfs_err_t iso_lba_match_cb(const odfs_node_t *entry, void *cb_ctx)
+{
+    iso_match_t *m = cb_ctx;
+
+    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_lba) {
+        *m->out = *entry;
+        m->found = 1;
+        return ODFS_ERR_EOF; /* stop iterating */
+    }
+    return ODFS_OK;
+}
+
+/*
+ * Enumerate dir until match_cb accepts an entry and return it in m->out.
+ * ODFS_ERR_EOF from the callback means "found, stop early".
+ */
+static odfs_err_t iso_find_entry(void *backend_ctx,
+                                 odfs_cache_t *cache,
+                                 odfs_log_state_t *log,
+                                 const odfs_node_t *dir,
+                                 odfs_dir_iter_fn match_cb,
+                                 iso_match_t *m)
+{
+    odfs_err_t err;
+
+    m->found = 0;
+    err = odfs_iso_readdir(backend_ctx, cache, log, dir, match_cb, m, NULL);
+    if (m->found)
+        return ODFS_OK;
+    if (err != ODFS_OK)
+        return err;
+    return ODFS_ERR_NOT_FOUND;
 }
 
 odfs_err_t odfs_iso_lookup(void *backend_ctx,
@@ -731,24 +767,11 @@ odfs_err_t odfs_iso_lookup(void *backend_ctx,
                            const char *name,
                            odfs_node_t *out)
 {
-    lookup_ctx_t lctx;
-    odfs_err_t err;
+    iso_match_t m;
 
-    lctx.name = name;
-    lctx.result = out;
-    lctx.found = 0;
-
-    err = odfs_iso_readdir(backend_ctx, cache, log, dir, lookup_cb, &lctx, NULL);
-    /* ODFS_ERR_EOF from callback means "found, stop early" */
-    if (err == ODFS_ERR_EOF && lctx.found)
-        return ODFS_OK;
-    if (err != ODFS_OK)
-        return err;
-
-    if (lctx.found)
-        return ODFS_OK;
-
-    return ODFS_ERR_NOT_FOUND;
+    m.name = name;
+    m.out = out;
+    return iso_find_entry(backend_ctx, cache, log, dir, lookup_cb, &m);
 }
 
 /* ------------------------------------------------------------------ */
@@ -940,51 +963,6 @@ static odfs_err_t iso_read_parent_extent(const iso_context_t *ctx,
     return ODFS_OK;
 }
 
-typedef struct iso_lba_match {
-    uint32_t     want_lba;
-    odfs_node_t *out;
-    int          found;
-} iso_lba_match_t;
-
-static odfs_err_t iso_lba_match_cb(const odfs_node_t *entry, void *cb_ctx)
-{
-    iso_lba_match_t *m = cb_ctx;
-
-    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_lba) {
-        *m->out = *entry;
-        m->found = 1;
-        return ODFS_ERR_EOF; /* stop iterating */
-    }
-    return ODFS_OK;
-}
-
-/*
- * Enumerate parent_dir and return the directory child whose extent begins at
- * child_lba as a fully-populated node (correct name + Rock Ridge metadata).
- */
-static odfs_err_t iso_find_child_by_lba(void *backend_ctx,
-                                        odfs_cache_t *cache,
-                                        odfs_log_state_t *log,
-                                        const odfs_node_t *parent_dir,
-                                        uint32_t child_lba,
-                                        odfs_node_t *out)
-{
-    iso_lba_match_t m;
-    odfs_err_t err;
-
-    m.want_lba = child_lba;
-    m.out = out;
-    m.found = 0;
-
-    err = odfs_iso_readdir(backend_ctx, cache, log, parent_dir,
-                           iso_lba_match_cb, &m, NULL);
-    if (m.found)
-        return ODFS_OK;
-    if (err == ODFS_OK || err == ODFS_ERR_EOF)
-        return ODFS_ERR_NOT_FOUND;
-    return err;
-}
-
 odfs_err_t odfs_iso_merge_multi_extent(const iso_context_t *ctx,
                                        odfs_cache_t *cache,
                                        odfs_log_state_t *log,
@@ -1075,20 +1053,6 @@ odfs_err_t odfs_iso_merge_multi_extent(const iso_context_t *ctx,
     return ODFS_OK;
 }
 
-/* synthesize the minimal node needed to enumerate a directory extent */
-static odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
-                                     uint32_t lba, uint32_t size)
-{
-    odfs_node_t n;
-    memset(&n, 0, sizeof(n));
-    n.backend       = backend;
-    n.kind          = ODFS_NODE_DIR;
-    n.extent.lba    = lba;
-    n.extent.length = size;
-    n.size          = size;
-    return n;
-}
-
 odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
                                    odfs_cache_t *cache,
                                    odfs_log_state_t *log,
@@ -1098,78 +1062,69 @@ odfs_err_t odfs_iso_resolve_parent(void *backend_ctx,
 {
     iso_context_t *ctx = backend_ctx;
     uint32_t root_lba = ctx->pvd.root_dir_lba;
-    uint32_t parent_lba, parent_size;
-    uint32_t gp_lba, gp_size;
-    odfs_node_t grandparent;
+    uint32_t cur_lba, cur_size;
+    odfs_node_t *outs[2];
+    odfs_node_t up;
+    iso_match_t m;
     odfs_err_t err;
+    int step;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
 
     /* dir's own ".." → parent location */
     err = iso_read_parent_extent(ctx, cache, dir->extent.lba,
-                                 &parent_lba, &parent_size);
+                                 &cur_lba, &cur_size);
     if (err != ODFS_OK)
         return err;
 
     /* a directory whose ".." points at itself is the root: no parent */
-    if (parent_lba == dir->extent.lba || dir->extent.lba == root_lba)
+    if (cur_lba == dir->extent.lba || dir->extent.lba == root_lba)
         return ODFS_ERR_NOT_FOUND;
 
     /*
-     * When the parent is the volume root, return the verbatim root node the
-     * mount built — the root has no on-disc name entry to enumerate. The
-     * grandparent of a top-level directory is also the root.
+     * Step up to the parent, then to the grandparent. Each node is
+     * populated (name + Rock Ridge metadata) by enumerating the directory
+     * above it, located through the node's own ".." record.
      */
-    if (parent_lba == root_lba) {
-        *parent_out = ctx->root;
-        if (grandparent_out)
-            *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
+    outs[0] = parent_out;
+    outs[1] = grandparent_out;
+    for (step = 0; step < 2 && outs[step]; step++) {
+        uint32_t up_lba, up_size;
 
-    /* parent's own ".." → grandparent location, needed to enumerate parent */
-    err = iso_read_parent_extent(ctx, cache, parent_lba, &gp_lba, &gp_size);
-    if (err != ODFS_OK)
-        return err;
+        /*
+         * When the node is the volume root, return the verbatim root node
+         * the mount built — the root has no on-disc name entry to
+         * enumerate. The grandparent of a top-level directory is also
+         * the root.
+         */
+        if (cur_lba == root_lba) {
+            *outs[step] = ctx->root;
+            if (step == 0 && grandparent_out)
+                *grandparent_out = ctx->root;
+            return ODFS_OK;
+        }
 
-    /* enumerate the grandparent to obtain a fully-populated parent node */
-    if (gp_lba == root_lba)
-        grandparent = ctx->root;
-    else
-        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
-
-    err = iso_find_child_by_lba(backend_ctx, cache, log, &grandparent,
-                                parent_lba, parent_out);
-    if (err != ODFS_OK)
-        return err;
-
-    if (!grandparent_out)
-        return ODFS_OK;
-
-    if (gp_lba == root_lba) {
-        *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    /* grandparent's ".." → great-grandparent, to populate the grandparent */
-    {
-        uint32_t ggp_lba, ggp_size;
-        odfs_node_t great;
-
-        err = iso_read_parent_extent(ctx, cache, gp_lba, &ggp_lba, &ggp_size);
+        err = iso_read_parent_extent(ctx, cache, cur_lba, &up_lba, &up_size);
         if (err != ODFS_OK)
             return err;
 
-        if (ggp_lba == root_lba)
-            great = ctx->root;
-        else
-            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
+        /* the minimal node needed to enumerate the directory above */
+        up.id            = 0;
+        up.backend       = dir->backend;
+        up.kind          = ODFS_NODE_DIR;
+        up.extent.lba    = up_lba;
+        up.extent.length = (up_lba == root_lba) ? ctx->pvd.root_dir_size
+                                                : up_size;
+        up.size          = up.extent.length;
 
-        err = iso_find_child_by_lba(backend_ctx, cache, log, &great,
-                                    gp_lba, grandparent_out);
+        m.want_lba = cur_lba;
+        m.out = outs[step];
+        err = iso_find_entry(backend_ctx, cache, log, &up,
+                             iso_lba_match_cb, &m);
         if (err != ODFS_OK)
             return err;
+        cur_lba = up_lba;
     }
 
     return ODFS_OK;
