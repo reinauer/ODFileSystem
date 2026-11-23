@@ -7,7 +7,10 @@
 #include "odfs/api.h"
 #include "odfs/error.h"
 #include "iso9660/iso9660.h"
+#include "odfs/cache.h"
 #include "test_harness.h"
+
+#include <string.h>
 
 /* ---- endian / field helpers ---- */
 
@@ -101,6 +104,76 @@ TEST(iso_dr_offsets)
     ASSERT_EQ(ISO_DR_FLAGS, 25);
     ASSERT_EQ(ISO_DR_NAME_LEN, 32);
     ASSERT_EQ(ISO_DR_NAME, 33);
+}
+
+/* ---- directory scan bounds ---- */
+
+/* every sector reads as zeros; fail once a scan reads far past its end */
+static uint32_t zero_media_reads;
+
+static odfs_err_t zero_media_read_sectors(void *ctx, uint32_t lba,
+                                          uint32_t count, void *buf)
+{
+    (void)ctx;
+    (void)lba;
+    zero_media_reads += count;
+    if (zero_media_reads > (1u << 21) + 1024u)
+        return ODFS_ERR_IO;
+    memset(buf, 0, (size_t)count * ISO_SECTOR_SIZE);
+    return ODFS_OK;
+}
+
+static uint32_t zero_media_sector_size(void *ctx)
+{
+    (void)ctx;
+    return ISO_SECTOR_SIZE;
+}
+
+static uint32_t zero_media_sector_count(void *ctx)
+{
+    (void)ctx;
+    return 0xFFFFFFFFu;
+}
+
+static const odfs_media_ops_t zero_media_ops = {
+    .read_sectors = zero_media_read_sectors,
+    .sector_size  = zero_media_sector_size,
+    .sector_count = zero_media_sector_count,
+};
+
+static odfs_err_t count_entries_cb(const odfs_node_t *entry, void *arg)
+{
+    (void)entry;
+    (*(int *)arg)++;
+    return ODFS_OK;
+}
+
+TEST(iso_readdir_dir_size_near_uint32_max_terminates)
+{
+    odfs_media_t media = { .ops = &zero_media_ops, .ctx = NULL };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    iso_context_t ctx;
+    odfs_node_t dir;
+    int entries = 0;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+    dir.extent.length = 0xFFFFFFFFu;
+    dir.size = dir.extent.length;
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 8));
+    zero_media_reads = 0;
+
+    /* skipping the empty last sector must end the scan, not wrap to 0 */
+    ASSERT_OK(odfs_iso_readdir(&ctx, &cache, &log, &dir,
+                               count_entries_cb, &entries, NULL));
+    ASSERT_EQ(entries, 0);
+
+    odfs_cache_destroy(&cache);
 }
 
 TEST_MAIN()

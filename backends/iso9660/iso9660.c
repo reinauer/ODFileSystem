@@ -95,6 +95,18 @@ static void iso_apply_rr(odfs_node_t *node, const rr_info_t *rr,
 /* iso_copy_strfield is now in iso9660.h as static inline */
 
 /*
+ * Offset of the next directory sector, or dir_size when that lies beyond
+ * the directory. Rounding up directly would wrap for a dir_size near
+ * UINT32_MAX and restart the scan at offset 0.
+ */
+static uint32_t iso_next_sector(uint32_t offset, uint32_t dir_size)
+{
+    uint32_t step = ISO_SECTOR_SIZE - (offset % ISO_SECTOR_SIZE);
+
+    return (step >= dir_size - offset) ? dir_size : offset + step;
+}
+
+/*
  * Parse a directory record at the given pointer into an odfs_node_t.
  * Returns the total record length consumed, or 0 on error / end of records.
  * A negative value is the length of a record that must be skipped.
@@ -477,7 +489,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
 
         /* zero-length record means skip to next sector */
         if (rec[0] == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            offset = iso_next_sector(offset, dir_size);
             continue;
         }
 
@@ -490,7 +502,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
             if (consumed < 0)
                 offset += (uint32_t)-consumed;
             else
-                offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+                offset = iso_next_sector(offset, dir_size);
             continue;
         }
 
@@ -702,7 +714,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         size_t avail = ISO_SECTOR_SIZE - sector_off;
 
         if (rec[0] == 0) {
-            offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            offset = iso_next_sector(offset, dir_size);
             continue;
         }
 
@@ -715,7 +727,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
             if (consumed < 0)
                 offset += (uint32_t)-consumed;
             else
-                offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+                offset = iso_next_sector(offset, dir_size);
             continue;
         }
         offset += (uint32_t)consumed;
@@ -913,7 +925,7 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
 
         /* zero padding: records never span sectors, skip to the next */
         if (rec[0] == 0) {
-            *offset = ((*offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
+            *offset = iso_next_sector(*offset, dir_size);
             continue;
         }
 
