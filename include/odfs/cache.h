@@ -48,9 +48,11 @@ typedef struct odfs_cache {
     int32_t              lru_tail;    /* least recently used valid entry */
     odfs_cache_stats_t  stats;
     odfs_media_t       *media;       /* underlying media for miss reads */
+#if ODFS_FEATURE_CACHE_STREAM
     uint8_t            *stream_buf;  /* staging for clustered miss reads;
                                         NULL disables read-ahead */
     uint32_t             last_miss_lba; /* detects sequential miss runs */
+#endif
     uint32_t             generation;  /* bumped whenever a valid entry is
                                          replaced or dropped, so a caller
                                          holding a data pointer can tell
