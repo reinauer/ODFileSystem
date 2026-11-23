@@ -5433,6 +5433,10 @@ static void unpublish_device_node(handler_global_t *g, int keep_device)
 {
     struct DeviceNode *devnode;
 
+    /* DOS sends packets to dn_Task: send no more to this process */
+    if (g->devnode && g->devnode->dn_Task == g->dosport)
+        g->devnode->dn_Task = NULL;
+
     devnode = g->published_devnode;
     if (!devnode)
         return;
@@ -6939,6 +6943,24 @@ void handler_main_startup(struct Message *startup_msg)
         shutdown_pkt->dp_Res1 = DOSTRUE;
         shutdown_pkt->dp_Res2 = 0;
         return_packet(g, shutdown_pkt);
+    }
+
+    /* fail what was queued behind the shutdown packet */
+    while ((msg = GetMsg(g->dosport)) != NULL) {
+        pkt = packet_from_message(msg);
+#if ODFS_AMIGA_OS4
+        if (!pkt || pkt->dp_Link != msg) {
+            ReplyMsg(msg);
+            continue;
+        }
+        msg->mn_ReplyPort = pkt->dp_Port;
+#else
+        if (!pkt)
+            continue;
+#endif
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_DEVICE_NOT_MOUNTED;
+        return_packet(g, pkt);
     }
 
 shutdown:
