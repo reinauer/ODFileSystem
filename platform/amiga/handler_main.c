@@ -3836,10 +3836,10 @@ LONG odfs_handler_fill_info(handler_global_t *g,
     return 0;
 }
 
-#if ODFS_AMIGA_OS4
-LONG odfs_handler_get_lock_node(handler_global_t *g,
-                                odfs_lock_t *ol,
-                                const odfs_node_t **node_out)
+ODFS_VECTOR_LINKAGE LONG
+odfs_handler_get_lock_node(handler_global_t *g,
+                           odfs_lock_t *ol,
+                           const odfs_node_t **node_out)
 {
     if (node_out)
         *node_out = NULL;
@@ -3865,6 +3865,7 @@ LONG odfs_handler_get_lock_node(handler_global_t *g,
     return 0;
 }
 
+#if ODFS_AMIGA_OS4
 LONG odfs_handler_get_fh_node(handler_global_t *g,
                               odfs_fh_t *fh,
                               const odfs_node_t **node_out)
@@ -4454,18 +4455,13 @@ static void action_examine_object(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
-    const odfs_node_t *fnode = ol ? lock_node(ol) : &g->mount.root;
+    const odfs_node_t *fnode;
+    LONG err_dos;
 
-    if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-    } else if (!g->mounted) {
+    err_dos = odfs_handler_get_lock_node(g, ol, &fnode);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_DISK;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
@@ -4493,7 +4489,7 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
 {
     odfs_lock_t *ol = LOCK_FROM_BPTR(pkt->dp_Arg1);
     struct FileInfoBlock *fib = (struct FileInfoBlock *)BADDR(pkt->dp_Arg2);
-    const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
+    const odfs_node_t *dir;
     ULONG dir_key;
     uint32_t resume = 0;
     exnext_ctx_t ec;
@@ -4501,17 +4497,12 @@ static void action_examine_next(handler_global_t *g, struct DosPacket *pkt)
     odfs_exnext_cursor_t *cursor = NULL;
     int use_cursor = 0;
 #endif
+    LONG err_dos;
 
-    if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-    } else if (!g->mounted) {
+    err_dos = odfs_handler_get_lock_node(g, ol, &dir);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_DISK;
+        pkt->dp_Res2 = err_dos;
         return;
     }
 
@@ -4827,9 +4818,10 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
     LONG size = (LONG)pkt->dp_Arg3;
     LONG data = (LONG)pkt->dp_Arg4;
     struct ExAllControl *control = (struct ExAllControl *)pkt->dp_Arg5;
-    const odfs_node_t *dir = ol ? lock_node(ol) : &g->mount.root;
+    const odfs_node_t *dir;
     exall_ctx_t ec;
     uint32_t resume = 0;
+    LONG err_dos;
 
     if (!buf || size <= 0 || !control) {
         pkt->dp_Res1 = DOSFALSE;
@@ -4855,21 +4847,18 @@ static void action_examine_all(handler_global_t *g, struct DosPacket *pkt)
                control ? (unsigned long)control->eac_LastKey : 0,
                control ? (unsigned long)control->eac_MatchString : 0,
                control ? (unsigned long)control->eac_MatchFunc : 0);
-    trace_node(g, "exall-dir", dir);
 #endif
 
-    if (ol) {
-        LONG err_dos = validate_object_volume(g, ol->entry->volume);
-        if (err_dos != 0) {
-            pkt->dp_Res1 = DOSFALSE;
-            pkt->dp_Res2 = err_dos;
-            return;
-        }
-    } else if (!g->mounted) {
+    err_dos = odfs_handler_get_lock_node(g, ol, &dir);
+    if (err_dos != 0) {
         pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_NO_DISK;
+        pkt->dp_Res2 = err_dos;
         return;
     }
+
+#if ODFS_SERIAL_DEBUG && ODFS_PACKET_TRACE
+    trace_node(g, "exall-dir", dir);
+#endif
 
     if (dir->kind != ODFS_NODE_DIR) {
         pkt->dp_Res1 = DOSFALSE;
