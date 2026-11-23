@@ -3236,6 +3236,9 @@ LONG odfs_handler_open_from_lock_object(handler_global_t *g,
             return err_dos;
     }
 
+    if (lock_node(ol)->kind == ODFS_NODE_DIR)
+        return ERROR_OBJECT_WRONG_TYPE;
+
     fh = alloc_fh(g, ol->entry, ODFS_LOCK_DOS(ol)->fl_Access);
     if (!fh)
         return ERROR_NO_FREE_STORE;
