@@ -113,7 +113,6 @@ typedef struct udf_context {
     uint16_t part_number;    /* partition reference number */
 
     /* logical volume info */
-    uint32_t lv_block_size;  /* logical block size */
     char     volume_id[128]; /* volume identifier (UTF-8) */
 
     /* root directory */

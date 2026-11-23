@@ -879,4 +879,146 @@ TEST(udf_node_id_is_stable_across_walks)
     odfs_cache_destroy(&cache);
 }
 
+/* ---- mounting a whole volume ---- */
+
+#define VOL_SECTOR_COUNT 300
+
+typedef struct udf_vol_media {
+    uint8_t  sectors[VOL_SECTOR_COUNT][MOCK_SECTOR_SIZE];
+    uint32_t reads;
+} udf_vol_media_t;
+
+static odfs_err_t udf_vol_read_sectors(void *ctx, uint32_t lba,
+                                       uint32_t count, void *buf)
+{
+    udf_vol_media_t *m = ctx;
+
+    m->reads += count;
+    if (lba + count > VOL_SECTOR_COUNT)
+        return ODFS_ERR_RANGE;
+    memcpy(buf, &m->sectors[lba][0], (size_t)count * MOCK_SECTOR_SIZE);
+    return ODFS_OK;
+}
+
+static uint32_t udf_vol_sector_count(void *ctx)
+{
+    (void)ctx;
+    return VOL_SECTOR_COUNT;
+}
+
+static const odfs_media_ops_t udf_vol_ops = {
+    .read_sectors = udf_vol_read_sectors,
+    .sector_size  = udf_mock_sector_size,
+    .sector_count = udf_vol_sector_count,
+};
+
+#define VOL_PART_START 100
+
+/*
+ * A minimal volume: AVDP at 256 pointing at a VDS in sectors 32..36
+ * (PVD "VOL", PD number 7 at sector 100, LVD, TD). The LVD has one
+ * Type 1 partition map; the FSD is at partition block 0 and the root
+ * directory File Entry, with no entries, at partition block 1. Returns
+ * the LVD so that callers can change it.
+ */
+static uint8_t *udf_vol_build(udf_vol_media_t *m)
+{
+    uint8_t *lvd = m->sectors[35];
+    uint8_t *pd = m->sectors[34];
+    uint8_t *pvd = m->sectors[32];
+
+    memset(m, 0, sizeof(*m));
+
+    udf_write_tag(m->sectors[UDF_AVDP_LBA], UDF_TAG_AVDP);
+    udf_write_le32(&m->sectors[UDF_AVDP_LBA][16], 16 * MOCK_SECTOR_SIZE);
+    udf_write_le32(&m->sectors[UDF_AVDP_LBA][20], 32);
+
+    udf_write_tag(pvd, UDF_TAG_PVD);
+    pvd[24] = 8;                  /* CS0 8-bit */
+    memcpy(&pvd[25], "VOL", 3);
+    pvd[24 + 31] = 4;             /* d-string used length */
+
+    udf_write_tag(pd, UDF_TAG_PD);
+    udf_write_le16(&pd[22], 7);   /* partition number */
+    udf_write_le32(&pd[188], VOL_PART_START);
+    udf_write_le32(&pd[192], 150);
+
+    udf_write_tag(lvd, UDF_TAG_LVD);
+    udf_write_le32(&lvd[212], MOCK_SECTOR_SIZE);
+    udf_write_le32(&lvd[248], MOCK_SECTOR_SIZE); /* FSD long_ad */
+    udf_write_le32(&lvd[252], 0);
+    udf_write_le16(&lvd[256], 0);
+    udf_write_le32(&lvd[264], 6); /* map table length */
+    udf_write_le32(&lvd[268], 1); /* number of partition maps */
+    lvd[440] = 1;                 /* Type 1 map */
+    lvd[441] = 6;
+    udf_write_le16(&lvd[442], 1); /* volume sequence number */
+    udf_write_le16(&lvd[444], 7); /* partition number */
+
+    udf_write_tag(m->sectors[36], UDF_TAG_TD);
+
+    udf_write_tag(m->sectors[VOL_PART_START], UDF_TAG_FSD);
+    udf_write_le32(&m->sectors[VOL_PART_START][400], MOCK_SECTOR_SIZE);
+    udf_write_le32(&m->sectors[VOL_PART_START][404], 1);
+
+    udf_make_fe(m->sectors[VOL_PART_START + 1], UDF_ICB_FILETYPE_DIR, 0, 2);
+    return lvd;
+}
+
+TEST(udf_mount_rejects_non_2048_logical_blocks)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root;
+    void *ctx = NULL;
+    uint8_t *lvd;
+    char name[16];
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    lvd = udf_vol_build(&m);
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT_OK(udf_backend_ops.get_volume_name(ctx, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "VOL");
+    ASSERT_EQ(udf_backend_ops.get_volume_size(ctx), 150);
+    udf_backend_ops.unmount(ctx);
+
+    udf_write_le32(&lvd[212], 4096);
+    odfs_cache_flush(&cache);
+    ctx = NULL;
+    ASSERT_ERR(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx),
+               ODFS_ERR_UNSUPPORTED);
+    ASSERT(ctx == NULL);
+
+    odfs_cache_destroy(&cache);
+}
+
+TEST(udf_mount_bounds_the_vds_scan)
+{
+    static udf_vol_media_t m;
+    odfs_media_t media = { .ops = &udf_vol_ops, .ctx = &m };
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root;
+    void *ctx = NULL;
+
+    odfs_log_init(&log);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 16));
+
+    /* a VDS extent of almost 4 GiB without a Terminating Descriptor */
+    udf_vol_build(&m);
+    memset(m.sectors[36], 0, MOCK_SECTOR_SIZE);
+    udf_write_le32(&m.sectors[UDF_AVDP_LBA][16], 0xFFFFF800u);
+    m.reads = 0;
+
+    ASSERT_OK(udf_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+    ASSERT(m.reads < 1024);
+    udf_backend_ops.unmount(ctx);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST_MAIN()
