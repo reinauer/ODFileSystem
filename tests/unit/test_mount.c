@@ -291,6 +291,12 @@ TEST(mount_dispatches_virtual_backend_by_node_type)
     ASSERT_EQ(dir.backend, ODFS_BACKEND_CDDA);
     ASSERT_STR_EQ(dir.name, "CDDA");
 
+    /* registering the mount root keeps the CDDA directory */
+    odfs_mount_register_backend(&mnt, ODFS_BACKEND_ISO9660,
+                                &fake_main_backend_ops, &main_ctx, &root);
+    ASSERT_OK(odfs_resolve_path(&mnt, "CDDA", &dir));
+    ASSERT_EQ(dir.backend, ODFS_BACKEND_CDDA);
+
     ASSERT_OK(odfs_resolve_path(&mnt, "CDDA/Track01.wav", &file));
     ASSERT_EQ(file.backend, ODFS_BACKEND_CDDA);
     ASSERT_STR_EQ(file.name, "Track01.wav");
