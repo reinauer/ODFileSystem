@@ -260,4 +260,17 @@ TEST(rr_parse_ce_continues_name_in_session_and_finishes_area)
     odfs_cache_destroy(&cache);
 }
 
+TEST(rr_detect_sp_after_cd_xa_record)
+{
+    /* root "." System Use area as written by mkisofs -R -XA */
+    const uint8_t xa_sua[] = {
+        0, 0, 0, 0, 0x88, 0x80, 'X', 'A', 0, 0, 0, 0, 0, 0,
+        'S', 'P', 7, 1, 0xBE, 0xEF, 14
+    };
+    int skip = -1;
+
+    ASSERT_EQ(rr_detect(xa_sua, sizeof(xa_sua), &skip), 1);
+    ASSERT_EQ(skip, 14);
+}
+
 TEST_MAIN()

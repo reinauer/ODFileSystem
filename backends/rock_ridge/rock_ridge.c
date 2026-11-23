@@ -117,6 +117,15 @@ int rr_detect(const uint8_t *sua, size_t sua_len, int *skip_out)
 
     *skip_out = 0;
 
+    /*
+     * CD-ROM XA discs start every System Use area with a 14-byte XA
+     * record ("XA" at bytes 6-7) that is not a SUSP entry. mkisofs -XA
+     * then sets the SP skip length to 14 for all other records.
+     */
+    if (sua_len >= 14 && sua[6] == 'X' && sua[7] == 'A' &&
+        rr_sig(sua) != RR_SIG_SP)
+        pos = 14;
+
     while (pos + 4 <= sua_len) {
         uint16_t sig = rr_sig(&sua[pos]);
         uint8_t len = sua[pos + 2];
