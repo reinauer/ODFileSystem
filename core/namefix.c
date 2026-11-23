@@ -154,8 +154,12 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
         if (suffix_len >= name_size)
             return ODFS_ERR_NAME_TOO_LONG;
 
-        if (keep + (size_t)suffix_len >= name_size)
+        if (keep + (size_t)suffix_len >= name_size) {
             keep = name_size - (size_t)suffix_len - 1;
+            /* cut before a character, not inside its UTF-8 sequence */
+            while (keep > 0 && ((unsigned char)base[keep] & 0xC0u) == 0x80u)
+                keep--;
+        }
 
         memcpy(name, base, keep);
         memcpy(name + keep, suffix, (size_t)suffix_len + 1);
