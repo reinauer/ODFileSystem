@@ -2582,6 +2582,9 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
     size_t name_len;
     size_t comment_len;
     size_t max_name_len;
+    uint32_t size_hi;
+    uint32_t size_lo;
+    ULONG nblk;
 
     memset(fib, 0, sizeof(*fib));
     odfs_handler_fill_node_info(g, fnode, &info);
@@ -2601,7 +2604,22 @@ static void fill_fib(handler_global_t *g, struct FileInfoBlock *fib,
      * on both ABIs so classic copy tools never see a wrapped size. */
     fib->fib_Size = (fib_compat_t)
         ((info.size > 0x7FFFFFFFull) ? 0x7FFFFFFFull : info.size);
-    fib->fib_NumBlocks = (fib_compat_t)((info.size + 511U) / 512U);
+
+    /* in the device blocks id_BytesPerBlock reports, without a 64-bit
+     * (or, for 2048-byte blocks, any) division */
+    size_hi = (uint32_t)(info.size >> 32);
+    size_lo = (uint32_t)info.size;
+    if (size_hi != 0)
+        nblk = (g->sector_size == 2048 && size_hi < 0x3ffU) ?
+               ((size_hi << 21) | (size_lo >> 11)) + ((size_lo & 2047U) != 0) :
+               0x7FFFFFFFUL;
+    else if (size_lo == 0)
+        nblk = 0;
+    else if (g->sector_size == 2048)
+        nblk = ((size_lo - 1U) >> 11) + 1U;
+    else
+        nblk = (size_lo - 1U) / g->sector_size + 1U;
+    fib->fib_NumBlocks = (fib_compat_t)nblk;
     fib->fib_Protection = (fib_compat_t)info.protection;
     fib->fib_Date = info.date;
 

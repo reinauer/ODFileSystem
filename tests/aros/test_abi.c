@@ -11,6 +11,7 @@ _Static_assert(ODFS_PF_SECTORS == 16, "AROS streaming window disabled");
 
 static UBYTE dma_test_mem[(32 + ODFS_PF_SECTORS) * 2048 + 32];
 static ULONG dma_test_limit;
+static handler_global_t fib_g;
 static ULONG dma_test_calls;
 static int dma_test_public_only;
 
@@ -142,10 +143,14 @@ int main(void)
     node.amiga_as.has_comment = 1;
     strcpy(node.amiga_as.comment, "comment");
 
-    fill_fib(NULL, &fib, &node);
+    /* fill_fib() counts blocks in the mounted sector size */
+    memset(&fib_g, 0, sizeof(fib_g));
+    fib_g.sector_size = 2048;
+    fill_fib(&fib_g, &fib, &node);
     if (fib.fib_FileName[0] != strlen(node.name) ||
         memcmp(fib.fib_FileName + 1, node.name, strlen(node.name)) ||
-        fib.fib_Size != 12345 || fib.fib_Comment[0] != 7)
+        fib.fib_Size != 12345 || fib.fib_NumBlocks != 7 ||
+        fib.fib_Comment[0] != 7)
         return 5;
 
     for (LONG data = ED_NAME; data <= ED_OWNER; data++) {
