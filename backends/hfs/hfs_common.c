@@ -675,9 +675,8 @@ odfs_err_t odfs_hfs_read(void *backend_ctx,
                          void *buf,
                          size_t *len)
 {
-    const hfs_volume_t *vol = backend_ctx;
-    hfs_extent_t exts[8];
-    uint64_t base;
+    hfs_volume_t *vol = backend_ctx;
+    hfs_extent_map_t *map = &vol->map;
     size_t want;
     size_t done = 0;
     odfs_err_t err;
@@ -703,18 +702,38 @@ odfs_err_t odfs_hfs_read(void *backend_ctx,
                                      buf, len);
     }
 
-    err = hfs_read_inline_ext(vol, cache, file, exts);
+    /*
+     * Keep the extent map of the last file read, so that reading a
+     * fragmented file in chunks walks its directory and the overflow
+     * tree once per record instead of once per chunk. The volume is
+     * read-only and CNIDs are unique, so the map stays valid.
+     */
+    err = ODFS_OK;
+    if (file->id == 0 || map->file_id != file->id) {
+        map->file_id = 0;
+        map->ov_ext[0].block_count = 0;
+        err = hfs_read_inline_ext(vol, cache, file, map->inline_ext);
+        if (err == ODFS_OK)
+            map->file_id = file->id;
+    }
     if (err == ODFS_OK)
-        err = hfs_read_extents(vol, cache, exts, 0, &offset,
+        err = hfs_read_extents(vol, cache, map->inline_ext, 0, &offset,
                                buf, want, &done);
 
     while (err == ODFS_OK && done < want) {
         size_t before = done;
 
-        err = hfs_find_overflow(vol, cache, file->id, offset, exts, &base);
+        if (map->ov_ext[0].block_count != 0 && map->ov_base <= offset)
+            err = hfs_read_extents(vol, cache, map->ov_ext, map->ov_base,
+                                   &offset, buf, want, &done);
+        if (err != ODFS_OK || done != before)
+            continue;
+
+        err = hfs_find_overflow(vol, cache, file->id, offset,
+                                map->ov_ext, &map->ov_base);
         if (err == ODFS_OK)
-            err = hfs_read_extents(vol, cache, exts, base, &offset,
-                                   buf, want, &done);
+            err = hfs_read_extents(vol, cache, map->ov_ext, map->ov_base,
+                                   &offset, buf, want, &done);
         if (err == ODFS_OK && done == before)
             err = ODFS_ERR_CORRUPT;   /* a hole in the extent map */
     }

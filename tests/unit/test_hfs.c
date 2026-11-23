@@ -790,6 +790,42 @@ TEST(hfs_reads_overflow_extents)
     odfs_free(img);
 }
 
+static uint32_t cache_reads(odfs_mount_t *mnt)
+{
+    return odfs_cache_get_stats(&mnt->cache)->reads;
+}
+
+TEST(hfs_keeps_extent_map_of_last_file)
+{
+    uint8_t *img = hfs_frag_image();
+    odfs_mount_t mnt;
+    odfs_node_t frag, two;
+    uint32_t before;
+
+    ASSERT(img != NULL);
+    ASSERT_OK(mount_mem(img, &mnt));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "FRAG.BIN", &frag));
+    ASSERT_OK(odfs_lookup(&mnt, &mnt.root, "TWO.BIN", &two));
+
+    ASSERT(check_read(&mnt, &frag, 0, 600));
+    ASSERT(check_read(&mnt, &frag, 1536, 512));
+
+    /* both maps are known now: one sector of data, no B-tree nodes */
+    before = cache_reads(&mnt);
+    ASSERT(check_read(&mnt, &frag, 1024, 512));
+    ASSERT_EQ(cache_reads(&mnt) - before, 1u);
+    before = cache_reads(&mnt);
+    ASSERT(check_read(&mnt, &frag, 2048, 252));
+    ASSERT_EQ(cache_reads(&mnt) - before, 1u);
+
+    /* switching files reloads the map */
+    ASSERT(check_read(&mnt, &two, 512, 512));
+    ASSERT(check_read(&mnt, &frag, 600, 1700));
+    ASSERT(check_read(&mnt, &two, 0, 1024));
+    odfs_unmount(&mnt);
+    odfs_free(img);
+}
+
 static void hfsp_add_ext_rec(bt_builder_t *b, uint32_t file_id,
                              uint32_t start, uint32_t first, uint32_t count)
 {
