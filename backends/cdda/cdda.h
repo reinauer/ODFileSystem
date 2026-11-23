@@ -57,6 +57,7 @@ typedef struct cdda_context {
     size_t             disk_icon_size;
     odfs_media_t       *media;          /* for read_audio calls */
     uint8_t            *audio_cache;    /* read-ahead audio frames */
+    uint32_t            audio_cache_cap; /* frames audio_cache can hold */
     uint32_t            audio_cache_lba;
     uint32_t            audio_cache_frames;
 } cdda_context_t;

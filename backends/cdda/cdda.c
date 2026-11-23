@@ -847,6 +847,31 @@ static int cdda_audio_cache_contains(const cdda_context_t *ctx, uint32_t lba)
            lba < ctx->audio_cache_lba + ctx->audio_cache_frames;
 }
 
+/*
+ * The read-ahead buffer is allocated on the first audio read, so a
+ * mount and header-only reads cost no audio memory. Under memory
+ * pressure it falls back to fewer frames; a short buffer tries to grow
+ * again on each refill, which is about to pay for a drive read anyway.
+ */
+static odfs_err_t cdda_ensure_audio_cache(cdda_context_t *ctx)
+{
+    static const uint8_t frames[] = { CDDA_READAHEAD_FRAMES, 16, 4, 1 };
+
+    for (size_t i = 0;
+         i < sizeof(frames) && frames[i] > ctx->audio_cache_cap; i++) {
+        uint8_t *cache = odfs_malloc((size_t)frames[i] * CDDA_FRAME_SIZE);
+
+        if (cache) {
+            odfs_free(ctx->audio_cache);
+            ctx->audio_cache = cache;
+            ctx->audio_cache_cap = frames[i];
+            return ODFS_OK;
+        }
+    }
+
+    return ctx->audio_cache ? ODFS_OK : ODFS_ERR_NOMEM;
+}
+
 static odfs_err_t cdda_fill_audio_cache(cdda_context_t *ctx,
                                         const cdda_track_t *trk,
                                         uint32_t frame_num)
@@ -855,14 +880,16 @@ static odfs_err_t cdda_fill_audio_cache(cdda_context_t *ctx,
     uint32_t start_lba;
     odfs_err_t err;
 
-    if (!ctx->audio_cache || !ctx->media || !ctx->media->ops->read_audio)
-        return ODFS_ERR_UNSUPPORTED;
     if (frame_num >= trk->length_frames)
         return ODFS_ERR_RANGE;
 
+    err = cdda_ensure_audio_cache(ctx);
+    if (err != ODFS_OK)
+        return err;
+
     frames = trk->length_frames - frame_num;
-    if (frames > CDDA_READAHEAD_FRAMES)
-        frames = CDDA_READAHEAD_FRAMES;
+    if (frames > ctx->audio_cache_cap)
+        frames = ctx->audio_cache_cap;
 
     start_lba = trk->start_lba + frame_num;
     err = odfs_media_read_audio(ctx->media, start_lba, frames,
@@ -1094,9 +1121,6 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
 
     cdda_set_volume_name(ctx);
 
-    ctx->audio_cache = odfs_malloc((size_t)CDDA_READAHEAD_FRAMES *
-                                   CDDA_FRAME_SIZE);
-
     cdda_generate_cddb(ctx);
     cdda_generate_cdtext(ctx);
 
@@ -1327,6 +1351,10 @@ static odfs_err_t cdda_read(void *backend_ctx,
         uint32_t audio_pos;
         uint32_t frame_num;
         uint32_t frame_off;
+        size_t cache_off;
+        size_t avail;
+        size_t chunk;
+        odfs_err_t err;
 
         /* an audio track is far below 4 GiB, so 32-bit math suffices;
          * this keeps the 64-bit division helpers out of the binary */
@@ -1347,39 +1375,8 @@ static odfs_err_t cdda_read(void *backend_ctx,
             return ODFS_ERR_UNSUPPORTED;
         }
 
-        if (ctx->audio_cache) {
-            size_t cache_off;
-            size_t avail;
-            size_t chunk;
-            odfs_err_t err;
-
-            if (!cdda_audio_cache_contains(ctx, start_frame)) {
-                err = cdda_fill_audio_cache(ctx, trk, frame_num);
-                if (err != ODFS_OK) {
-                    ODFS_ERROR(log, ODFS_SUB_CDDA,
-                               "audio read failed track=%d lba=%" PRIu32
-                               " err=%s",
-                               trk->number, start_frame, odfs_err_str(err));
-                    *len = 0;
-                    return err;
-                }
-            }
-
-            cache_off = (size_t)(start_frame - ctx->audio_cache_lba) *
-                        CDDA_FRAME_SIZE + frame_off;
-            avail = (size_t)ctx->audio_cache_frames * CDDA_FRAME_SIZE -
-                    cache_off;
-            chunk = (avail < want - done) ? avail : want - done;
-            memcpy(out + done, ctx->audio_cache + cache_off, chunk);
-            done += chunk;
-            continue;
-        }
-
-        {
-            uint8_t frame_buf[CDDA_FRAME_SIZE];
-            odfs_err_t err = odfs_media_read_audio(ctx->media,
-                                                   start_frame, 1,
-                                                   frame_buf);
+        if (!cdda_audio_cache_contains(ctx, start_frame)) {
+            err = cdda_fill_audio_cache(ctx, trk, frame_num);
             if (err != ODFS_OK) {
                 ODFS_ERROR(log, ODFS_SUB_CDDA,
                            "audio read failed track=%d lba=%" PRIu32
@@ -1388,15 +1385,14 @@ static odfs_err_t cdda_read(void *backend_ctx,
                 *len = 0;
                 return err;
             }
-
-            if (ctx->file_format == CDDA_FILE_FORMAT_AIFF)
-                cdda_byteswap_samples(frame_buf, sizeof(frame_buf));
-
-            size_t avail = CDDA_FRAME_SIZE - frame_off;
-            size_t chunk = (avail < want - done) ? avail : want - done;
-            memcpy(out + done, frame_buf + frame_off, chunk);
-            done += chunk;
         }
+
+        cache_off = (size_t)(start_frame - ctx->audio_cache_lba) *
+                    CDDA_FRAME_SIZE + frame_off;
+        avail = (size_t)ctx->audio_cache_frames * CDDA_FRAME_SIZE - cache_off;
+        chunk = (avail < want - done) ? avail : want - done;
+        memcpy(out + done, ctx->audio_cache + cache_off, chunk);
+        done += chunk;
     }
 
     *len = done;
