@@ -5,7 +5,8 @@
  *
  * Reads classic Macintosh HFS volumes, commonly found on hybrid
  * ISO/HFS CDs from the 1990s. Data fork only (resource forks are
- * not exposed). B-tree catalog traversal for directory listing.
+ * not exposed). The catalog B-tree walk is shared with HFS+ in
+ * hfs_common.c.
  *
  * References: Inside Macintosh: Files, Linux fs/hfs/, libhfs
  */
@@ -15,9 +16,7 @@
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
-#include "odfs/namefix.h"
 #include "odfs/error.h"
-#include "odfs/string.h"
 #include "odfs/timestamp.h"
 
 #include <string.h>
@@ -26,85 +25,6 @@
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-/* convert allocation block number to physical byte offset */
-static uint64_t hfs_ab_to_byte(const hfs_context_t *ctx, uint16_t ab)
-{
-    uint64_t block_512 = (uint64_t)ab * (ctx->alloc_block_size / 512)
-                         + ctx->alloc_block_start
-                         + ctx->vol_start_512;
-    return block_512 * 512;
-}
-
-/* read bytes from the catalog B-tree at a given node number */
-static odfs_err_t hfs_read_node(const hfs_context_t *ctx,
-                                  odfs_cache_t *cache,
-                                  uint32_t node_num,
-                                  uint8_t *buf)
-{
-    /* calculate byte offset of node within catalog file */
-    uint64_t node_byte_offset = (uint64_t)node_num * ctx->cat_node_size;
-
-    /* find which extent contains this offset */
-    uint64_t extent_offset = 0;
-    for (int i = 0; i < 3; i++) {
-        uint64_t ext_bytes = (uint64_t)ctx->cat_extents[i].num_ab * ctx->alloc_block_size;
-        if (node_byte_offset < extent_offset + ext_bytes) {
-            uint64_t off_in_ext = node_byte_offset - extent_offset;
-            uint64_t phys = hfs_ab_to_byte(ctx, ctx->cat_extents[i].start_ab) + off_in_ext;
-            uint32_t lba = (uint32_t)(phys / 2048);
-            uint32_t lba_off = (uint32_t)(phys % 2048);
-
-            /* read enough 2048-byte sectors to cover the node */
-            uint32_t remain = ctx->cat_node_size;
-            uint32_t buf_pos = 0;
-            while (remain > 0) {
-                const uint8_t *sector;
-                odfs_err_t err = odfs_cache_read(cache, lba, &sector);
-                if (err != ODFS_OK) return err;
-
-                uint32_t chunk = 2048 - lba_off;
-                if (chunk > remain) chunk = remain;
-                memcpy(buf + buf_pos, sector + lba_off, chunk);
-                buf_pos += chunk;
-                remain -= chunk;
-                lba++;
-                lba_off = 0;
-            }
-            return ODFS_OK;
-        }
-        extent_offset += ext_bytes;
-    }
-    return ODFS_ERR_RANGE;
-}
-
-/* get record offset from the offset table at the end of a node */
-static uint16_t hfs_rec_offset(const uint8_t *node, uint32_t node_size,
-                                int rec_idx)
-{
-    /* offset table is at end of node, growing backward: 2 bytes per entry */
-    uint32_t pos = node_size - 2U * ((uint32_t)rec_idx + 1U);
-    return hfs_be16(&node[pos]);
-}
-
-static int hfs_read_record_count(const uint8_t *node, uint32_t node_size,
-                                 uint16_t *nrecs_out)
-{
-    uint16_t max_recs;
-    uint16_t nrecs;
-
-    if (node_size < 12)
-        return 0;
-
-    /* Reserve one trailing offset-table slot for r + 1 lookups. */
-    max_recs = (uint16_t)((node_size / 2) - 1);
-    nrecs = hfs_be16(&node[10]);
-    if (nrecs > max_recs)
-        return 0;
-
-    *nrecs_out = nrecs;
-    return 1;
-}
 
 /* Mac Roman to UTF-8, then normalize a few Amiga-problematic bytes. */
 static void hfs_name_to_utf8(const uint8_t *src, uint8_t src_len,
@@ -178,6 +98,59 @@ static odfs_err_t hfs_probe(odfs_cache_t *cache,
 }
 
 /* ------------------------------------------------------------------ */
+/* catalog records                                                     */
+/* ------------------------------------------------------------------ */
+
+static int hfs_parse_entry(const hfs_volume_t *vol, const odfs_node_t *dir,
+                           const uint8_t *key, size_t key_len,
+                           const uint8_t *data, size_t data_len,
+                           odfs_node_t *node)
+{
+    uint8_t rec_type;
+
+    (void)vol;
+
+    if (data_len < 1)
+        return 0;
+
+    rec_type = data[0];
+
+    /* only interested in file and directory records, not threads */
+    if (rec_type != HFS_CAT_FILE && rec_type != HFS_CAT_DIR)
+        return 0;
+
+    memset(node, 0, sizeof(*node));
+    node->parent_id = dir->id;
+    node->backend = ODFS_BACKEND_HFS;
+
+    /* extract name from catalog key:
+       key[0] = key length, key[1] = reserved, key[2..5] = parentID,
+       key[6] = name length, key[7..] = name bytes */
+    if (key_len >= 8) {
+        uint8_t nlen = key[6];
+        if (nlen > 0 && (size_t)(7 + nlen) <= key_len)
+            hfs_name_to_utf8(&key[7], nlen, node->name, sizeof(node->name));
+    }
+
+    if (rec_type == HFS_CAT_DIR && data_len >= 22) {
+        node->kind = ODFS_NODE_DIR;
+        node->extent.lba = hfs_be32(&data[6]); /* store CNID for readdir */
+        odfs_timestamp_from_mac_time(hfs_be32(&data[14]), &node->mtime);
+    } else if (rec_type == HFS_CAT_FILE && data_len >= 52) {
+        node->kind = ODFS_NODE_FILE;
+        node->size = hfs_be32(&data[26]); /* data fork logical length */
+        /* data fork first extent: at offset 74 in file record */
+        if (data_len >= 78) {
+            node->extent.lba = hfs_be16(&data[74]); /* first extent start AB */
+            node->extent.length = (uint32_t)node->size;
+        }
+        odfs_timestamp_from_mac_time(hfs_be32(&data[48]), &node->mtime);
+    }
+    node->ctime = node->mtime;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* mount                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -187,20 +160,22 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
                               odfs_node_t *root_out,
                               void **backend_ctx)
 {
-    hfs_context_t *ctx;
+    hfs_volume_t *vol;
     const uint8_t *sector;
     const uint8_t *mdb;
     odfs_err_t err;
     uint32_t vol_start_512 = 0;
+    uint32_t mtime;
 
-    ctx = odfs_calloc(1, sizeof(*ctx));
-    if (!ctx) return ODFS_ERR_NOMEM;
+    vol = odfs_calloc(1, sizeof(*vol) + HFS_VOLNAME_SIZE);
+    if (!vol) return ODFS_ERR_NOMEM;
 
-    ctx->next_node_id = 1;
+    vol->next_node_id = 1;
+    vol->parse_entry = hfs_parse_entry;
 
     /* find MDB — try direct first, then APM */
     err = odfs_cache_read(cache, session_start, &sector);
-    if (err != ODFS_OK) { odfs_free(ctx); return err; }
+    if (err != ODFS_OK) { odfs_free(vol); return err; }
 
     if (hfs_be16(&sector[1024]) == HFS_MDB_SIG) {
         vol_start_512 = session_start * 4; /* 2048/512 = 4 */
@@ -208,7 +183,7 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     } else if (hfs_be16(&sector[512]) == HFS_APM_SIG) {
         const uint8_t *pm = &sector[512];
         if (memcmp(&pm[48], "Apple_HFS", 9) != 0) {
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
         }
         uint32_t pstart = hfs_be32(&pm[8]);
         vol_start_512 = session_start * 4 + pstart;
@@ -216,63 +191,48 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         uint32_t mdb_lba = (uint32_t)(mdb_byte / 2048);
         uint32_t mdb_off = (uint32_t)(mdb_byte % 2048);
         err = odfs_cache_read(cache, mdb_lba, &sector);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(vol); return err; }
         mdb = &sector[mdb_off];
-        if (hfs_be16(mdb) != HFS_MDB_SIG) { odfs_free(ctx); return ODFS_ERR_BAD_FORMAT; }
+        if (hfs_be16(mdb) != HFS_MDB_SIG) { odfs_free(vol); return ODFS_ERR_BAD_FORMAT; }
     } else {
-        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+        odfs_free(vol); return ODFS_ERR_BAD_FORMAT;
     }
 
-    ctx->vol_start_512 = vol_start_512;
-
     /* parse MDB */
-    ctx->num_alloc_blocks = hfs_be16(&mdb[HFS_MDB_NMALBLKS]);
-    ctx->alloc_block_size = hfs_be32(&mdb[HFS_MDB_ALBLKSIZ]);
-    ctx->alloc_block_start = hfs_be16(&mdb[HFS_MDB_ALBLST]);
+    vol->total_blocks = hfs_be16(&mdb[HFS_MDB_NMALBLKS]);
+    vol->block_size = hfs_be32(&mdb[HFS_MDB_ALBLKSIZ]);
+    vol->alloc_base = ((uint64_t)vol_start_512 +
+                       hfs_be16(&mdb[HFS_MDB_ALBLST])) * 512;
 
-    uint8_t volname_raw[27];
-    memcpy(volname_raw, &mdb[HFS_MDB_VOLNAME], sizeof(volname_raw));
     uint8_t vnamelen = mdb[HFS_MDB_VOLNAMELEN];
     if (vnamelen > 27) vnamelen = 27;
-    hfs_name_to_utf8(volname_raw, vnamelen,
-                     ctx->volume_name, sizeof(ctx->volume_name));
+    hfs_name_to_utf8(&mdb[HFS_MDB_VOLNAME], vnamelen,
+                     vol->volume_name, HFS_VOLNAME_SIZE);
 
-    ctx->cat_file_size = hfs_be32(&mdb[HFS_MDB_CTFLSIZE]);
     for (int i = 0; i < 3; i++) {
-        ctx->cat_extents[i].start_ab = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4]);
-        ctx->cat_extents[i].num_ab   = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4 + 2]);
+        vol->cat.extents[i].start_block = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4]);
+        vol->cat.extents[i].block_count = hfs_be16(&mdb[HFS_MDB_CTEXTREC + i * 4 + 2]);
+    }
+
+    /* MDB modification date for root timestamp */
+    mtime = hfs_be32(&mdb[HFS_MDB_LSMOD]);
+
+    ODFS_INFO(log, ODFS_SUB_HFS,
+               "volume: \"%s\", alloc blocks: %" PRIu32 ", block size: %" PRIu32,
+               vol->volume_name, vol->total_blocks, vol->block_size);
+
+    /* read catalog B-tree header node */
+    err = odfs_hfs_init_btree(vol, &vol->cat, cache);
+    if (err != ODFS_OK) {
+        if (err == ODFS_ERR_BAD_FORMAT)
+            ODFS_ERROR(log, ODFS_SUB_HFS, "bad catalog B-tree header");
+        odfs_free(vol);
+        return err;
     }
 
     ODFS_INFO(log, ODFS_SUB_HFS,
-               "volume: \"%s\", alloc blocks: %u, block size: %" PRIu32,
-               ctx->volume_name, ctx->num_alloc_blocks, ctx->alloc_block_size);
-
-    /* read catalog B-tree header node */
-    {
-        uint8_t hdr_buf[512];
-
-        /* the real node size is stored in this header */
-        ctx->cat_node_size = sizeof(hdr_buf);
-        err = hfs_read_node(ctx, cache, 0, hdr_buf);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
-
-        if (hdr_buf[8] != HFS_NODE_HEADER) {
-            ODFS_ERROR(log, ODFS_SUB_HFS, "catalog header node type %u", hdr_buf[8]);
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
-        }
-
-        ctx->cat_root_node = hfs_be32(&hdr_buf[16]);
-        ctx->cat_first_leaf = hfs_be32(&hdr_buf[24]);
-        ctx->cat_node_size = hfs_be16(&hdr_buf[32]);
-
-        if (ctx->cat_node_size < 14 || ctx->cat_node_size > 32768) {
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
-        }
-
-        ODFS_INFO(log, ODFS_SUB_HFS,
-                   "catalog: root node %" PRIu32 ", node size %" PRIu32,
-                   ctx->cat_root_node, ctx->cat_node_size);
-    }
+               "catalog: root node %" PRIu32 ", node size %" PRIu32,
+               vol->cat.root_node, vol->cat.node_size);
 
     /* build root node */
     memset(root_out, 0, sizeof(*root_out));
@@ -286,560 +246,12 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
     root_out->extent.lba = HFS_CNID_ROOT_DIR;
     root_out->extent.length = 0;
 
-    /* parse MDB modification date for root timestamp */
-    odfs_timestamp_from_mac_time(hfs_be32(&mdb[HFS_MDB_LSMOD]),
-                                 &root_out->mtime);
+    odfs_timestamp_from_mac_time(mtime, &root_out->mtime);
     root_out->ctime = root_out->mtime;
-    ctx->root = *root_out;
+    vol->root = *root_out;
 
-    *backend_ctx = ctx;
+    *backend_ctx = vol;
     return ODFS_OK;
-}
-
-static void hfs_unmount(void *backend_ctx)
-{
-    odfs_free(backend_ctx);
-}
-
-/* ------------------------------------------------------------------ */
-/* catalog B-tree leaf scan                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Walk catalog leaf nodes, calling the callback for each entry
- * matching the target parent CNID. The B-tree is sorted by
- * (parentID, name), so all entries for a directory are contiguous.
- */
-
-typedef odfs_err_t (*hfs_cat_cb)(const uint8_t *key, size_t key_len,
-                                   const uint8_t *data, size_t data_len,
-                                   void *cb_ctx);
-
-static odfs_err_t hfs_walk_catalog(hfs_context_t *ctx,
-                                     odfs_cache_t *cache,
-                                     uint32_t parent_cnid,
-                                     hfs_cat_cb callback,
-                                     void *cb_ctx)
-{
-    uint8_t *node_buf;
-    odfs_err_t err;
-    uint32_t cur_node;
-    int found_start = 0;
-
-    node_buf = odfs_malloc(ctx->cat_node_size);
-    if (!node_buf) return ODFS_ERR_NOMEM;
-
-    /* start from root and descend to the right leaf */
-    cur_node = ctx->cat_root_node;
-
-    /* descend index nodes (max depth ~10) */
-    for (int depth = 0; depth < 20; depth++) {
-        err = hfs_read_node(ctx, cache, cur_node, node_buf);
-        if (err != ODFS_OK) { odfs_free(node_buf); return err; }
-
-        uint8_t ntype = node_buf[8];
-        uint16_t nrecs;
-
-        if (ntype == HFS_NODE_LEAF)
-            break; /* reached leaf level */
-
-        if (ntype != HFS_NODE_INDEX) {
-            odfs_free(node_buf);
-            return ODFS_ERR_CORRUPT;
-        }
-
-        if (!hfs_read_record_count(node_buf, ctx->cat_node_size, &nrecs)) {
-            odfs_free(node_buf);
-            return ODFS_ERR_CORRUPT;
-        }
-
-        /* find the right child in the index node */
-        uint32_t child = 0;
-        for (uint16_t r = 0; r < nrecs; r++) {
-            uint32_t off = hfs_rec_offset(node_buf, ctx->cat_node_size, r);
-            if (off + 6 >= ctx->cat_node_size) break;
-
-            uint8_t klen = node_buf[off];
-            if (off + (uint32_t)klen + 1 + 4 >= ctx->cat_node_size) break;
-
-            uint32_t key_parent = hfs_be32(&node_buf[off + 2]);
-            uint32_t ptr = hfs_be32(&node_buf[off + 1 + klen]);
-
-            /* a directory's records can start in the child before the
-             * first key naming it */
-            if (key_parent < parent_cnid || child == 0)
-                child = ptr;
-            if (key_parent >= parent_cnid)
-                break;
-        }
-
-        if (child == 0) { odfs_free(node_buf); return ODFS_ERR_NOT_FOUND; }
-        cur_node = child;
-    }
-
-    /* now scan leaf nodes for entries matching parent_cnid */
-    while (cur_node != 0) {
-        err = hfs_read_node(ctx, cache, cur_node, node_buf);
-        if (err != ODFS_OK) { odfs_free(node_buf); return err; }
-
-        if (node_buf[8] != HFS_NODE_LEAF) break;
-
-        uint16_t nrecs;
-        if (!hfs_read_record_count(node_buf, ctx->cat_node_size, &nrecs)) {
-            odfs_free(node_buf);
-            return ODFS_ERR_CORRUPT;
-        }
-
-        for (uint16_t r = 0; r < nrecs; r++) {
-            uint32_t off = hfs_rec_offset(node_buf, ctx->cat_node_size, r);
-            uint32_t next_off = hfs_rec_offset(node_buf, ctx->cat_node_size, r + 1);
-
-            if (off + 6 >= ctx->cat_node_size) continue;
-
-            uint8_t klen = node_buf[off];
-            if (klen < 5 || off + 1 + (uint32_t)klen >= ctx->cat_node_size) continue;
-
-            uint32_t key_parent = hfs_be32(&node_buf[off + 2]);
-
-            if (key_parent < parent_cnid) continue;
-            if (key_parent > parent_cnid) {
-                /* past our directory — done */
-                odfs_free(node_buf);
-                return ODFS_OK;
-            }
-
-            found_start = 1;
-
-            /* record data follows the key (padded to even boundary) */
-            uint32_t data_off = off + 1U + klen;
-            if (data_off & 1) data_off++; /* word-align */
-            uint32_t data_len =
-                (next_off > data_off) ? next_off - data_off : 0U;
-
-            if (data_off < ctx->cat_node_size && data_len > 0) {
-                err = callback(&node_buf[off], (size_t)klen + 1U,
-                               &node_buf[data_off], data_len, cb_ctx);
-                if (err != ODFS_OK) {
-                    odfs_free(node_buf);
-                    return err;
-                }
-            }
-        }
-
-        /* follow forward link to next leaf */
-        cur_node = hfs_be32(&node_buf[0]);
-        if (found_start && cur_node != 0) {
-            /* peek at next node's first key to see if we're done */
-            err = hfs_read_node(ctx, cache, cur_node, node_buf);
-            if (err != ODFS_OK) { odfs_free(node_buf); return err; }
-            if (node_buf[8] != HFS_NODE_LEAF) break;
-            uint32_t off = hfs_rec_offset(node_buf, ctx->cat_node_size, 0);
-            if (off + 6 < ctx->cat_node_size) {
-                uint32_t next_parent = hfs_be32(&node_buf[off + 2]);
-                if (next_parent != parent_cnid) break;
-            }
-            /* reset cur_node to re-process this node from the loop */
-            /* actually we already read it, just continue the while loop */
-            continue;
-        }
-    }
-
-    odfs_free(node_buf);
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* readdir                                                             */
-/* ------------------------------------------------------------------ */
-
-typedef struct hfs_readdir_ctx {
-    hfs_context_t *hctx;
-    odfs_cache_t *cache;
-    const odfs_node_t *dir;
-    odfs_dir_iter_fn callback;
-    void *cb_ctx;
-    uint32_t entry_index;
-    uint32_t skip_to;
-    uint32_t *resume_offset;
-    odfs_err_t last_err;
-    odfs_namefix_state_t namefix;
-} hfs_readdir_ctx_t;
-
-static odfs_err_t hfs_readdir_cb(const uint8_t *key, size_t key_len,
-                                    const uint8_t *data, size_t data_len,
-                                    void *cb_ctx)
-{
-    hfs_readdir_ctx_t *rc = cb_ctx;
-
-    if (data_len < 1) return ODFS_OK;
-
-    uint8_t rec_type = data[0];
-
-    /* only interested in file and directory records, not threads */
-    if (rec_type != HFS_CAT_FILE && rec_type != HFS_CAT_DIR)
-        return ODFS_OK;
-
-    odfs_node_t node;
-    memset(&node, 0, sizeof(node));
-    node.id = rc->hctx->next_node_id++;
-    node.parent_id = rc->dir->id;
-    node.backend = ODFS_BACKEND_HFS;
-
-    /* extract name from catalog key:
-       key[0] = key length, key[1] = reserved, key[2..5] = parentID,
-       key[6] = name length, key[7..] = name bytes */
-    if (key_len >= 8) {
-        uint8_t nlen = key[6];
-        if (nlen > 0 && (size_t)(7 + nlen) <= key_len) {
-            hfs_name_to_utf8(&key[7], nlen, node.name, sizeof(node.name));
-        }
-    }
-
-    if (rec_type == HFS_CAT_DIR && data_len >= 22) {
-        node.kind = ODFS_NODE_DIR;
-        uint32_t dir_id = hfs_be32(&data[6]);
-        node.extent.lba = dir_id; /* store CNID for readdir */
-        odfs_timestamp_from_mac_time(hfs_be32(&data[14]), &node.mtime);
-    } else if (rec_type == HFS_CAT_FILE && data_len >= 52) {
-        node.kind = ODFS_NODE_FILE;
-        node.size = hfs_be32(&data[26]); /* data fork logical length */
-        /* data fork first extent: at offset 74 in file record */
-        if (data_len >= 78) {
-            node.extent.lba = hfs_be16(&data[74]);    /* first extent start AB */
-            node.extent.length = (uint32_t)node.size;
-        }
-        odfs_timestamp_from_mac_time(hfs_be32(&data[48]), &node.mtime);
-    }
-    node.ctime = node.mtime;
-
-    odfs_err_t err = odfs_namefix_apply(&rc->namefix, node.name, sizeof(node.name));
-    if (err != ODFS_OK) {
-        rc->last_err = err;
-        return err;
-    }
-
-    /* skip to resume point */
-    if (rc->entry_index < rc->skip_to) {
-        rc->entry_index++;
-        return ODFS_OK;
-    }
-
-    rc->entry_index++;
-
-    rc->last_err = rc->callback(&node, rc->cb_ctx);
-    if (rc->last_err != ODFS_OK) {
-        if (rc->resume_offset)
-            *rc->resume_offset = rc->entry_index;
-        return rc->last_err;
-    }
-
-    return ODFS_OK;
-}
-
-static odfs_err_t hfs_readdir(void *backend_ctx,
-                                odfs_cache_t *cache,
-                                odfs_log_state_t *log,
-                                const odfs_node_t *dir,
-                                odfs_dir_iter_fn callback,
-                                void *cb_ctx,
-                                uint32_t *resume_offset)
-{
-    hfs_context_t *ctx = backend_ctx;
-    (void)log;
-
-    /* dir->extent.lba stores the directory's CNID */
-    uint32_t parent_cnid = dir->extent.lba;
-
-    hfs_readdir_ctx_t rc;
-    rc.hctx = ctx;
-    rc.cache = cache;
-    rc.dir = dir;
-    rc.callback = callback;
-    rc.cb_ctx = cb_ctx;
-    rc.entry_index = 0;
-    rc.skip_to = (resume_offset && *resume_offset) ? *resume_offset : 0;
-    rc.resume_offset = resume_offset;
-    rc.last_err = ODFS_OK;
-    odfs_namefix_init(&rc.namefix);
-
-    odfs_err_t err = hfs_walk_catalog(ctx, cache, parent_cnid,
-                                        hfs_readdir_cb, &rc);
-    odfs_namefix_destroy(&rc.namefix);
-    if (rc.last_err != ODFS_OK)
-        return rc.last_err;
-
-    if (resume_offset)
-        *resume_offset = rc.entry_index; /* exhausted */
-    return err;
-}
-
-/* ------------------------------------------------------------------ */
-/* read                                                                */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t hfs_read(void *backend_ctx,
-                             odfs_cache_t *cache,
-                             odfs_log_state_t *log,
-                             const odfs_node_t *file,
-                             uint64_t offset,
-                             void *buf,
-                             size_t *len)
-{
-    hfs_context_t *ctx = backend_ctx;
-    (void)log;
-
-    if (offset >= file->size) { *len = 0; return ODFS_OK; }
-
-    size_t want = *len;
-    if (want > file->size - offset)
-        want = (size_t)(file->size - offset);
-
-    /* file->extent.lba = first extent start allocation block */
-    uint64_t data_start = hfs_ab_to_byte(ctx, (uint16_t)file->extent.lba);
-    *len = want;
-    return odfs_cache_read_bytes(cache, 0, data_start + offset, buf, len);
-}
-
-/* ------------------------------------------------------------------ */
-/* lookup                                                              */
-/* ------------------------------------------------------------------ */
-
-typedef struct hfs_lookup_ctx {
-    const char   *name;
-    odfs_node_t *result;
-    int           found;
-} hfs_lookup_ctx_t;
-
-static odfs_err_t hfs_lookup_iter(const odfs_node_t *entry, void *ctx)
-{
-    hfs_lookup_ctx_t *lc = ctx;
-    if (odfs_strcasecmp(entry->name, lc->name) == 0) {
-        *lc->result = *entry;
-        lc->found = 1;
-        return ODFS_ERR_EOF;
-    }
-    return ODFS_OK;
-}
-
-static odfs_err_t hfs_lookup(void *backend_ctx,
-                               odfs_cache_t *cache,
-                               odfs_log_state_t *log,
-                               const odfs_node_t *dir,
-                               const char *name,
-                               odfs_node_t *out)
-{
-    hfs_lookup_ctx_t lc;
-    lc.name = name;
-    lc.result = out;
-    lc.found = 0;
-
-    odfs_err_t err = hfs_readdir(backend_ctx, cache, log, dir,
-                                   hfs_lookup_iter, &lc, NULL);
-    if (err == ODFS_ERR_EOF && lc.found) return ODFS_OK;
-    if (err != ODFS_OK) return err;
-    if (lc.found) return ODFS_OK;
-    return ODFS_ERR_NOT_FOUND;
-}
-
-/* ------------------------------------------------------------------ */
-/* resolve_parent                                                      */
-/* ------------------------------------------------------------------ */
-
-typedef struct hfs_thread_info {
-    uint32_t parent_cnid;
-    int found;
-} hfs_thread_info_t;
-
-static odfs_err_t hfs_thread_cb(const uint8_t *key, size_t key_len,
-                                  const uint8_t *data, size_t data_len,
-                                  void *cb_ctx)
-{
-    hfs_thread_info_t *info = cb_ctx;
-
-    (void)key;
-    (void)key_len;
-
-    if (data_len < 14 || data[0] != HFS_CAT_DTHREAD)
-        return ODFS_OK;
-
-    info->parent_cnid = hfs_be32(&data[10]);
-    info->found = 1;
-    return ODFS_ERR_EOF;
-}
-
-static odfs_err_t hfs_read_thread(hfs_context_t *ctx,
-                                    odfs_cache_t *cache,
-                                    uint32_t cnid,
-                                    hfs_thread_info_t *info)
-{
-    odfs_err_t err;
-
-    info->parent_cnid = 0;
-    info->found = 0;
-
-    err = hfs_walk_catalog(ctx, cache, cnid, hfs_thread_cb, info);
-    if (info->found)
-        return ODFS_OK;
-    if (err == ODFS_OK || err == ODFS_ERR_EOF)
-        return ODFS_ERR_NOT_FOUND;
-    return err;
-}
-
-typedef struct hfs_cnid_match {
-    uint32_t want_cnid;
-    odfs_node_t *out;
-    int found;
-} hfs_cnid_match_t;
-
-static odfs_err_t hfs_cnid_match_cb(const odfs_node_t *entry, void *cb_ctx)
-{
-    hfs_cnid_match_t *m = cb_ctx;
-
-    if (entry->kind == ODFS_NODE_DIR && entry->extent.lba == m->want_cnid) {
-        *m->out = *entry;
-        m->found = 1;
-        return ODFS_ERR_EOF;
-    }
-
-    return ODFS_OK;
-}
-
-static odfs_err_t hfs_find_child_by_cnid(void *backend_ctx,
-                                           odfs_cache_t *cache,
-                                           odfs_log_state_t *log,
-                                           const odfs_node_t *parent_dir,
-                                           uint32_t child_cnid,
-                                           odfs_node_t *out)
-{
-    hfs_cnid_match_t m;
-    odfs_err_t err;
-
-    m.want_cnid = child_cnid;
-    m.out = out;
-    m.found = 0;
-
-    err = hfs_readdir(backend_ctx, cache, log, parent_dir,
-                      hfs_cnid_match_cb, &m, NULL);
-    if (m.found)
-        return ODFS_OK;
-    if (err == ODFS_OK || err == ODFS_ERR_EOF)
-        return ODFS_ERR_NOT_FOUND;
-    return err;
-}
-
-static odfs_node_t hfs_dir_stub(uint32_t cnid)
-{
-    odfs_node_t n;
-
-    memset(&n, 0, sizeof(n));
-    n.backend = ODFS_BACKEND_HFS;
-    n.kind = ODFS_NODE_DIR;
-    n.extent.lba = cnid;
-    return n;
-}
-
-static odfs_err_t hfs_resolve_parent(void *backend_ctx,
-                                       odfs_cache_t *cache,
-                                       odfs_log_state_t *log,
-                                       const odfs_node_t *dir,
-                                       odfs_node_t *parent_out,
-                                       odfs_node_t *grandparent_out)
-{
-    hfs_context_t *ctx = backend_ctx;
-    hfs_thread_info_t thread;
-    hfs_thread_info_t parent_thread;
-    odfs_node_t grandparent;
-    odfs_err_t err;
-
-    if (dir->kind != ODFS_NODE_DIR)
-        return ODFS_ERR_NOT_DIR;
-
-    if (dir->extent.lba == HFS_CNID_ROOT_DIR)
-        return ODFS_ERR_NOT_FOUND;
-
-    err = hfs_read_thread(ctx, cache, dir->extent.lba, &thread);
-    if (err != ODFS_OK)
-        return err;
-
-    if (thread.parent_cnid == HFS_CNID_ROOT_DIR) {
-        *parent_out = ctx->root;
-        if (grandparent_out)
-            *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    err = hfs_read_thread(ctx, cache, thread.parent_cnid, &parent_thread);
-    if (err != ODFS_OK)
-        return err;
-
-    if (parent_thread.parent_cnid == HFS_CNID_ROOT_DIR)
-        grandparent = ctx->root;
-    else
-        grandparent = hfs_dir_stub(parent_thread.parent_cnid);
-
-    err = hfs_find_child_by_cnid(backend_ctx, cache, log, &grandparent,
-                                 thread.parent_cnid, parent_out);
-    if (err != ODFS_OK)
-        return err;
-
-    if (!grandparent_out)
-        return ODFS_OK;
-
-    if (parent_thread.parent_cnid == HFS_CNID_ROOT_DIR) {
-        *grandparent_out = ctx->root;
-        return ODFS_OK;
-    }
-
-    {
-        hfs_thread_info_t gp_thread;
-        odfs_node_t great;
-
-        err = hfs_read_thread(ctx, cache, parent_thread.parent_cnid,
-                              &gp_thread);
-        if (err != ODFS_OK)
-            return err;
-
-        if (gp_thread.parent_cnid == HFS_CNID_ROOT_DIR)
-            great = ctx->root;
-        else
-            great = hfs_dir_stub(gp_thread.parent_cnid);
-
-        err = hfs_find_child_by_cnid(backend_ctx, cache, log, &great,
-                                     parent_thread.parent_cnid,
-                                     grandparent_out);
-        if (err != ODFS_OK)
-            return err;
-    }
-
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* get_volume_name                                                     */
-/* ------------------------------------------------------------------ */
-
-static odfs_err_t hfs_get_volume_name(void *backend_ctx,
-                                        char *buf, size_t buf_size)
-{
-    hfs_context_t *ctx = backend_ctx;
-    size_t len = strlen(ctx->volume_name);
-    if (len >= buf_size) len = buf_size - 1;
-    memcpy(buf, ctx->volume_name, len);
-    buf[len] = '\0';
-    return ODFS_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* get_volume_size                                                     */
-/* ------------------------------------------------------------------ */
-
-static uint32_t hfs_get_volume_size(void *backend_ctx)
-{
-    hfs_context_t *ctx = backend_ctx;
-    uint64_t bytes = (uint64_t)ctx->num_alloc_blocks * ctx->alloc_block_size;
-    uint64_t blocks = (bytes + 2047u) / 2048u;
-
-    return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
 }
 
 /* ------------------------------------------------------------------ */
@@ -851,11 +263,11 @@ const odfs_backend_ops_t hfs_backend_ops = {
     .backend_type    = ODFS_BACKEND_HFS,
     .probe           = hfs_probe,
     .mount           = hfs_mount,
-    .unmount         = hfs_unmount,
-    .readdir         = hfs_readdir,
-    .read            = hfs_read,
-    .lookup          = hfs_lookup,
-    .resolve_parent  = hfs_resolve_parent,
-    .get_volume_name = hfs_get_volume_name,
-    .get_volume_size = hfs_get_volume_size,
+    .unmount         = odfs_hfs_unmount,
+    .readdir         = odfs_hfs_readdir,
+    .read            = odfs_hfs_read,
+    .lookup          = odfs_hfs_lookup,
+    .resolve_parent  = odfs_hfs_resolve_parent,
+    .get_volume_name = odfs_hfs_get_volume_name,
+    .get_volume_size = odfs_hfs_get_volume_size,
 };
