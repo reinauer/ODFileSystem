@@ -32,11 +32,13 @@ TEST(rr_parse_sl_basic)
         'S', 'T', 4, 1
     };
     rr_info_t info;
+    char target[64];
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
 
     ASSERT_EQ(info.is_symlink, 1);
-    ASSERT_STR_EQ(info.symlink_target, "etc/host");
+    ASSERT_EQ(info.sl_truncated, 0);
+    ASSERT_STR_EQ(target, "etc/host");
 }
 
 TEST(rr_parse_sl_truncated_component)
@@ -47,11 +49,36 @@ TEST(rr_parse_sl_truncated_component)
         'S', 'T', 4, 1
     };
     rr_info_t info;
+    char target[64];
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
 
     ASSERT_EQ(info.is_symlink, 1);
-    ASSERT_STR_EQ(info.symlink_target, "");
+    ASSERT_STR_EQ(target, "");
+}
+
+TEST(rr_parse_sl_component_continue_and_overflow)
+{
+    const uint8_t sua[] = {
+        'S', 'L', 11, 1, 0x01,
+        0x01, 4, 'v', 'e', 'r', 'y',     /* component continues */
+        'S', 'L', 17, 1, 0x00,
+        0x00, 4, 'l', 'o', 'n', 'g',     /* rest of the same component */
+        0x00, 4, 'l', 'e', 'a', 'f',     /* next path component */
+        'S', 'T', 4, 1
+    };
+    rr_info_t info;
+    char target[64];
+    char tiny[8];
+
+    rr_parse(sua, sizeof(sua), 0, 0, &info, target, sizeof(target), NULL);
+    ASSERT_EQ(info.is_symlink, 1);
+    ASSERT_EQ(info.sl_truncated, 0);
+    ASSERT_STR_EQ(target, "verylong/leaf");
+
+    rr_parse(sua, sizeof(sua), 0, 0, &info, tiny, sizeof(tiny), NULL);
+    ASSERT_EQ(info.is_symlink, 1);
+    ASSERT_EQ(info.sl_truncated, 1);
 }
 
 TEST(rr_parse_as_basic)
@@ -64,7 +91,7 @@ TEST(rr_parse_as_basic)
     };
     rr_info_t info;
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL, 0, NULL);
 
     ASSERT_EQ(info.has_amiga_protection, 1);
     ASSERT_EQ(info.amiga_protection[0], 0x00);
@@ -87,7 +114,7 @@ TEST(rr_parse_as_comment_continue)
     };
     rr_info_t info;
 
-    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL);
+    rr_parse(sua, sizeof(sua), 0, 0, &info, NULL, 0, NULL);
 
     ASSERT_EQ(info.has_amiga_protection, 1);
     ASSERT_EQ(info.amiga_protection[3], 0x10);
@@ -113,11 +140,11 @@ TEST(rr_parse_tf_short_entry_and_single_timestamps)
     };
     rr_info_t info;
 
-    rr_parse(short_tf, 4, 0, 0, &info, NULL);
+    rr_parse(short_tf, 4, 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 0);
     ASSERT_EQ(info.has_ctime, 0);
 
-    rr_parse(tf7, sizeof(tf7), 0, 0, &info, NULL);
+    rr_parse(tf7, sizeof(tf7), 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 1);
     ASSERT_EQ(info.has_ctime, 0);
     ASSERT_EQ(info.mtime.year, 2026);
@@ -125,7 +152,7 @@ TEST(rr_parse_tf_short_entry_and_single_timestamps)
     ASSERT_EQ(info.mtime.day, 19);
     ASSERT_EQ(info.mtime.tz_offset, 60);
 
-    rr_parse(tf17, sizeof(tf17), 0, 0, &info, NULL);
+    rr_parse(tf17, sizeof(tf17), 0, 0, &info, NULL, 0, NULL);
     ASSERT_EQ(info.has_mtime, 0);
     ASSERT_EQ(info.has_ctime, 1);
     ASSERT_EQ(info.ctime.year, 2026);
@@ -223,7 +250,7 @@ TEST(rr_parse_ce_continues_name_in_session_and_finishes_area)
     memcpy(&ce[5], "world.txt", 9);
 
     ASSERT_OK(odfs_cache_read(&cache, 10, &sec));
-    rr_parse(sec, p, 0, session_start, &info, &cache);
+    rr_parse(sec, p, 0, session_start, &info, NULL, 0, &cache);
 
     ASSERT_EQ(info.has_name, 1);
     ASSERT_STR_EQ(info.name, "hello_world.txt");
