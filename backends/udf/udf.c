@@ -359,30 +359,34 @@ static void udf_unmount(void *backend_ctx)
 }
 
 /* ------------------------------------------------------------------ */
-/* read file entry and get data extent                                 */
+/* File Entry parsing                                                  */
 /* ------------------------------------------------------------------ */
 
+typedef struct udf_icb_info {
+    uint64_t data_size;   /* Information Length */
+    uint32_t ad_offset;   /* allocation descriptors' offset in the ICB */
+    uint32_t ad_length;
+    uint8_t  alloc_type;
+    uint8_t  file_type;
+} udf_icb_info_t;
+
 /*
- * Read a File Entry (or Extended File Entry) ICB and extract
- * the data location and size. Returns the physical LBA and
- * byte length of the file's data.
+ * Parse the File Entry or Extended File Entry ICB at icb_phys_lba.
+ * Optionally return its modification time and the cached ICB sector,
+ * which stays valid only until the next cache access.
  */
-static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
-                                   odfs_cache_t *cache,
-                                   uint32_t icb_phys_lba,
-                                   uint64_t *data_size,
-                                   uint32_t *data_phys_lba,
-                                   uint8_t *file_type,
-                                   odfs_timestamp_t *mtime,
-                                   uint32_t *embed_off_out)
+static odfs_err_t udf_parse_icb(odfs_cache_t *cache,
+                                uint32_t icb_phys_lba,
+                                udf_icb_info_t *out,
+                                odfs_timestamp_t *mtime,
+                                const uint8_t **sector_out)
 {
     const uint8_t *sector;
     uint16_t tag;
+    uint32_t ad_base, ea_len, ad_length;
+    odfs_err_t err;
 
-    if (embed_off_out)
-        *embed_off_out = 0;
-
-    odfs_err_t err = odfs_cache_read(cache, icb_phys_lba, &sector);
+    err = odfs_cache_read(cache, icb_phys_lba, &sector);
     if (err != ODFS_OK)
         return err;
 
@@ -390,91 +394,39 @@ static odfs_err_t udf_read_icb_ex(udf_context_t *ctx,
     if (tag == 0)
         return ODFS_ERR_CORRUPT;
 
-    uint32_t block_size = UDF_BLOCK_SIZE;
-    uint16_t alloc_type;
-    uint32_t ad_offset;  /* offset of allocation descriptors in FE */
-    uint32_t ad_length;
-    uint32_t ad_base;
-    uint32_t ea_len;
-
-    if (tag == UDF_TAG_FE) {
-        /* File Entry (ECMA-167 14.9) */
-        if (block_size < 176)
-            return ODFS_ERR_CORRUPT;
-
-        *file_type = sector[16 + 11];
-        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
-        *data_size = udf_le64(&sector[56]);
-        if (mtime)
-            udf_parse_timestamp(&sector[84], mtime);
-        ea_len = udf_le32(&sector[168]);
-        ad_length = udf_le32(&sector[172]);
+    /* File Entry (ECMA-167 14.9) and Extended File Entry (14.17) agree
+     * up to the Information Length; the EFE has 40 more bytes before
+     * the EA and AD lengths that precede the descriptors */
+    if (tag == UDF_TAG_FE)
         ad_base = 176;
-    } else if (tag == UDF_TAG_EFE) {
-        /* Extended File Entry (ECMA-167 14.17) */
-        if (block_size < 216)
-            return ODFS_ERR_CORRUPT;
-
-        *file_type = sector[16 + 11];
-        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
-        *data_size = udf_le64(&sector[56]);
-        if (mtime)
-            udf_parse_timestamp(&sector[108], mtime);
-        ea_len = udf_le32(&sector[208]);
-        ad_length = udf_le32(&sector[212]);
+    else if (tag == UDF_TAG_EFE)
         ad_base = 216;
-    } else {
+    else
         return ODFS_ERR_BAD_FORMAT;
-    }
 
-    if (ea_len > block_size - ad_base)
-        return ODFS_ERR_CORRUPT;
-    ad_offset = ad_base + ea_len;
-
-    if (ad_length > block_size - ad_offset)
+    ea_len = udf_le32(&sector[ad_base - 8]);
+    ad_length = udf_le32(&sector[ad_base - 4]);
+    if (ea_len > UDF_BLOCK_SIZE - ad_base ||
+        ad_length > UDF_BLOCK_SIZE - (ad_base + ea_len))
         return ODFS_ERR_CORRUPT;
 
-    /* get data location from first allocation descriptor */
-    *data_phys_lba = 0;
+    out->data_size  = udf_le64(&sector[56]);
+    out->ad_offset  = ad_base + ea_len;
+    out->ad_length  = ad_length;
+    out->alloc_type = (uint8_t)(udf_le16(&sector[16 + 18]) & 0x07);
+    out->file_type  = sector[16 + 11];
 
-    if (alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
-        /* data is embedded in the FE itself, after the EAs */
-        *data_phys_lba = icb_phys_lba;
-        if (embed_off_out)
-            *embed_off_out = ad_offset;
-    } else if (alloc_type == UDF_ICB_ALLOC_SHORT) {
-        /* short AD: 4 bytes length + 4 bytes position */
-        if (ad_length < 8 || ad_offset > block_size - 8)
-            return ODFS_ERR_CORRUPT;
-        uint32_t pos = udf_le32(&sector[ad_offset + 4]);
-        *data_phys_lba = udf_phys_lba(ctx, pos);
-    } else if (alloc_type == UDF_ICB_ALLOC_LONG) {
-        /* long AD: 4 bytes length + 4 bytes LBA + 2 bytes partition + 6 impl use */
-        if (ad_length < 16 || ad_offset > block_size - 16)
-            return ODFS_ERR_CORRUPT;
-        uint32_t lba = udf_le32(&sector[ad_offset + 4]);
-        *data_phys_lba = udf_phys_lba(ctx, lba);
-    }
-
+    if (mtime)
+        udf_parse_timestamp(&sector[tag == UDF_TAG_FE ? 84 : 108], mtime);
+    if (sector_out)
+        *sector_out = sector;
     return ODFS_OK;
-}
-
-static odfs_err_t udf_read_icb(udf_context_t *ctx,
-                                odfs_cache_t *cache,
-                                uint32_t icb_phys_lba,
-                                uint64_t *data_size,
-                                uint32_t *data_phys_lba,
-                                uint8_t *file_type,
-                                odfs_timestamp_t *mtime)
-{
-    return udf_read_icb_ex(ctx, cache, icb_phys_lba, data_size,
-                           data_phys_lba, file_type, mtime, NULL);
 }
 
 /*
  * Read up to *len bytes at file_offset from the object (file or directory)
- * whose File Entry ICB is at icb_phys. Unlike udf_read_icb, this follows
- * the full allocation-descriptor chain, so files and directories that span
+ * whose File Entry ICB is at icb_phys. This follows the full
+ * allocation-descriptor chain, so files and directories that span
  * several extents — the normal case for anything larger than ~1 GiB, and
  * for fragmented media — are read correctly. Embedded data, sparse and
  * unrecorded extents (read as zeros), and allocation-extent continuation
@@ -493,85 +445,48 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
                                   size_t *len)
 {
     const uint8_t *sector;
-    uint16_t tag;
+    udf_icb_info_t icb;
     uint8_t ad_buf[2048];
     uint8_t *out = buf;
     size_t want = *len;
     size_t done = 0;
-    uint64_t data_size;
     uint64_t cur_pos = 0;
-    uint32_t block_size = UDF_BLOCK_SIZE;
-    uint16_t alloc_type;
-    uint8_t file_type;
-    uint32_t ea_len, ad_length, ad_base, ad_offset, ad_run_len;
+    uint32_t ad_run_len;
     size_t ad_size, p;
     int guard = 0;
     odfs_err_t err;
 
     *len = 0;
 
-    err = odfs_cache_read(cache, icb_phys, &sector);
+    err = udf_parse_icb(cache, icb_phys, &icb, NULL, &sector);
     if (err != ODFS_OK)
         return err;
-    tag = udf_tag_id(sector);
-    if (tag == 0)
-        return ODFS_ERR_CORRUPT;
 
-    if (tag == UDF_TAG_FE) {
-        if (block_size < 176)
-            return ODFS_ERR_CORRUPT;
-        file_type  = sector[16 + 11];
-        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
-        data_size  = udf_le64(&sector[56]);
-        ea_len     = udf_le32(&sector[168]);
-        ad_length  = udf_le32(&sector[172]);
-        ad_base    = 176;
-    } else if (tag == UDF_TAG_EFE) {
-        if (block_size < 216)
-            return ODFS_ERR_CORRUPT;
-        file_type  = sector[16 + 11];
-        alloc_type = udf_le16(&sector[16 + 18]) & 0x07;
-        data_size  = udf_le64(&sector[56]);
-        ea_len     = udf_le32(&sector[208]);
-        ad_length  = udf_le32(&sector[212]);
-        ad_base    = 216;
-    } else {
-        return ODFS_ERR_BAD_FORMAT;
-    }
-
-    if (block_size > sizeof(ad_buf))
-        return ODFS_ERR_UNSUPPORTED;
-    if (ea_len > block_size - ad_base)
-        return ODFS_ERR_CORRUPT;
-    ad_offset = ad_base + ea_len;
-    if (ad_length > block_size - ad_offset)
-        return ODFS_ERR_CORRUPT;
-
-    if (file_offset >= data_size)
+    if (file_offset >= icb.data_size)
         return ODFS_OK;
-    if (want > data_size - file_offset)
-        want = (size_t)(data_size - file_offset);
+    if (want > icb.data_size - file_offset)
+        want = (size_t)(icb.data_size - file_offset);
     if (want == 0)
         return ODFS_OK;
 
-    if (alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
-        if ((uint64_t)ad_offset + data_size > block_size)
+    if (icb.alloc_type == UDF_ICB_ALLOC_EMBEDDED) {
+        if ((uint64_t)icb.ad_offset + icb.data_size > UDF_BLOCK_SIZE)
             return ODFS_ERR_CORRUPT;
-        memcpy(out, sector + ad_offset + (size_t)file_offset, want);
+        memcpy(out, sector + icb.ad_offset + (size_t)file_offset, want);
         *len = want;
         return ODFS_OK;
     }
 
-    if (alloc_type == UDF_ICB_ALLOC_SHORT)
+    if (icb.alloc_type == UDF_ICB_ALLOC_SHORT)
         ad_size = 8;
-    else if (alloc_type == UDF_ICB_ALLOC_LONG)
+    else if (icb.alloc_type == UDF_ICB_ALLOC_LONG)
         ad_size = 16;
     else
         return ODFS_ERR_UNSUPPORTED; /* extended ADs are not used on optical media */
 
     /* copy the ICB's allocation-descriptor run before any data read */
-    memcpy(ad_buf, sector + ad_offset, ad_length);
-    ad_run_len = ad_length;
+    memcpy(ad_buf, sector + icb.ad_offset, icb.ad_length);
+    ad_run_len = icb.ad_length;
     p = 0;
 
     while (done < want) {
@@ -599,7 +514,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
                 return ODFS_ERR_CORRUPT;
 
             alen = udf_le32(&aed[20]); /* Length of Allocation Descriptors */
-            if (alen > sizeof(ad_buf) || 24u + alen > block_size)
+            if (alen > UDF_BLOCK_SIZE - 24u)
                 return ODFS_ERR_CORRUPT;
             memcpy(ad_buf, aed + 24, alen);
             ad_run_len = alen;
@@ -652,7 +567,7 @@ static odfs_err_t udf_read_object(udf_context_t *ctx,
      * of a file is unallocated and reads as zeros. A directory that
      * ends early is truncated, and its short read reports that.
      */
-    if (done < want && file_type != UDF_ICB_FILETYPE_DIR) {
+    if (done < want && icb.file_type != UDF_ICB_FILETYPE_DIR) {
         memset(out + done, 0, want - done);
         done = want;
     }
@@ -686,27 +601,21 @@ static odfs_err_t udf_fill_node_from_icb(udf_context_t *ctx,
                                          odfs_node_t *node)
 {
     uint32_t icb_phys = udf_phys_lba(ctx, icb_lba);
-    uint64_t fsize = 0;
-    uint32_t data_lba = 0;
-    uint8_t ftype = 0;
-    odfs_timestamp_t ts;
+    udf_icb_info_t icb;
     odfs_err_t err;
 
-    memset(&ts, 0, sizeof(ts));
-    err = udf_read_icb(ctx, cache, icb_phys, &fsize, &data_lba,
-                       &ftype, &ts);
+    err = udf_parse_icb(cache, icb_phys, &icb, &node->mtime, NULL);
     if (err != ODFS_OK)
         return err;
 
-    node->size = fsize;
-    node->mtime = ts;
-    node->ctime = ts;
+    node->size = icb.data_size;
+    node->ctime = node->mtime;
     node->extent.lba = icb_phys;
-    node->extent.length = (uint32_t)fsize;
+    node->extent.length = (uint32_t)icb.data_size;
 
     if (fid_flags & UDF_FID_FLAG_DIRECTORY)
         node->kind = ODFS_NODE_DIR;
-    else if (ftype == UDF_ICB_FILETYPE_SYMLINK)
+    else if (icb.file_type == UDF_ICB_FILETYPE_SYMLINK)
         node->kind = ODFS_NODE_SYMLINK;
     else
         node->kind = ODFS_NODE_FILE;
@@ -745,21 +654,18 @@ static odfs_err_t udf_walk_fids(udf_context_t *ctx,
                                 void *arg,
                                 uint32_t *dir_size_out)
 {
-    uint64_t dir_size;
-    uint32_t dir_data_lba;
-    uint8_t dir_ftype;
+    udf_icb_info_t icb;
     uint32_t dir_size32;
     uint32_t offset = 0;
     odfs_err_t err;
 
-    err = udf_read_icb(ctx, cache, dir->extent.lba,
-                       &dir_size, &dir_data_lba, &dir_ftype, NULL);
+    err = udf_parse_icb(cache, dir->extent.lba, &icb, NULL, NULL);
     if (err != ODFS_OK)
         return err;
-    if (dir_size > UINT32_MAX)
+    if (icb.data_size > UINT32_MAX)
         return ODFS_ERR_CORRUPT;
 
-    dir_size32 = (uint32_t)dir_size;
+    dir_size32 = (uint32_t)icb.data_size;
     if (dir_size_out)
         *dir_size_out = dir_size32;
 

@@ -879,6 +879,52 @@ TEST(udf_node_id_is_stable_across_walks)
     odfs_cache_destroy(&cache);
 }
 
+TEST(udf_readdir_lists_empty_file_without_descriptors)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    collect_ctx_t collect;
+    uint8_t fid[40];
+    size_t len;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+    memset(&collect, 0, sizeof(collect));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 40, 1);
+    udf_make_fid(fid, "E", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+
+    /* zero-length file: short ADs, but no descriptor at all */
+    udf_make_fe_ads(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 0, NULL, 0);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.readdir(&ctx, &cache, &log, &dir,
+                                      collect_one, &collect, NULL));
+    ASSERT_EQ(collect.count, 1);
+    ASSERT_STR_EQ(collect.node.name, "E");
+    ASSERT_EQ(collect.node.size, 0);
+
+    len = 16;
+    ASSERT_OK(udf_backend_ops.read(&ctx, &cache, &log, &collect.node,
+                                   0, fid, &len));
+    ASSERT_EQ(len, 0);
+
+    odfs_cache_destroy(&cache);
+}
+
 /* ---- mounting a whole volume ---- */
 
 #define VOL_SECTOR_COUNT 300
