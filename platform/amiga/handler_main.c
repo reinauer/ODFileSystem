@@ -586,6 +586,28 @@ static odfs_err_t scsi_read10_data(handler_global_t *g,
 }
 
 /*
+ * CMD_READ for amiga_read_lo(). Out of line, so fh_read_direct() can
+ * inline the READ(10) attempt without a second copy of the fallback.
+ */
+static odfs_err_t __attribute__((noinline))
+amiga_read_cmd(handler_global_t *g, struct IOStdReq *req, uint32_t lba,
+               uint32_t bytes, void *buf)
+{
+    req->io_Offset = (g->sector_size == 2048) ? lba << 11
+                                              : lba * g->sector_size;
+    req->io_Actual = 0;
+    req->io_Length = bytes;
+    req->io_Data = buf;
+    req->io_Command = CMD_READ;
+
+    if (DoIO((struct IORequest *)req) != 0 ||
+        req->io_Error != 0 ||
+        req->io_Actual != bytes)
+        return ODFS_ERR_IO;
+    return ODFS_OK;
+}
+
+/*
  * Read whole sectors below 4 GiB into buf. With scsi_reads set, issue
  * SCSI READ(10) through HD_SCSICMD: drivers such as a4091.device do
  * less work per request for it than for CMD_READ, and a filesystem
@@ -602,19 +624,7 @@ static odfs_err_t amiga_read_lo(handler_global_t *g,
     if (g->scsi_reads && bytes <= 0xffffUL * 2048UL &&
         scsi_read10_data(g, req, lba, bytes, buf) == ODFS_OK)
         return ODFS_OK;
-
-    req->io_Offset = (g->sector_size == 2048) ? lba << 11
-                                              : lba * g->sector_size;
-    req->io_Actual = 0;
-    req->io_Length = bytes;
-    req->io_Data = buf;
-    req->io_Command = CMD_READ;
-
-    if (DoIO((struct IORequest *)req) != 0 ||
-        req->io_Error != 0 ||
-        req->io_Actual != bytes)
-        return ODFS_ERR_IO;
-    return ODFS_OK;
+    return amiga_read_cmd(g, req, lba, bytes, buf);
 }
 
 /*
@@ -3488,11 +3498,13 @@ static ULONG fh_read_cached(handler_global_t *g, odfs_fh_t *fh,
  * fails; the caller then takes the general path, which also reports
  * any error.
  */
-static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
-                          void *buf, ULONG len, ULONG *actual_out)
+static inline __attribute__((always_inline)) int
+fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
+               void *buf, ULONG len, ULONG *actual_out)
 {
     ULONG pos;
     ULONG want;
+    struct IOStdReq *req;
     ULONG lba;
 
     if (fh->direct_size == 0 || (ULONG)(fh->pos >> 32) != 0)
@@ -3516,7 +3528,10 @@ static int fh_read_direct(handler_global_t *g, odfs_fh_t *fh,
 #endif
 
     lba = fh->direct_lba + (pos >> 11);
-    if (amiga_read_lo(g, media_io_request(g), lba, want, buf) != ODFS_OK)
+    req = media_io_request(g);
+    if (!(g->scsi_reads && want <= 0xffffUL * 2048UL &&
+          scsi_read10_data(g, req, lba, want, buf) == ODFS_OK) &&
+        amiga_read_cmd(g, req, lba, want, buf) != ODFS_OK)
         return 0;
 
     fh->pos = pos + want;
@@ -3587,11 +3602,14 @@ LONG odfs_handler_read_object(handler_global_t *g,
         ULONG n;
 
         if ((ULONG)len >= 2 * 2048) {
-            /* large reads go to the device in one request */
+#if ODFS_AMIGA_OS4
+            /* large reads go to the device in one request; packets
+             * already tried this in read_packet_direct() */
             if (fh_read_direct(g, fh, buf, (ULONG)len, &n)) {
                 *actual_out = (LONG)n;
                 return 0;
             }
+#endif
         } else if (len > 0) {
 #if !ODFS_AMIGA_OS4
             if (g->pf_state != ODFS_PF_NONE) {
@@ -3614,6 +3632,36 @@ LONG odfs_handler_read_object(handler_global_t *g,
     }
 
     return read_object_general(g, fh, buf, len, pre, actual_out);
+}
+
+/*
+ * Serve an ACTION_READ that fh_read_direct() can take straight from
+ * the packet loop. The checks are those odfs_handler_read_object()
+ * makes before it gets there; only the layers in between are skipped:
+ * the dispatch, the call chain down to the device request and the
+ * per-packet volume reap, which together cost a 68040 several
+ * microseconds per Read(). Returns 0 to leave the packet to the
+ * general dispatch, which also reports any error.
+ */
+static int read_packet_direct(handler_global_t *g, struct DosPacket *pkt)
+{
+    odfs_fh_t *fh = (odfs_fh_t *)pkt->dp_Arg1;
+    void *buf = (void *)pkt->dp_Arg2;
+    LONG len = (LONG)pkt->dp_Arg3;
+    ULONG n;
+
+    if ((IPTR)pkt->dp_Arg3 > INT32_MAX || len < 2 * 2048 || !buf ||
+        !fh_is_active(g, fh) ||
+        validate_object_volume(g, fh_volume(fh)) != 0)
+        return 0;
+
+    fh->last_read = (ULONG)len;
+    if (!fh_read_direct(g, fh, buf, (ULONG)len, &n))
+        return 0;
+
+    pkt->dp_Res1 = (LONG)n;
+    pkt->dp_Res2 = 0;
+    return 1;
 }
 
 LONG odfs_handler_seek_object(handler_global_t *g,
@@ -6755,6 +6803,20 @@ void handler_main_startup(struct Message *startup_msg)
                 }
                 msg->mn_ReplyPort = pkt->dp_Port;
 #endif
+
+                /* streaming reads skip the dispatch and the reap below:
+                 * a read never changes an object count */
+                if (pkt->dp_Type == ACTION_READ) {
+                    int served;
+
+                    ODFS_FS_LOCK(g);
+                    served = read_packet_direct(g, pkt);
+                    ODFS_FS_UNLOCK(g);
+                    if (served) {
+                        return_packet(g, pkt);
+                        continue;
+                    }
+                }
 
                 if (pkt->dp_Type == ACTION_DIE ||
                     pkt->dp_Type == ACTION_SHUTDOWN) {
