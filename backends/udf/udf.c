@@ -122,20 +122,23 @@ static void udf_decode_cs0(const uint8_t *src, size_t len,
 
 static void udf_parse_timestamp(const uint8_t *ts, odfs_timestamp_t *out)
 {
+    /*
+     * ECMA-167 1/7.3: type and time zone (2), year (2), month, day,
+     * hour, minute, second, then three bytes of fractions. The time
+     * zone is the low 12 bits of the first field: minutes from UTC as
+     * a signed number, or -2047 for "not specified".
+     */
+    int tz = (int)((udf_le16(&ts[0]) & 0x0FFFu) ^ 0x0800u) - 0x0800;
+
     memset(out, 0, sizeof(*out));
-    /* ECMA-167 timestamp: type(2) + tz(2) + year(2) + ... */
-    int16_t tz = (int16_t)udf_le16(&ts[2]);
-    out->year   = (int32_t)(int16_t)udf_le16(&ts[4]);
-    out->month  = ts[6];
-    out->day    = ts[7];
-    out->hour   = ts[8];
-    out->minute = ts[9];
-    out->second = ts[10];
-    /* tz is in minutes, -2047 to 2047; -2048 = unspecified */
+    out->year   = (int32_t)(int16_t)udf_le16(&ts[2]);
+    out->month  = ts[4];
+    out->day    = ts[5];
+    out->hour   = ts[6];
+    out->minute = ts[7];
+    out->second = ts[8];
     if (tz >= -1440 && tz <= 1440)
-        out->tz_offset = tz;
-    else
-        out->tz_offset = 0;
+        out->tz_offset = (int16_t)tz;
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,13 +483,11 @@ vds_done:
     root_out->name[0]    = '/';
     root_out->name[1]    = '\0';
 
-    if (tag == UDF_TAG_FE) {
-        root_out->size = udf_le64(&sector[56]);
-        udf_parse_timestamp(&sector[84], &root_out->mtime);
-    } else { /* EFE */
-        root_out->size = udf_le64(&sector[56]);
-        udf_parse_timestamp(&sector[108], &root_out->mtime);
-    }
+    /* the Modification Time is at 84 in a File Entry and at 92 in an
+     * Extended File Entry, which has the Object Size before it */
+    root_out->size = udf_le64(&sector[56]);
+    udf_parse_timestamp(&sector[tag == UDF_TAG_FE ? 84 : 92],
+                        &root_out->mtime);
     root_out->ctime = root_out->mtime;
 
     /* store extent as the ICB location (for readdir) */
@@ -566,7 +567,7 @@ static odfs_err_t udf_parse_icb(odfs_cache_t *cache,
     out->file_type  = sector[16 + 11];
 
     if (mtime)
-        udf_parse_timestamp(&sector[tag == UDF_TAG_FE ? 84 : 108], mtime);
+        udf_parse_timestamp(&sector[tag == UDF_TAG_FE ? 84 : 92], mtime);
     if (sector_out)
         *sector_out = sector;
     return ODFS_OK;
