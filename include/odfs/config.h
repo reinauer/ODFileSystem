@@ -133,11 +133,18 @@
 
 /* ---------- charset feature flags ---------- */
 
+/*
+ * BUILTIN: convert names from UTF-8 to Latin-1, see odfs/charset.h.
+ * COMPOSE: on the way, merge a letter and a combining accent that
+ *          follows it. HFS+ stores every name decomposed like that.
+ */
 #ifdef ODFS_PROFILE_ROM
   #define ODFS_FEATURE_CHARSET_BUILTIN   1
+  #define ODFS_FEATURE_CHARSET_COMPOSE   0
   #define ODFS_FEATURE_CHARSET_EXTERNAL  0
 #else
   #define ODFS_FEATURE_CHARSET_BUILTIN   1
+  #define ODFS_FEATURE_CHARSET_COMPOSE   1
   #define ODFS_FEATURE_CHARSET_EXTERNAL  1
 #endif
 

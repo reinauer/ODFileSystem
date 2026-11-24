@@ -180,6 +180,35 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
 }
 
 #if ODFS_FEATURE_CHARSET_BUILTIN
+#if ODFS_FEATURE_CHARSET_COMPOSE
+/*
+ * The Latin-1 letter that base and the combining character U+0300 +
+ * mark make, or 0. The tables give, for 0xC0 to 0xDD, the capital
+ * letter and the mark each one is made of; a small letter is 0x20
+ * above its capital.
+ */
+static unsigned int odfs_latin1_compose(unsigned int base, unsigned int mark)
+{
+    static const char letters[] =
+        "AAAAAA\0CEEEEIIII\0NOOOOO\0\0UUUUY";
+    static const uint8_t marks[30] = {
+        0x00, 0x01, 0x02, 0x03, 0x08, 0x0A, 0xFF, 0x27, /* A, AE, C */
+        0x00, 0x01, 0x02, 0x08, 0x00, 0x01, 0x02, 0x08, /* E, I */
+        0xFF, 0x03, 0x00, 0x01, 0x02, 0x03, 0x08, 0xFF, /* ETH, N, O */
+        0xFF, 0x00, 0x01, 0x02, 0x08, 0x01              /* O/, U, Y */
+    };
+    unsigned int i;
+
+    if (base == 'y' && mark == 0x08)
+        return 0xFF;
+    for (i = 0; i < 30; i++) {
+        if ((unsigned char)letters[i] == (base & ~0x20u) && marks[i] == mark)
+            return (0xC0u + i) | (base & 0x20u);
+    }
+    return 0;
+}
+#endif
+
 size_t odfs_utf8_to_latin1(char *s)
 {
     const unsigned char *src = (const unsigned char *)s;
@@ -204,6 +233,15 @@ size_t odfs_utf8_to_latin1(char *s)
              */
             if (i == more && (cp >> (5u * more + 1u)) != 0) {
                 src += more;
+#if ODFS_FEATURE_CHARSET_COMPOSE
+                if (cp - 0x300u < 0x28u && dst != (unsigned char *)s) {
+                    c = odfs_latin1_compose(dst[-1], cp - 0x300u);
+                    if (c != 0) {
+                        dst[-1] = (unsigned char)c;
+                        continue;
+                    }
+                }
+#endif
                 /* U+0080-U+009F are control codes, CSI among them */
                 c = (cp >= 0xA0u && cp <= 0xFFu) ? cp : '?';
             }
