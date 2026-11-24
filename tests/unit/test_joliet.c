@@ -6,6 +6,7 @@
 
 #include "joliet/joliet.h"
 #include "odfs/cache.h"
+#include "odfs/charset.h"
 #include "odfs/error.h"
 #include "test_harness.h"
 
@@ -222,6 +223,100 @@ TEST(joliet_skips_odd_names_and_strips_version_suffix)
     ASSERT_EQ(collect.count, 2);
     ASSERT_STR_EQ(collect.nodes[0].name, "a;b");
     ASSERT_STR_EQ(collect.nodes[1].name, "doc.txt");
+
+    joliet_backend_ops.unmount(ctx);
+    odfs_cache_destroy(&cache);
+}
+
+/* a Joliet tree read for a mount that wants Latin-1 names */
+TEST(joliet_names_in_latin1)
+{
+    static mem_media_t media_data;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    odfs_node_t root;
+    odfs_node_t node;
+    void *ctx = NULL;
+    joliet_collect_t collect;
+    uint8_t dot = 0, dotdot = 1;
+    const uint32_t root_lba = 20;
+    uint8_t *vd = media_data.sectors[ISO_VD_START_LBA];
+    size_t off = 0;
+
+    /* "Gr" U+00FC U+00DF "e" */
+    static const uint8_t gruesse[] = {
+        0x00, 'G', 0x00, 'r', 0x00, 0xFC, 0x00, 0xDF, 0x00, 'e'
+    };
+    /* U+65E5 U+672C and U+4E2D U+56FD: not in Latin-1 */
+    static const uint8_t nihon[] = { 0x65, 0xE5, 0x67, 0x2C };
+    static const uint8_t chugoku[] = { 0x4E, 0x2D, 0x56, 0xFD };
+    static const uint8_t plain[] = { 0x00, 'a', 0x00, 'b', 0x00, 'c' };
+
+    memset(&media_data, 0, sizeof(media_data));
+    media.ops = &mem_media_ops;
+    media.ctx = &media_data;
+    odfs_log_init(&log);
+
+    vd[ISO_PVD_TYPE] = ISO_VD_TYPE_SUPPL;
+    memcpy(&vd[ISO_PVD_ID], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+    vd[6] = 1;
+    memcpy(&vd[88], JOLIET_ESC_UCS2_LEVEL3, 3);
+    write_le32(&vd[ISO_PVD_VOLUME_SPACE_SIZE], 40);
+    write_le16(&vd[ISO_PVD_LOGICAL_BLK_SIZE], TEST_SECTOR_SIZE);
+    write_dir_record(&vd[ISO_PVD_ROOT_DIR_RECORD], root_lba,
+                     TEST_SECTOR_SIZE, ISO_DR_FLAG_DIRECTORY, &dot, 1);
+
+    media_data.sectors[ISO_VD_START_LBA + 1][ISO_PVD_TYPE] = ISO_VD_TYPE_TERM;
+    memcpy(&media_data.sectors[ISO_VD_START_LBA + 1][ISO_PVD_ID],
+           ISO_STANDARD_ID, ISO_STANDARD_ID_LEN);
+
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            root_lba, TEST_SECTOR_SIZE, ISO_DR_FLAG_DIRECTORY,
+                            &dot, 1);
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            root_lba, TEST_SECTOR_SIZE, ISO_DR_FLAG_DIRECTORY,
+                            &dotdot, 1);
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            21, 10, 0, gruesse, sizeof(gruesse));
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            22, 10, 0, nihon, sizeof(nihon));
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            23, 10, 0, chugoku, sizeof(chugoku));
+    off += write_dir_record(&media_data.sectors[root_lba][off],
+                            24, 10, 0, plain, sizeof(plain));
+
+    ASSERT_OK(odfs_cache_init(&cache, &media, 8));
+    ASSERT_OK(joliet_backend_ops.mount(&cache, &log, 0, &root, &ctx));
+
+    /* as decoded: UTF-8 */
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(joliet_backend_ops.readdir(ctx, &cache, &log, &root,
+                                         joliet_collect_cb, &collect, NULL));
+    ASSERT_EQ(collect.count, 4);
+    ASSERT_STR_EQ(collect.nodes[0].name, "Gr\xC3\xBC\xC3\x9F" "e");
+    ASSERT_STR_EQ(collect.nodes[1].name, "\xE6\x97\xA5\xE6\x9C\xAC");
+
+    cache.name_charset = ODFS_NAMES_LATIN1;
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(joliet_backend_ops.readdir(ctx, &cache, &log, &root,
+                                         joliet_collect_cb, &collect, NULL));
+    ASSERT_EQ(collect.count, 4);
+    ASSERT_STR_EQ(collect.nodes[0].name, "Gr\xFC\xDF" "e");
+    ASSERT_STR_EQ(collect.nodes[1].name, "??");
+    ASSERT_STR_EQ(collect.nodes[2].name, "??~2");
+    ASSERT_STR_EQ(collect.nodes[3].name, "abc");
+
+    /* a name is found the way readdir spelled it, and only that way */
+    ASSERT_OK(joliet_backend_ops.lookup(ctx, &cache, &log, &root,
+                                        "Gr\xFC\xDF" "e", &node));
+    ASSERT_EQ(node.extent.lba, 21);
+    ASSERT_OK(joliet_backend_ops.lookup(ctx, &cache, &log, &root,
+                                        "??~2", &node));
+    ASSERT_EQ(node.extent.lba, 23);
+    ASSERT_ERR(joliet_backend_ops.lookup(ctx, &cache, &log, &root,
+                                         "Gr\xC3\xBC\xC3\x9F" "e", &node),
+               ODFS_ERR_NOT_FOUND);
 
     joliet_backend_ops.unmount(ctx);
     odfs_cache_destroy(&cache);

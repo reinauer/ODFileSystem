@@ -7,6 +7,7 @@
 #include "odfs/namefix.h"
 
 #include "odfs/alloc.h"
+#include "odfs/charset.h"
 #include "odfs/node.h"
 #include "odfs/string.h"
 
@@ -15,12 +16,13 @@
 
 #define ODFS_NAMEFIX_CHUNK_SIZE 4096u
 
-void odfs_namefix_init(odfs_namefix_state_t *state)
+void odfs_namefix_init(odfs_namefix_state_t *state, unsigned int charset)
 {
     memset(state->buckets, 0, sizeof(state->buckets));
     state->chunks = NULL;
     state->free = (unsigned char *)state->inline_buf;
     state->avail = sizeof(state->inline_buf);
+    state->charset = (unsigned char)charset;
 }
 
 void odfs_namefix_destroy(odfs_namefix_state_t *state)
@@ -33,7 +35,7 @@ void odfs_namefix_destroy(odfs_namefix_state_t *state)
         chunk = next;
     }
 
-    odfs_namefix_init(state);
+    odfs_namefix_init(state, state->charset);
 }
 
 static void *odfs_namefix_alloc(odfs_namefix_state_t *state, size_t size)
@@ -118,12 +120,35 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
     char base[ODFS_NAME_MAX];
     size_t len;
     size_t base_len;
-    unsigned int hash;
+    unsigned int hash = 0;
+    const char *s = name;
+    signed char c;
 
     if (name_size == 0)
         return ODFS_ERR_INVAL;
 
-    hash = odfs_namefix_hash(name, &len);
+    /*
+     * This runs for every directory entry read. Hash the name as
+     * odfs_namefix_hash() does, but stop at a byte with bit 7 set:
+     * the loop then costs a pure ASCII name, which reads the same in
+     * every character set, no more than hashing it.
+     */
+    while ((c = (signed char)*s++) > 0) {
+        hash = (hash << 5) | (hash >> 27);
+        hash ^= (unsigned int)c | 0x20u;
+    }
+    if (c != 0) {
+        /*
+         * Convert before looking for duplicates, so that two names
+         * which come out the same are told apart like any others.
+         */
+        odfs_name_to_charset(name, state->charset);
+        hash = odfs_namefix_hash(name, &len);
+    } else {
+        hash ^= hash >> 16;
+        hash ^= hash >> 8;
+        len = (size_t)(s - name - 1);
+    }
     if (!odfs_namefix_contains(state, name, hash))
         return odfs_namefix_remember(state, name, len, hash);
 
@@ -157,7 +182,8 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
         if (keep + (size_t)suffix_len >= name_size) {
             keep = name_size - (size_t)suffix_len - 1;
             /* cut before a character, not inside its UTF-8 sequence */
-            while (keep > 0 && ((unsigned char)base[keep] & 0xC0u) == 0x80u)
+            while (state->charset == ODFS_NAMES_UTF8 && keep > 0 &&
+                   ((unsigned char)base[keep] & 0xC0u) == 0x80u)
                 keep--;
         }
 

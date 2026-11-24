@@ -127,6 +127,17 @@ static size_t sl_sl(uint8_t *p, const uint8_t *comps, size_t comps_len)
     return 5 + comps_len;
 }
 
+/* NM entry: the Rock Ridge name of the record */
+static size_t sl_nm(uint8_t *p, const char *name)
+{
+    size_t len = strlen(name);
+
+    p[0] = 'N'; p[1] = 'M'; p[2] = (uint8_t)(5 + len); p[3] = 1;
+    p[4] = 0; /* flags */
+    memcpy(&p[5], name, len);
+    return 5 + len;
+}
+
 static void sl_build_image(sl_media_t *media)
 {
     uint8_t *pvd = media->sectors[ISO_VD_START_LBA];
@@ -194,6 +205,20 @@ static void sl_build_image(sl_media_t *media)
                              "UP.LNK;1", 8, sua, sua_len);
     }
 
+    /* "L" U+00E4 "nk" -> "z" U+00FC "l/" U+65E5: names in UTF-8, as
+     * current mastering tools write them */
+    {
+        static const uint8_t comps[] = {
+            0, 4, 'z', 0xC3, 0xBC, 'l',
+            0, 3, 0xE6, 0x97, 0xA5
+        };
+        sua_len = sl_px(sua, 0120777);
+        sua_len += sl_nm(sua + sua_len, "L\xC3\xA4nk");
+        sua_len += sl_sl(sua + sua_len, comps, sizeof(comps));
+        off += sl_dir_record(&root[off], 0, 0, 0,
+                             "LANK.;1", 7, sua, sua_len);
+    }
+
     memcpy(media->sectors[SL_TARGET_LBA], sl_target_data,
            sizeof(sl_target_data) - 1);
 }
@@ -235,13 +260,13 @@ TEST(symlink_nodes_have_symlink_kind)
 
     memset(&collect, 0, sizeof(collect));
     ASSERT_OK(odfs_readdir(&mnt, &mnt.root, sl_collect_cb, &collect, NULL));
-    ASSERT_EQ(collect.count, 3);
+    ASSERT_EQ(collect.count, 4);
 
     for (i = 0; i < collect.count; i++) {
         if (collect.entries[i].kind == ODFS_NODE_SYMLINK)
             links++;
     }
-    ASSERT_EQ(links, 2);
+    ASSERT_EQ(links, 3);
 
     odfs_unmount(&mnt);
 }
@@ -282,6 +307,53 @@ TEST(readlink_rejects_non_links)
                              target, sizeof(target)),
                ODFS_ERR_UNSUPPORTED);
     ASSERT_ERR(odfs_readlink(&mnt, &mnt.root, "NOPE.TXT",
+                             target, sizeof(target)),
+               ODFS_ERR_NOT_FOUND);
+
+    odfs_unmount(&mnt);
+}
+
+/*
+ * A mount that names nodes in Latin-1 finds a link by its converted
+ * name and spells the target the way it spells the nodes.
+ */
+TEST(readlink_follows_the_mount_charset)
+{
+    static sl_media_t media;
+    odfs_media_t m;
+    odfs_mount_opts_t opts;
+    odfs_mount_t mnt;
+    sl_collect_t collect;
+    char target[256];
+
+    /* as decoded */
+    ASSERT_OK(sl_mount_image(&media, &mnt));
+    ASSERT_OK(odfs_readlink(&mnt, &mnt.root, "L\xC3\xA4nk",
+                            target, sizeof(target)));
+    ASSERT_STR_EQ(target, "z\xC3\xBCl/\xE6\x97\xA5");
+    odfs_unmount(&mnt);
+
+    sl_build_image(&media);
+    /* the volume identifier is copied as it is, so UTF-8 can be in it */
+    memcpy(&media.sectors[ISO_VD_START_LBA][ISO_PVD_VOLUME_ID],
+           "SL\xC3\x9CTEST", 8);
+    m.ops = &sl_media_ops;
+    m.ctx = &media;
+    odfs_mount_opts_default(&opts);
+    opts.name_charset = ODFS_NAMES_LATIN1;
+    ASSERT_OK(odfs_mount(&m, &opts, NULL, &mnt));
+    ASSERT_STR_EQ(mnt.volume_name, "SL\xDCTEST");
+
+    memset(&collect, 0, sizeof(collect));
+    ASSERT_OK(odfs_readdir(&mnt, &mnt.root, sl_collect_cb, &collect, NULL));
+    ASSERT_EQ(collect.count, 4);
+    ASSERT_STR_EQ(collect.entries[3].name, "L\xE4nk");
+    ASSERT_EQ(collect.entries[3].kind, ODFS_NODE_SYMLINK);
+
+    ASSERT_OK(odfs_readlink(&mnt, &mnt.root, "L\xE4nk",
+                            target, sizeof(target)));
+    ASSERT_STR_EQ(target, "z\xFCl/?");
+    ASSERT_ERR(odfs_readlink(&mnt, &mnt.root, "L\xC3\xA4nk",
                              target, sizeof(target)),
                ODFS_ERR_NOT_FOUND);
 
