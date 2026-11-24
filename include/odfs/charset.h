@@ -7,6 +7,7 @@
 #ifndef ODFS_CHARSET_H
 #define ODFS_CHARSET_H
 
+#include "odfs/config.h"
 #include "odfs/error.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -53,6 +54,19 @@ odfs_err_t odfs_mac_roman_to_utf8(const uint8_t *src, size_t src_len,
 odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
                                        char *dst, size_t dst_size,
                                        int lowercase);
+
+#if ODFS_FEATURE_CHARSET_BUILTIN
+/*
+ * Convert a UTF-8 string to ISO 8859-1 (Latin-1) in place and return
+ * its new length; the result is never longer than the input.
+ *
+ * A character Latin-1 does not have becomes '?'. A byte that is not
+ * part of a well-formed UTF-8 sequence is kept as it is, so a string
+ * that already is in an 8-bit character set, such as a Rock Ridge name
+ * written by an Amiga mastering tool, passes through unchanged.
+ */
+size_t odfs_utf8_to_latin1(char *s);
+#endif
 
 #if !defined(AMIGA)
 /*

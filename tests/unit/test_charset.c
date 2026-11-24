@@ -161,4 +161,105 @@ TEST(sanitize_name_controls)
     ASSERT_STR_EQ(name, "foo__bar_baz");
 }
 
+TEST(utf8_to_latin1_ascii)
+{
+    char s[] = "README.TXT";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(s), 10);
+    ASSERT_STR_EQ(s, "README.TXT");
+}
+
+TEST(utf8_to_latin1_converts_latin1_range)
+{
+    /* "Gr" U+00FC U+00DF "e" U+00A0 U+00FF */
+    char s[] = "Gr\xC3\xBC\xC3\x9F" "e\xC2\xA0\xC3\xBF";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(s), 7);
+    ASSERT_STR_EQ(s, "Gr\xFC\xDF" "e\xA0\xFF");
+}
+
+TEST(utf8_to_latin1_replaces_other_characters)
+{
+    /* U+0100, U+20AC, U+65E5 U+672C, U+1F600: one '?' each */
+    char s[] = "a\xC4\x80" "b\xE2\x82\xAC" "c\xE6\x97\xA5\xE6\x9C\xAC"
+               "d\xF0\x9F\x98\x80" "e";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(s), 10);
+    ASSERT_STR_EQ(s, "a?b?c??d?e");
+}
+
+TEST(utf8_to_latin1_replaces_c1_controls)
+{
+    /* U+0080, U+009B (CSI), U+009F */
+    char s[] = "\xC2\x80\xC2\x9B\xC2\x9F";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(s), 3);
+    ASSERT_STR_EQ(s, "???");
+}
+
+/* a name that is Latin-1 already must come out as it went in */
+TEST(utf8_to_latin1_keeps_raw_8bit_names)
+{
+    /* "Grüße", "Ärger.txt", "Señor Ñ", "café" and "ü" at the very end */
+    char a[] = "Gr\xFC\xDF" "e";
+    char b[] = "\xC4rger.txt";
+    char c[] = "Se\xF1or \xD1";
+    char d[] = "caf\xE9";
+    char e[] = "Men\xFC";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(a), 5);
+    ASSERT_STR_EQ(a, "Gr\xFC\xDF" "e");
+    odfs_utf8_to_latin1(b);
+    ASSERT_STR_EQ(b, "\xC4rger.txt");
+    odfs_utf8_to_latin1(c);
+    ASSERT_STR_EQ(c, "Se\xF1or \xD1");
+    odfs_utf8_to_latin1(d);
+    ASSERT_STR_EQ(d, "caf\xE9");
+    odfs_utf8_to_latin1(e);
+    ASSERT_STR_EQ(e, "Men\xFC");
+}
+
+TEST(utf8_to_latin1_keeps_malformed_sequences)
+{
+    /* lone continuation, lead cut short by the end, lead cut short by
+     * ASCII, and the bytes UTF-8 never uses */
+    char a[] = "a\x80" "b\xBF";
+    char b[] = "x\xE2\x82";
+    char c[] = "x\xF0\x9F\x98" "y";
+    char d[] = "\xC0\x80\xC1\xBF\xF5\x80\xFF";
+
+    odfs_utf8_to_latin1(a);
+    ASSERT_STR_EQ(a, "a\x80" "b\xBF");
+    odfs_utf8_to_latin1(b);
+    ASSERT_STR_EQ(b, "x\xE2\x82");
+    odfs_utf8_to_latin1(c);
+    ASSERT_STR_EQ(c, "x\xF0\x9F\x98" "y");
+    odfs_utf8_to_latin1(d);
+    ASSERT_STR_EQ(d, "\xC0\x80\xC1\xBF\xF5\x80\xFF");
+}
+
+/* an overlong form must not turn into the character it spells, least
+ * of all into a NUL or a '/' */
+TEST(utf8_to_latin1_keeps_overlong_forms)
+{
+    char a[] = "a\xE0\x80\x80" "b";      /* U+0000 in three bytes */
+    char b[] = "a\xE0\x80\xAF" "b";      /* '/' in three bytes */
+    char c[] = "a\xF0\x80\x83\xA9" "b";  /* U+00E9 in four bytes */
+
+    ASSERT_EQ(odfs_utf8_to_latin1(a), 5);
+    ASSERT_STR_EQ(a, "a\xE0\x80\x80" "b");
+    ASSERT_EQ(odfs_utf8_to_latin1(b), 5);
+    ASSERT_STR_EQ(b, "a\xE0\x80\xAF" "b");
+    ASSERT_EQ(odfs_utf8_to_latin1(c), 6);
+    ASSERT_STR_EQ(c, "a\xF0\x80\x83\xA9" "b");
+}
+
+TEST(utf8_to_latin1_empty)
+{
+    char s[] = "";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(s), 0);
+    ASSERT_STR_EQ(s, "");
+}
+
 TEST_MAIN()

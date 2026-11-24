@@ -179,6 +179,43 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
     return ODFS_OK;
 }
 
+#if ODFS_FEATURE_CHARSET_BUILTIN
+size_t odfs_utf8_to_latin1(char *s)
+{
+    const unsigned char *src = (const unsigned char *)s;
+    unsigned char *dst = (unsigned char *)s;
+    unsigned int c;
+
+    while ((c = *src++) != 0) {
+        /* 0xC2-0xF4 start a sequence of two to four bytes */
+        if (c >= 0xC2u && c <= 0xF4u) {
+            unsigned int more = c < 0xE0u ? 1u : c < 0xF0u ? 2u : 3u;
+            unsigned int cp = c & (0x3Fu >> more);
+            unsigned int i;
+
+            for (i = 0; i < more && (src[i] & 0xC0u) == 0x80u; i++)
+                cp = (cp << 6) | (src[i] & 0x3Fu);
+
+            /*
+             * Take the sequence only if it is complete and not an
+             * overlong form: one of three bytes encodes at least
+             * U+0800, one of four at least U+10000. Otherwise the
+             * lead byte is copied below like any other byte.
+             */
+            if (i == more && (cp >> (5u * more + 1u)) != 0) {
+                src += more;
+                /* U+0080-U+009F are control codes, CSI among them */
+                c = (cp >= 0xA0u && cp <= 0xFFu) ? cp : '?';
+            }
+        }
+        *dst++ = (unsigned char)c;
+    }
+
+    *dst = '\0';
+    return (size_t)(dst - (unsigned char *)s);
+}
+#endif
+
 #if !defined(AMIGA)
 void odfs_sanitize_name(char *name, size_t len, char replacement)
 {
