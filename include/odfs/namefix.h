@@ -31,11 +31,19 @@ typedef struct odfs_namefix_state {
     odfs_namefix_chunk_t *chunks;
     unsigned char        *free;    /* next unused byte */
     size_t                avail;   /* bytes left at free */
+    unsigned char         charset; /* ODFS_NAMES_xxx of the fixed names */
     void                 *inline_buf[ODFS_NAMEFIX_INLINE / sizeof(void *)];
 } odfs_namefix_state_t;
 
-void odfs_namefix_init(odfs_namefix_state_t *state);
+/* charset is the ODFS_NAMES_xxx set the names are wanted in */
+void odfs_namefix_init(odfs_namefix_state_t *state, unsigned int charset);
 void odfs_namefix_destroy(odfs_namefix_state_t *state);
+
+/*
+ * Give one name of a directory its final form: convert it from UTF-8
+ * to the state's character set, then, if an earlier name of the
+ * directory compares equal, add a "~<n>" suffix that makes it unique.
+ */
 odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
                               char *name, size_t name_size);
 

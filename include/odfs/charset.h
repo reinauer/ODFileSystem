@@ -68,6 +68,26 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
 size_t odfs_utf8_to_latin1(char *s);
 #endif
 
+/*
+ * The character set a mount gives names in. The backends decode every
+ * name to UTF-8; a mount that asks for another set has node names,
+ * symbolic link targets and the volume name converted to it.
+ */
+#define ODFS_NAMES_UTF8   0u
+#define ODFS_NAMES_LATIN1 1u  /* ISO 8859-1, see odfs_utf8_to_latin1() */
+
+/* convert a UTF-8 name in place to character set charset */
+static inline void odfs_name_to_charset(char *name, unsigned int charset)
+{
+#if ODFS_FEATURE_CHARSET_BUILTIN
+    if (charset == ODFS_NAMES_LATIN1)
+        odfs_utf8_to_latin1(name);
+#else
+    (void)name;
+    (void)charset;
+#endif
+}
+
 #if !defined(AMIGA)
 /*
  * Host-only fallback: replace non-printable / non-Amiga-safe

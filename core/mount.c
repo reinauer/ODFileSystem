@@ -6,6 +6,7 @@
 
 #include "odfs/api.h"
 #include "odfs/ancestry.h"
+#include "odfs/charset.h"
 #include "odfs/string.h"
 #include <string.h>
 #include <inttypes.h>
@@ -373,6 +374,7 @@ void odfs_mount_opts_default(odfs_mount_opts_t *opts)
     opts->prefer_hfs = 0;
     opts->lowercase_iso = 0; /* preserve original case */
     opts->prefer_aiff = 0; /* expose CDDA tracks as WAV by default */
+    opts->name_charset = ODFS_NAMES_UTF8;
     opts->cache_blocks = 0; /* use default from config.h */
     opts->meta_cache_kib = ODFS_META_CACHE_KIB;
 }
@@ -443,6 +445,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     err = odfs_cache_init(&mnt->cache, &mnt->media, cache_size);
     if (err != ODFS_OK)
         return err;
+    mnt->cache.name_charset = (uint8_t)mnt->opts.name_charset;
 
     ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                "cache initialized: %" PRIu32 " blocks", cache_size);
@@ -504,6 +507,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
         mnt->backend_ops->get_volume_name(mnt->backend_ctx,
                                           mnt->volume_name,
                                           sizeof(mnt->volume_name));
+    odfs_name_to_charset(mnt->volume_name, mnt->cache.name_charset);
     if (mnt->backend_ops->get_volume_size)
         mnt->total_blocks =
             mnt->backend_ops->get_volume_size(mnt->backend_ctx);
@@ -697,6 +701,7 @@ odfs_err_t odfs_readlink(odfs_mount_t *mnt,
 {
     const odfs_backend_ops_t *ops;
     void *backend_ctx;
+    odfs_err_t err;
 
     if (!mnt || !dir || !name || !buf || buf_size == 0)
         return ODFS_ERR_INVAL;
@@ -708,8 +713,12 @@ odfs_err_t odfs_readlink(odfs_mount_t *mnt,
         !ops || !ops->readlink)
         return ODFS_ERR_UNSUPPORTED;
 
-    return ops->readlink(backend_ctx, &mnt->cache, &mnt->log, dir, name,
-                         buf, buf_size);
+    err = ops->readlink(backend_ctx, &mnt->cache, &mnt->log, dir, name,
+                        buf, buf_size);
+    /* the target names nodes, so it has to be spelled as they are */
+    if (err == ODFS_OK)
+        odfs_name_to_charset(buf, mnt->cache.name_charset);
+    return err;
 }
 
 odfs_err_t odfs_resolve_parent_node(odfs_mount_t *mnt,

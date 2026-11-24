@@ -65,6 +65,10 @@ typedef struct odfs_cache {
                                          it still holds the same sector */
     uint8_t            *data_slab;   /* all sector buffers, or NULL when
                                         each entry has its own */
+    uint8_t              name_charset; /* ODFS_NAMES_xxx the mount asked
+                                          for; kept here because the
+                                          cache is what every backend
+                                          call is handed */
 } odfs_cache_t;
 
 /* lifecycle */
