@@ -254,6 +254,61 @@ TEST(utf8_to_latin1_keeps_overlong_forms)
     ASSERT_STR_EQ(c, "a\xF0\x80\x83\xA9" "b");
 }
 
+/* HFS+ stores "u-diaeresis" as "u" followed by U+0308 */
+TEST(utf8_to_latin1_composes_accents)
+{
+#if ODFS_FEATURE_CHARSET_COMPOSE
+    /* A-diaeresis "rger", "Gru" + diaeresis + sharp s + "e",
+     * "cafe" + acute, "gar" c-cedilla "on", "A" + ring, "n" + tilde,
+     * "y" + diaeresis, "Y" + acute */
+    char a[] = "A\xCC\x88rger";
+    char b[] = "Gru\xCC\x88\xC3\x9F" "e";
+    char c[] = "cafe\xCC\x81";
+    char d[] = "garc\xCC\xA7on";
+    char e[] = "A\xCC\x8A n\xCC\x83 y\xCC\x88 Y\xCC\x81";
+    /* every capital with every mark it takes */
+    char f[] = "A\xCC\x80" "A\xCC\x81" "A\xCC\x82" "A\xCC\x83"
+               "A\xCC\x88" "A\xCC\x8A" "C\xCC\xA7"
+               "E\xCC\x80" "E\xCC\x81" "E\xCC\x82" "E\xCC\x88"
+               "I\xCC\x80" "I\xCC\x81" "I\xCC\x82" "I\xCC\x88"
+               "N\xCC\x83"
+               "O\xCC\x80" "O\xCC\x81" "O\xCC\x82" "O\xCC\x83"
+               "O\xCC\x88"
+               "U\xCC\x80" "U\xCC\x81" "U\xCC\x82" "U\xCC\x88"
+               "Y\xCC\x81";
+    /* no such letter in Latin-1: s + caron, Y + diaeresis, q + acute;
+     * a mark with nothing before it, and one after a non-letter */
+    char g[] = "s\xCC\x8C Y\xCC\x88 q\xCC\x81";
+    char h[] = "\xCC\x88" "a";
+    char k[] = "1\xCC\x81 @\xCC\x80 `\xCC\x80";
+    /* the mark only joins the letter right before it */
+    char l[] = "a\xCC\x88\xCC\x81";
+
+    ASSERT_EQ(odfs_utf8_to_latin1(a), 5);
+    ASSERT_STR_EQ(a, "\xC4rger");
+    odfs_utf8_to_latin1(b);
+    ASSERT_STR_EQ(b, "Gr\xFC\xDF" "e");
+    odfs_utf8_to_latin1(c);
+    ASSERT_STR_EQ(c, "caf\xE9");
+    odfs_utf8_to_latin1(d);
+    ASSERT_STR_EQ(d, "gar\xE7on");
+    odfs_utf8_to_latin1(e);
+    ASSERT_STR_EQ(e, "\xC5 \xF1 \xFF \xDD");
+    odfs_utf8_to_latin1(f);
+    ASSERT_STR_EQ(f, "\xC0\xC1\xC2\xC3\xC4\xC5\xC7\xC8\xC9\xCA\xCB"
+                     "\xCC\xCD\xCE\xCF\xD1\xD2\xD3\xD4\xD5\xD6"
+                     "\xD9\xDA\xDB\xDC\xDD");
+    odfs_utf8_to_latin1(g);
+    ASSERT_STR_EQ(g, "s? Y? q?");
+    odfs_utf8_to_latin1(h);
+    ASSERT_STR_EQ(h, "?a");
+    odfs_utf8_to_latin1(k);
+    ASSERT_STR_EQ(k, "1? @? `?");
+    odfs_utf8_to_latin1(l);
+    ASSERT_STR_EQ(l, "\xE4?");
+#endif
+}
+
 TEST(utf8_to_latin1_empty)
 {
     char s[] = "";
