@@ -235,6 +235,95 @@ TEST(udf_readdir_cross_sector_fid)
     odfs_cache_destroy(&cache);
 }
 
+/* an ECMA-167 timestamp: type 1 (local time), tz minutes from UTC */
+static void udf_write_timestamp(uint8_t *p, int tz, uint16_t year,
+                                uint8_t month, uint8_t day, uint8_t hour,
+                                uint8_t minute, uint8_t second)
+{
+    udf_write_le16(p, (uint16_t)(0x1000u | ((unsigned int)tz & 0x0FFFu)));
+    udf_write_le16(&p[2], year);
+    p[4] = month;
+    p[5] = day;
+    p[6] = hour;
+    p[7] = minute;
+    p[8] = second;
+}
+
+TEST(udf_reads_modification_time_of_fe_and_efe)
+{
+    udf_mock_media_t mock;
+    odfs_media_t media;
+    odfs_cache_t cache;
+    odfs_log_state_t log;
+    udf_context_t ctx;
+    odfs_node_t dir;
+    odfs_node_t out;
+    uint8_t fid[44];
+    uint8_t *efe;
+
+    memset(&mock, 0, sizeof(mock));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&dir, 0, sizeof(dir));
+
+    udf_make_media(&media, &mock);
+    ASSERT_OK(odfs_cache_init(&cache, &media, 4));
+    odfs_log_init(&log);
+
+    /* root directory: two FIDs of 44 bytes each in sector 1 */
+    udf_make_fe(mock.sectors[0], UDF_ICB_FILETYPE_DIR, 88, 1);
+    memset(fid, 0, sizeof(fid));
+    udf_make_fid(fid, "fe", 3);
+    memcpy(&mock.sectors[1][0], fid, sizeof(fid));
+    memset(fid, 0, sizeof(fid));
+    udf_make_fid(fid, "efe", 5);
+    memcpy(&mock.sectors[1][44], fid, sizeof(fid));
+
+    /* File Entry: access 72, modification 84, attribute 96 */
+    udf_make_fe(mock.sectors[3], UDF_ICB_FILETYPE_FILE, 5, 4);
+    udf_write_timestamp(&mock.sectors[3][72], 0, 1999, 1, 2, 3, 4, 5);
+    udf_write_timestamp(&mock.sectors[3][84], 60, 2026, 11, 23, 22, 4, 10);
+    udf_write_timestamp(&mock.sectors[3][96], 0, 2001, 6, 7, 8, 9, 10);
+
+    /* Extended File Entry: access 80, modification 92, creation 104,
+     * attribute 116; EA and AD lengths at 208 and 212 */
+    efe = mock.sectors[5];
+    udf_write_tag(efe, UDF_TAG_EFE);
+    efe[16 + 11] = UDF_ICB_FILETYPE_FILE;
+    udf_write_le16(&efe[16 + 18], UDF_ICB_ALLOC_SHORT);
+    udf_write_le64(&efe[56], 5);
+    udf_write_timestamp(&efe[80], 0, 1999, 1, 2, 3, 4, 5);
+    udf_write_timestamp(&efe[92], -480, 2024, 2, 29, 23, 59, 58);
+    udf_write_timestamp(&efe[104], 0, 2000, 12, 31, 1, 2, 3);
+    udf_write_timestamp(&efe[116], -2047, 2001, 6, 7, 8, 9, 10);
+    udf_write_le32(&efe[212], 8);
+    udf_write_le32(&efe[216], 5);
+    udf_write_le32(&efe[220], 6);
+
+    dir.backend = ODFS_BACKEND_UDF;
+    dir.kind = ODFS_NODE_DIR;
+    dir.extent.lba = 0;
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "fe", &out));
+    ASSERT_EQ(out.mtime.year, 2026);
+    ASSERT_EQ(out.mtime.month, 11);
+    ASSERT_EQ(out.mtime.day, 23);
+    ASSERT_EQ(out.mtime.hour, 22);
+    ASSERT_EQ(out.mtime.minute, 4);
+    ASSERT_EQ(out.mtime.second, 10);
+    ASSERT_EQ(out.mtime.tz_offset, 60);
+
+    ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir, "efe", &out));
+    ASSERT_EQ(out.mtime.year, 2024);
+    ASSERT_EQ(out.mtime.month, 2);
+    ASSERT_EQ(out.mtime.day, 29);
+    ASSERT_EQ(out.mtime.hour, 23);
+    ASSERT_EQ(out.mtime.minute, 59);
+    ASSERT_EQ(out.mtime.second, 58);
+    ASSERT_EQ(out.mtime.tz_offset, -480);
+
+    odfs_cache_destroy(&cache);
+}
+
 TEST(udf_readdir_resume_skips_prior_icb_reads)
 {
     udf_mock_media_t mock;
