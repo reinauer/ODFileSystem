@@ -6003,6 +6003,8 @@ static void mount_volume(handler_global_t *g)
     probe_scsi_reads(g);
 
     odfs_mount_opts_default(&opts);
+    /* AmigaDOS shows and compares names in an 8-bit character set */
+    opts.name_charset = ODFS_NAMES_LATIN1;
 
 #if !defined(ODFS_PROFILE_ROM) || !ODFS_PROFILE_ROM
     if (g->envec)
