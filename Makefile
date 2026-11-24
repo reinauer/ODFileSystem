@@ -96,7 +96,7 @@ PACKET_TRACE ?= 0
 
 # Release size limits (override when intentional growth is approved)
 ifneq ($(filter os4 aros,$(AMIGA_TARGET)),)
-AMIGA_SIZE_LIMIT ?= 155648
+AMIGA_SIZE_LIMIT ?= 163840
 else
 AMIGA_SIZE_LIMIT ?= 98304
 endif

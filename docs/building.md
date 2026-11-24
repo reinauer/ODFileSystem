@@ -168,7 +168,7 @@ This creates `build/amiga-os4/ODFileSystem-amigaos4.lha` containing
 `CDFileSystem-test`, `Env-Archive/Sys/def_cdda.info`, and `README.md`.
 
 Release builds enforce a default size limit of `98304` bytes for OS3 and
-`155648` bytes for OS4 and AROS. If intentional growth needs a higher ceiling, override
+`163840` bytes for OS4 and AROS. If intentional growth needs a higher ceiling, override
 it with `AMIGA_SIZE_LIMIT=<bytes>`. During local bring-up, the limit can be
 disabled with `ENFORCE_SIZE_LIMITS=0`.
 
