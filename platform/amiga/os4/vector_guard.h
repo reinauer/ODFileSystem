@@ -37,6 +37,11 @@ static inline int odfs_os4_begin_shutdown(handler_global_t *g)
                (struct MinNode *)&g->locklist.mlh_Head &&
            g->fhlist.mlh_TailPred ==
                (struct MinNode *)&g->fhlist.mlh_Head;
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    /* a caller in odfs_amiga_first_call() comes back for fs_sem */
+    if (g->names_waiter)
+        idle = 0;
+#endif
     if (idle && g->vector_port) {
         g->vector_port->FSV.Version = 0;
         g->vector_port->FSV.FSPrivate = NULL;

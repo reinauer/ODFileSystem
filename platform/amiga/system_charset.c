@@ -17,9 +17,15 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#if ODFS_AMIGA_OS4
+/* the interface is a local variable here, not a global */
+#define __NOGLOBALIFACE__
+#endif
 #include <proto/codesets.h>
 
+#if !ODFS_AMIGA_OS4
 #define DOSBase (g->libs.dos)
+#endif
 
 #include <string.h>
 
@@ -85,12 +91,22 @@ static int read_codeset(uint16_t *map)
     struct Process *proc = (struct Process *)FindTask(NULL);
     APTR window = proc->pr_WindowPtr;
     struct Library *CodesetsBase;
+#if ODFS_AMIGA_OS4
+    struct CodesetsIFace *ICodesets = NULL;
+#endif
     int ok = 0;
 
     /* a volume that is not there is a failure, not a requester */
     proc->pr_WindowPtr = (APTR)-1;
     CodesetsBase = OpenLibrary((CONST_STRPTR)CODESETSNAME, CODESETSVER);
+#if ODFS_AMIGA_OS4
+    if (CodesetsBase)
+        ICodesets = (struct CodesetsIFace *)
+            GetInterface(CodesetsBase, "main", 1, NULL);
+    if (ICodesets) {
+#else
     if (CodesetsBase) {
+#endif
         const struct codeset *cs = CodesetsFindA(NULL, NULL);
         unsigned int i;
 
@@ -104,6 +120,11 @@ static int read_codeset(uint16_t *map)
             /* nothing below U+00A0: those are control codes again */
             map[i] = (ch >= 0xA0 && ch <= 0xFFFF) ? (uint16_t)ch : 0;
         }
+#if ODFS_AMIGA_OS4
+        DropInterface((struct Interface *)ICodesets);
+#endif
+    }
+    if (CodesetsBase) {
         /*
          * The library and its tables take some 300 KB. Have it leave
          * memory again when its last user closes it, which is now
@@ -120,15 +141,16 @@ static int read_codeset(uint16_t *map)
 }
 
 /*
- * The character set is asked for when the first packet comes in. This
- * is not done at startup: a handler that Mount starts from
- * DEVS:DOSDrivers runs before the locale preferences are loaded, and
- * codesets.library keeps the default it works out when it is first
+ * The character set is asked for at the first request that concerns
+ * the disc. This is not done at startup: a handler that Mount starts
+ * from DEVS:DOSDrivers runs before the locale preferences are loaded,
+ * and codesets.library keeps the default it works out when it is first
  * opened, for every program that opens it later.
  *
- * The packet loop must not notice. A test per packet there costs time
- * that CDBench shows, and so does any other change to that function:
- * the compiler then lays the whole loop out anew. So:
+ * On AmigaOS 3 and AROS the packet loop must not notice. A test per
+ * packet there costs time that CDBench shows, and so does any other
+ * change to that function: the compiler then lays the whole loop out
+ * anew. So:
  *
  *  - mount_volume() calls odfs_amiga_system_charset() every time. The
  *    first call, at startup, turns the packet port into one that runs
@@ -141,13 +163,53 @@ static int read_codeset(uint16_t *map)
  *    call asks. If the disc is the same and its volume name does not
  *    depend on the answer, it tells unmount_volume() to leave the disc
  *    mounted.
+ *
+ * On AmigaOS 4 requests are calls in the caller's context. The first
+ * one, odfs_amiga_first_call(), sends the handler process down the
+ * same path and waits for it.
  */
-enum {
-    NAMES_UNASKED,  /* nothing done yet */
-    NAMES_AWAITED,  /* waiting for the first packet */
-    NAMES_DUE,      /* ask at the next mount */
-    NAMES_DONE
-};
+
+/* the handler acts as if the disc may have been changed */
+static void force_media_pass(handler_global_t *g)
+{
+    g->names_state = ODFS_NAMES_DUE;
+    g->names_count = g->change_count;
+    g->names_counted = (uint8_t)(g->change_count_valid != 0);
+    /* handle_media_change() mounts again if it cannot tell */
+    g->change_count_valid = 0;
+}
+
+#if ODFS_AMIGA_OS4
+
+void odfs_amiga_first_call(handler_global_t *g)
+{
+    struct Task *me = FindTask(NULL);
+
+    if (me == g->handler_task || g->inhibited || g->names_waiter)
+        return;
+
+    ODFS_INFO(&g->log, ODFS_SUB_CORE, "names: first call, from %s",
+              me->tc_Node.ln_Name ? me->tc_Node.ln_Name : "?");
+    force_media_pass(g);
+    g->names_waiter = me;
+    SetSignal(0, SIGF_SINGLE);
+    ReleaseSemaphore(&g->fs_sem);
+    Signal(g->handler_task, (ULONG)1 << g->chgsigbit);
+    Wait(SIGF_SINGLE);
+    ObtainSemaphore(&g->fs_sem);
+}
+
+void odfs_amiga_media_pass_done(handler_global_t *g)
+{
+    struct Task *waiter = g->names_waiter;
+
+    if (waiter) {
+        g->names_waiter = NULL;
+        Signal(waiter, SIGF_SINGLE);
+    }
+}
+
+#else /* !ODFS_AMIGA_OS4 */
 
 static LONG first_packet(APTR data)
 {
@@ -156,7 +218,7 @@ static LONG first_packet(APTR data)
     ULONG sigs = (ULONG)1 << port->mp_SigBit;
     const struct Node *node;
 
-    if (g->names_state != NAMES_AWAITED)
+    if (g->names_state != ODFS_NAMES_AWAITED)
         return 0;
 
     /*
@@ -170,21 +232,60 @@ static LONG first_packet(APTR data)
             (const struct DosPacket *)(uintptr_t)node->ln_Name;
 
         if (pkt->dp_Type != ACTION_IS_FILESYSTEM) {
-            g->names_state = NAMES_DUE;
+            force_media_pass(g);
             g->names_msg = node;
             port->mp_SigTask = g->names_task;
             port->mp_Flags = (UBYTE)((port->mp_Flags & ~PF_ACTION) |
                                      PA_SIGNAL);
-            /* handle_media_change() mounts again if it cannot tell */
-            g->names_count = g->change_count;
-            g->names_counted = (uint8_t)(g->change_count_valid != 0);
-            g->change_count_valid = 0;
             sigs |= (ULONG)1 << g->chgsigbit;
             break;
         }
     }
     Signal(g->names_task, sigs);
     return 0;
+}
+
+#endif /* !ODFS_AMIGA_OS4 */
+
+/*
+ * Is the system's loader waiting for this handler, and is the request
+ * that asked for this pass still waiting? If that one has been taken,
+ * this is not the pass it asked for, and an unmount is somebody's wish.
+ */
+static int loader_is_waiting(handler_global_t *g, int *pending)
+{
+    int loader = 0;
+#if ODFS_AMIGA_OS4
+    const struct Task *waiter = g->names_waiter;
+
+    *pending = waiter != NULL;
+    if (waiter && waiter->tc_Node.ln_Name &&
+        strcmp(waiter->tc_Node.ln_Name, ODFS_AMIGA_LOADER_TASK) == 0)
+        loader = 1;
+#else
+    const struct Node *node;
+
+    *pending = 0;
+    Forbid();
+    for (node = g->dosport->mp_MsgList.lh_Head; node->ln_Succ;
+         node = node->ln_Succ) {
+        const struct MsgPort *reply =
+            ((const struct DosPacket *)(uintptr_t)node->ln_Name)->dp_Port;
+
+        if (node == g->names_msg)
+            *pending = 1;
+        if (reply && (reply->mp_Flags & PF_ACTION) == PA_SIGNAL) {
+            const struct Task *waiter = reply->mp_SigTask;
+
+            if (waiter && waiter->tc_Node.ln_Name &&
+                strcmp(waiter->tc_Node.ln_Name,
+                       ODFS_AMIGA_LOADER_TASK) == 0)
+                loader = 1;
+        }
+    }
+    Permit();
+#endif
+    return loader;
 }
 
 /*
@@ -194,71 +295,52 @@ static LONG first_packet(APTR data)
  *
  * The library comes from disk, and the handler waits here while the
  * system's loader process fetches it. The loader must not in turn wait
- * for this handler. So names stay in Latin-1 if a packet of the
- * loader's own is here, or if a directory the loader searches is on
+ * for this handler. So names stay in Latin-1 if a request of the
+ * loader's own is waiting, or if a directory the loader searches is on
  * this handler's volume or cannot be told: the boot volume, LIBS:, or
  * DEVS:, from where a request the loader has queued may be loading a
  * device.
  */
 int odfs_amiga_system_charset(handler_global_t *g)
 {
-    struct MsgPort *port = g->dosport;
-    const struct Node *node;
     struct DosList *dl;
-    int safe = 1;
+    int safe;
     int same;
 
-    if (g->names_state == NAMES_UNASKED) {
+    if (g->names_state == ODFS_NAMES_UNASKED) {
         /* without a media change signal there is no way back here */
-        g->names_state = NAMES_DONE;
+        g->names_state = ODFS_NAMES_DONE;
         if (g->chgsigbit < 0)
             return 0;
 
-        g->names_task = port->mp_SigTask;
-        odfs_amiga_init_interrupt(&g->names_int, "odfs-firstpacket", g,
-                                  first_packet);
-        Disable();
-        if (!port->mp_MsgList.lh_Head->ln_Succ) {
-            g->names_state = NAMES_AWAITED;
-            port->mp_SoftInt = &g->names_int.intr;
-            port->mp_Flags = (UBYTE)((port->mp_Flags & ~PF_ACTION) |
-                                     PA_SOFTINT);
+#if ODFS_AMIGA_OS4
+        g->names_state = ODFS_NAMES_AWAITED;
+#else
+        {
+            struct MsgPort *port = g->dosport;
+
+            g->names_task = port->mp_SigTask;
+            odfs_amiga_init_interrupt(&g->names_int, "odfs-firstpacket",
+                                      g, first_packet);
+            Disable();
+            if (!port->mp_MsgList.lh_Head->ln_Succ) {
+                g->names_state = ODFS_NAMES_AWAITED;
+                port->mp_SoftInt = &g->names_int.intr;
+                port->mp_Flags = (UBYTE)((port->mp_Flags & ~PF_ACTION) |
+                                         PA_SOFTINT);
+            }
+            Enable();
         }
-        Enable();
+#endif
         /* else a packet is here already: ask now */
-        if (g->names_state == NAMES_AWAITED)
+        if (g->names_state == ODFS_NAMES_AWAITED)
             return 0;
-    } else if (g->names_state != NAMES_DUE) {
+    } else if (g->names_state != ODFS_NAMES_DUE) {
         return 0;
     }
-    g->names_state = NAMES_DONE;
+    g->names_state = ODFS_NAMES_DONE;
 
-    /*
-     * Is the loader waiting for one of the packets that are here? And
-     * is the packet the interrupt ran for still among them? If it has
-     * been taken, this is not the pass the interrupt asked for, and
-     * the unmount is somebody's wish.
-     */
-    same = 0;
-    Forbid();
-    for (node = port->mp_MsgList.lh_Head; node->ln_Succ;
-         node = node->ln_Succ) {
-        const struct MsgPort *reply =
-            ((const struct DosPacket *)(uintptr_t)node->ln_Name)->dp_Port;
-
-        if (node == g->names_msg)
-            same = 1;
-        if (reply && (reply->mp_Flags & PF_ACTION) == PA_SIGNAL) {
-            const struct Task *waiter = reply->mp_SigTask;
-
-            if (waiter && waiter->tc_Node.ln_Name &&
-                strcmp(waiter->tc_Node.ln_Name,
-                       ODFS_AMIGA_LOADER_TASK) == 0)
-                safe = 0;
-        }
-    }
-    Permit();
-
+    safe = !loader_is_waiting(g, &same);
     if (safe) {
         /*
          * Not AttemptLockDosList(): it fails while anyone else has
@@ -273,7 +355,7 @@ int odfs_amiga_system_charset(handler_global_t *g)
         UnLockDosList(LDF_ASSIGNS | LDF_READ);
     }
 
-    /* a different disc than when the interrupt ran is mounted anew */
+    /* a different disc than when the pass was asked for is mounted anew */
     if (!g->names_counted || !g->change_count_valid ||
         g->change_count != g->names_count)
         same = 0;
@@ -298,6 +380,9 @@ int odfs_amiga_system_charset(handler_global_t *g)
             g->mount.cache.names.charset = ODFS_NAMES_MAPPED;
             g->mount.cache.names.map = g->name_map;
         }
+    } else {
+        ODFS_INFO(&g->log, ODFS_SUB_CORE, "names stay Latin-1%s",
+                  safe ? "" : ": not safe to load a library now");
     }
 
     return same;

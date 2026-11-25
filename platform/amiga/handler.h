@@ -215,12 +215,16 @@ typedef struct handler_global {
      * The system's character set, see system_charset.c. Kept at the
      * end so that it moves no field the packet path uses.
      */
+#if ODFS_AMIGA_OS4
+    struct Task         *names_waiter;  /* waits in odfs_amiga_first_call() */
+#else
     odfs_amiga_interrupt_t names_int;   /* runs for the first packet */
     struct Task         *names_task;    /* the handler, for names_int */
     const struct Node   *names_msg;     /* the packet it ran for */
-    ULONG                names_count;   /* change count when it ran */
+#endif
+    ULONG                names_count;   /* change count at that request */
     uint8_t              names_counted; /* names_count is valid */
-    uint8_t              names_state;   /* how far asking has got */
+    uint8_t              names_state;   /* ODFS_NAMES_xxx below */
     uint8_t              names_mapped;  /* name_map is filled in */
     uint16_t             name_map[ODFS_CHARSET_MAP_SIZE];
 #endif
@@ -529,7 +533,18 @@ LONG odfs_handler_inhibit(handler_global_t *g, LONG state);
 /* handler entry point (called from startup.S) */
 #if ODFS_FEATURE_CHARSET_EXTERNAL
 /* see system_charset.c */
+enum {
+    ODFS_NAMES_UNASKED,  /* nothing done yet */
+    ODFS_NAMES_AWAITED,  /* waiting for the first request */
+    ODFS_NAMES_DUE,      /* ask at the next mount or unmount */
+    ODFS_NAMES_DONE
+};
+
 int odfs_amiga_system_charset(handler_global_t *g);
+#if ODFS_AMIGA_OS4
+void odfs_amiga_first_call(handler_global_t *g);
+void odfs_amiga_media_pass_done(handler_global_t *g);
+#endif
 #endif
 
 void handler_main(void);
