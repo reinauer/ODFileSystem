@@ -18,6 +18,7 @@
 #include "cdda.h"
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
+#include "odfs/charset.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
 #include "odfs/string.h"
@@ -389,7 +390,7 @@ static size_t cdda_sanitize_ascii(char *dst, size_t dst_size,
         if (ch == '\r' || ch == '\n' || ch == '\t')
             ch = ' ';
         if (ch < 0x20 || ch > 0x7e)
-            ch = '?';
+            ch = ODFS_CHAR_REPLACEMENT;
         dst[used++] = (char)ch;
     }
 

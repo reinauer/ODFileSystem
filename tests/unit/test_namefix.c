@@ -122,10 +122,10 @@ TEST(namefix_keeps_utf8_names_by_default)
 TEST(namefix_separates_names_that_convert_alike)
 {
     odfs_namefix_state_t state;
-    /* U+65E5 U+672C ".txt", U+4E2D U+56FD ".txt", and a literal "??.txt" */
+    /* U+65E5 U+672C ".txt", U+4E2D U+56FD ".txt", and a literal "__.txt" */
     char a[ODFS_NAME_MAX] = "\xE6\x97\xA5\xE6\x9C\xAC.txt";
     char b[ODFS_NAME_MAX] = "\xE4\xB8\xAD\xE5\x9B\xBD.txt";
-    char c[ODFS_NAME_MAX] = "??.txt";
+    char c[ODFS_NAME_MAX] = "__.txt";
     /* the same name once as UTF-8 and once as raw Latin-1 */
     char d[ODFS_NAME_MAX] = "caf\xC3\xA9";
     char e[ODFS_NAME_MAX] = "caf\xE9";
@@ -134,9 +134,9 @@ TEST(namefix_separates_names_that_convert_alike)
     ASSERT_OK(odfs_namefix_apply(&state, a, sizeof(a)));
     ASSERT_OK(odfs_namefix_apply(&state, b, sizeof(b)));
     ASSERT_OK(odfs_namefix_apply(&state, c, sizeof(c)));
-    ASSERT_STR_EQ(a, "??.txt");
-    ASSERT_STR_EQ(b, "??.txt~2");
-    ASSERT_STR_EQ(c, "??.txt~3");
+    ASSERT_STR_EQ(a, "__.txt");
+    ASSERT_STR_EQ(b, "__.txt~2");
+    ASSERT_STR_EQ(c, "__.txt~3");
     ASSERT_OK(odfs_namefix_apply(&state, d, sizeof(d)));
     ASSERT_OK(odfs_namefix_apply(&state, e, sizeof(e)));
     ASSERT_STR_EQ(d, "caf\xE9");

@@ -80,7 +80,7 @@ TEST(ucs2be_surrogate_pairs)
     ASSERT_EQ(dst[5], '\0');
 
     ASSERT_OK(odfs_ucs2be_to_utf8(lone, sizeof(lone), dst, sizeof(dst), &len));
-    ASSERT_STR_EQ(dst, "?B??");
+    ASSERT_STR_EQ(dst, "_B__");
     ASSERT_EQ(len, 4);
 
     /* a pair that does not fit is left out whole */
@@ -128,7 +128,7 @@ TEST(mac_roman_controls)
     size_t len;
 
     ASSERT_OK(odfs_mac_roman_to_utf8(src, sizeof(src), dst, sizeof(dst), &len));
-    ASSERT_STR_EQ(dst, "A?B");
+    ASSERT_STR_EQ(dst, "A_B");
     ASSERT_EQ(len, 3);
 }
 
@@ -180,12 +180,12 @@ TEST(utf8_to_latin1_converts_latin1_range)
 
 TEST(utf8_to_latin1_replaces_other_characters)
 {
-    /* U+0100, U+20AC, U+65E5 U+672C, U+1F600: one '?' each */
+    /* U+0100, U+20AC, U+65E5 U+672C, U+1F600: one '_' each */
     char s[] = "a\xC4\x80" "b\xE2\x82\xAC" "c\xE6\x97\xA5\xE6\x9C\xAC"
                "d\xF0\x9F\x98\x80" "e";
 
     ASSERT_EQ(odfs_utf8_to_latin1(s), 10);
-    ASSERT_STR_EQ(s, "a?b?c??d?e");
+    ASSERT_STR_EQ(s, "a_b_c__d_e");
 }
 
 TEST(utf8_to_latin1_replaces_c1_controls)
@@ -194,7 +194,7 @@ TEST(utf8_to_latin1_replaces_c1_controls)
     char s[] = "\xC2\x80\xC2\x9B\xC2\x9F";
 
     ASSERT_EQ(odfs_utf8_to_latin1(s), 3);
-    ASSERT_STR_EQ(s, "???");
+    ASSERT_STR_EQ(s, "___");
 }
 
 /* a name that is Latin-1 already must come out as it went in */
@@ -299,13 +299,13 @@ TEST(utf8_to_latin1_composes_accents)
                      "\xCC\xCD\xCE\xCF\xD1\xD2\xD3\xD4\xD5\xD6"
                      "\xD9\xDA\xDB\xDC\xDD");
     odfs_utf8_to_latin1(g);
-    ASSERT_STR_EQ(g, "s? Y? q?");
+    ASSERT_STR_EQ(g, "s_ Y_ q_");
     odfs_utf8_to_latin1(h);
-    ASSERT_STR_EQ(h, "?a");
+    ASSERT_STR_EQ(h, "_a");
     odfs_utf8_to_latin1(k);
-    ASSERT_STR_EQ(k, "1? @? `?");
+    ASSERT_STR_EQ(k, "1_ @_ `_");
     odfs_utf8_to_latin1(l);
-    ASSERT_STR_EQ(l, "\xE4?");
+    ASSERT_STR_EQ(l, "\xE4_");
 #endif
 }
 

@@ -303,8 +303,8 @@ TEST(joliet_names_in_latin1)
                                          joliet_collect_cb, &collect, NULL));
     ASSERT_EQ(collect.count, 4);
     ASSERT_STR_EQ(collect.nodes[0].name, "Gr\xFC\xDF" "e");
-    ASSERT_STR_EQ(collect.nodes[1].name, "??");
-    ASSERT_STR_EQ(collect.nodes[2].name, "??~2");
+    ASSERT_STR_EQ(collect.nodes[1].name, "__");
+    ASSERT_STR_EQ(collect.nodes[2].name, "__~2");
     ASSERT_STR_EQ(collect.nodes[3].name, "abc");
 
     /* a name is found the way readdir spelled it, and only that way */
@@ -312,7 +312,7 @@ TEST(joliet_names_in_latin1)
                                         "Gr\xFC\xDF" "e", &node));
     ASSERT_EQ(node.extent.lba, 21);
     ASSERT_OK(joliet_backend_ops.lookup(ctx, &cache, &log, &root,
-                                        "??~2", &node));
+                                        "__~2", &node));
     ASSERT_EQ(node.extent.lba, 23);
     ASSERT_ERR(joliet_backend_ops.lookup(ctx, &cache, &log, &root,
                                          "Gr\xC3\xBC\xC3\x9F" "e", &node),

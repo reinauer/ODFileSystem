@@ -13,6 +13,13 @@
 #include <stddef.h>
 
 /*
+ * What a character that cannot be converted is replaced with. Not '?':
+ * that is an AmigaDOS pattern character, and List ALL on AROS never
+ * comes back from a directory that has one in its name.
+ */
+#define ODFS_CHAR_REPLACEMENT '_'
+
+/*
  * Convert UCS-2 / UTF-16 big-endian to UTF-8.
  *   src      — UCS-2BE / UTF-16BE input buffer
  *   src_len  — input length in bytes (must be even)
@@ -21,7 +28,7 @@
  *   out_len  — receives number of bytes written (excluding NUL)
  *
  * Output is always NUL-terminated if dst_size > 0.
- * Unpaired surrogates and unmappable characters are replaced with '?'.
+ * Unpaired surrogates and unmappable characters are replaced with '_'.
  */
 odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
                                   char *dst, size_t dst_size,
@@ -36,7 +43,7 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
  *   out_len  - receives number of bytes written (excluding NUL)
  *
  * Output is always NUL-terminated if dst_size > 0.
- * Control characters are replaced with '?'.
+ * Control characters are replaced with '_'.
  */
 odfs_err_t odfs_mac_roman_to_utf8(const uint8_t *src, size_t src_len,
                                   char *dst, size_t dst_size,
@@ -60,7 +67,7 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
  * Convert a UTF-8 string to ISO 8859-1 (Latin-1) in place and return
  * its new length; the result is never longer than the input.
  *
- * A character Latin-1 does not have becomes '?'. A byte that is not
+ * A character Latin-1 does not have becomes '_'. A byte that is not
  * part of a well-formed UTF-8 sequence is kept as it is, so a string
  * that already is in an 8-bit character set, such as a Rock Ridge name
  * written by an Amiga mastering tool, passes through unchanged.

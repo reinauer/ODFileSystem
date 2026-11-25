@@ -595,7 +595,7 @@ TEST(hfsplus_names_drop_amiga_separators)
     ASSERT_OK(list_root(&mnt, &list));
     ASSERT_EQ(list.count, 2);
     ASSERT_STR_EQ(list.nodes[0].name, "AC-DC");
-    ASSERT_STR_EQ(list.nodes[1].name, "Icon?");
+    ASSERT_STR_EQ(list.nodes[1].name, "Icon_");
     odfs_unmount(&mnt);
     odfs_free(img);
 }

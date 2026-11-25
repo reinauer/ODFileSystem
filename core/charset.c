@@ -34,7 +34,7 @@ static int odfs_utf8_append(uint32_t cp, char *dst, size_t dst_size, size_t *di)
     } else {
         if (*di + 1 >= dst_size)
             return 0;
-        dst[(*di)++] = '?';
+        dst[(*di)++] = ODFS_CHAR_REPLACEMENT;
     }
 
     return 1;
@@ -67,7 +67,7 @@ odfs_err_t odfs_ucs2be_to_utf8(const uint8_t *src, size_t src_len,
         if (u1 >= 0xD800u && u1 <= 0xDFFFu) {
             /* a high surrogate followed by a low one is one code
              * point; any other surrogate stands for nothing */
-            cp = '?';
+            cp = ODFS_CHAR_REPLACEMENT;
             if (u1 <= 0xDBFFu && si + 3 < src_len) {
                 uint16_t u2 = (uint16_t)(((uint16_t)src[si + 2] << 8) |
                                          src[si + 3]);
@@ -124,7 +124,7 @@ odfs_err_t odfs_mac_roman_to_utf8(const uint8_t *src, size_t src_len,
         uint32_t cp;
 
         if (c < 0x20)
-            cp = '?';
+            cp = ODFS_CHAR_REPLACEMENT;
         else if (c < 0x80)
             cp = c;
         else
@@ -243,7 +243,7 @@ size_t odfs_utf8_to_latin1(char *s)
                 }
 #endif
                 /* U+0080-U+009F are control codes, CSI among them */
-                c = (cp >= 0xA0u && cp <= 0xFFu) ? cp : '?';
+                c = (cp >= 0xA0u && cp <= 0xFFu) ? cp : ODFS_CHAR_REPLACEMENT;
             }
         }
         *dst++ = (unsigned char)c;

@@ -16,6 +16,7 @@
 #include "hfs/hfs_common.h"
 #include "odfs/alloc.h"
 #include "odfs/cache.h"
+#include "odfs/charset.h"
 #include "odfs/error.h"
 #include "odfs/namefix.h"
 #include "odfs/string.h"
@@ -37,7 +38,7 @@ void odfs_hfs_fix_name(char *name, size_t len)
         else if (c == '/')
             name[i] = '-';
         else if (c < 0x20 || c == 0x7F)
-            name[i] = '?';
+            name[i] = ODFS_CHAR_REPLACEMENT;
     }
 }
 
