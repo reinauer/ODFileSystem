@@ -16,4 +16,7 @@
  */
 #include <dos/obsolete.h>
 
+/* the process that loads libraries and devices from disk */
+#define ODFS_AMIGA_LOADER_TASK "ramlib"
+
 #endif /* ODFS_AMIGA_TARGET_COMPAT_H */

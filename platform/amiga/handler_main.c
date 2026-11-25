@@ -6978,6 +6978,10 @@ void handler_main_startup(struct Message *startup_msg)
             /* re-init media adapter after remount */
             g->media_ctx.g = g;
         }
+#if ODFS_AMIGA_OS4 && ODFS_FEATURE_CHARSET_EXTERNAL
+        if (sigs & chgsig)
+            odfs_amiga_media_pass_done(g);
+#endif
 
         /* DOS packets */
         if (sigs & dossig) {

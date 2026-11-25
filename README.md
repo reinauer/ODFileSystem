@@ -195,11 +195,10 @@ that set does not have is shown as `_`. Rock Ridge names that already are in
 an 8-bit character set are left as they are.
 
 The character set is ISO 8859-1 (Latin-1), unless `codesets.library` is
-installed. On AmigaOS 3 and AROS the handler then asks it, the first time the
-drive is used, for the system's default character set: a system set up for
-Polish gets names in ISO 8859-2, for example. Names stay in Latin-1 in the ROM
-build, on AmigaOS 4, and when the system was booted from the disc in the
-drive.
+installed. The handler then asks it, the first time the drive is used, for the
+system's default character set: a system set up for Polish gets names in
+ISO 8859-2, for example. Names stay in Latin-1 in the ROM build, and when the
+system was booted from the disc in the drive.
 
 ### Name collisions
 

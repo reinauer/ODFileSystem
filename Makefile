@@ -155,11 +155,8 @@ AMIGA_CPUFLAGS ?= -mcpu=powerpc
 # and the kickstart loader expects plain PT_LOAD program headers only.
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
-# No lookup of the system's character set: on AmigaOS 4 requests reach
-# the handler as calls, not as packets it could catch.
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__ \
-                 -DODFS_FEATURE_CACHE_RETAIN=0 \
-                 -DODFS_FEATURE_CHARSET_EXTERNAL=0
+                 -DODFS_FEATURE_CACHE_RETAIN=0
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.

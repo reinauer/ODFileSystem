@@ -36,7 +36,7 @@ static void set_dos_error(int32 *res2, LONG err)
 }
 
 /* Keep the admission sequence shared by the many vector callbacks. */
-static __attribute__((noinline)) handler_global_t *vp_require_global(
+static __attribute__((noinline)) handler_global_t *vp_require_handler(
     struct FSVP *vp, int32 *res2)
 {
     handler_global_t *g = odfs_os4_acquire_handler(vp);
@@ -50,6 +50,24 @@ static __attribute__((noinline)) handler_global_t *vp_require_global(
      */
     if (!g)
         set_dos_error(res2, ERROR_OBJECT_WRONG_TYPE);
+    return g;
+}
+
+/*
+ * The same for a callback that concerns the disc. The first of these
+ * has the system's character set asked for: see system_charset.c.
+ * vp_filesystem_attr() is not one of them. DOS calls it from the
+ * startup script's process at boot, before the locale is loaded.
+ */
+static __attribute__((noinline)) handler_global_t *vp_require_global(
+    struct FSVP *vp, int32 *res2)
+{
+    handler_global_t *g = vp_require_handler(vp, res2);
+
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    if (g && g->names_state == ODFS_NAMES_AWAITED)
+        odfs_amiga_first_call(g);
+#endif
     return g;
 }
 
@@ -827,7 +845,7 @@ static int32 vp_filesystem_attr(struct FSVP *vp,
                                 int32 *res2,
                                 struct TagItem *taglist)
 {
-    handler_global_t *g = vp_require_global(vp, res2);
+    handler_global_t *g = vp_require_handler(vp, res2);
     struct TagItem *state = taglist;
     struct TagItem *tag;
     uint32 version_buf_size;
