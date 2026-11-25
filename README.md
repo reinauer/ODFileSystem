@@ -191,7 +191,7 @@ To prefer HFS or HFS+, use `Control = "HFSFIRST"`. Options can be combined, for 
 
 Names from Joliet, UDF, HFS and HFS+ volumes, and Rock Ridge names written in
 UTF-8, are converted to ISO 8859-1 (Latin-1), the character set of AmigaOS. A
-character that Latin-1 does not have is shown as `?`. Rock Ridge names that
+character that Latin-1 does not have is shown as `_`. Rock Ridge names that
 already are in an 8-bit character set are left as they are.
 
 ### Name collisions

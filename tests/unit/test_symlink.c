@@ -352,7 +352,7 @@ TEST(readlink_follows_the_mount_charset)
 
     ASSERT_OK(odfs_readlink(&mnt, &mnt.root, "L\xE4nk",
                             target, sizeof(target)));
-    ASSERT_STR_EQ(target, "z\xFCl/?");
+    ASSERT_STR_EQ(target, "z\xFCl/_");
     ASSERT_ERR(odfs_readlink(&mnt, &mnt.root, "L\xC3\xA4nk",
                              target, sizeof(target)),
                ODFS_ERR_NOT_FOUND);
