@@ -62,21 +62,32 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
                                        char *dst, size_t dst_size,
                                        int lowercase);
 
+/*
+ * An 8-bit character set that has ASCII in its lower half is described
+ * by a map: the Unicode code point of each byte from 0xA0 to 0xFF, or 0
+ * for a byte without a character. Bytes 0x80 to 0x9F are left out: the
+ * Amiga console takes them as control codes in every character set.
+ */
+#define ODFS_CHARSET_MAP_FIRST 0xA0u
+#define ODFS_CHARSET_MAP_SIZE  96u
+
 #if ODFS_FEATURE_CHARSET_BUILTIN
 /*
- * Convert a UTF-8 string to ISO 8859-1 (Latin-1) in place and return
- * its new length; the result is never longer than the input.
+ * Convert a UTF-8 string to an 8-bit character set in place and return
+ * its new length; the result is never longer than the input. A NULL
+ * map stands for ISO 8859-1 (Latin-1); only a build with
+ * ODFS_FEATURE_CHARSET_EXTERNAL takes another one.
  *
- * A character Latin-1 does not have becomes '_'. A byte that is not
+ * A character the set does not have becomes '_'. A byte that is not
  * part of a well-formed UTF-8 sequence is kept as it is, so a string
  * that already is in an 8-bit character set, such as a Rock Ridge name
  * written by an Amiga mastering tool, passes through unchanged.
  *
  * With ODFS_FEATURE_CHARSET_COMPOSE, a combining accent merges with
- * the letter before it where Latin-1 has the accented letter: "u"
- * followed by U+0308 becomes u-diaeresis.
+ * the letter before it where Latin-1 and the set have the accented
+ * letter: "u" followed by U+0308 becomes u-diaeresis.
  */
-size_t odfs_utf8_to_latin1(char *s);
+size_t odfs_utf8_to_8bit(char *s, const uint16_t *map);
 #endif
 
 /*
@@ -85,14 +96,14 @@ size_t odfs_utf8_to_latin1(char *s);
  * symbolic link targets and the volume name converted to it.
  */
 #define ODFS_NAMES_UTF8   0u
-#define ODFS_NAMES_LATIN1 1u  /* ISO 8859-1, see odfs_utf8_to_latin1() */
+#define ODFS_NAMES_LATIN1 1u  /* ISO 8859-1 */
 
 /* convert a UTF-8 name in place to character set charset */
 static inline void odfs_name_to_charset(char *name, unsigned int charset)
 {
 #if ODFS_FEATURE_CHARSET_BUILTIN
     if (charset == ODFS_NAMES_LATIN1)
-        odfs_utf8_to_latin1(name);
+        odfs_utf8_to_8bit(name, NULL);
 #else
     (void)name;
     (void)charset;

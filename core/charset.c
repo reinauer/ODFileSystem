@@ -209,7 +209,27 @@ static unsigned int odfs_latin1_compose(unsigned int base, unsigned int mark)
 }
 #endif
 
-size_t odfs_utf8_to_latin1(char *s)
+/* the byte character cp has in the 8-bit set of map, or 0 for none */
+static unsigned int odfs_8bit_code(unsigned int cp, const uint16_t *map)
+{
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    if (map) {
+        unsigned int i;
+
+        for (i = 0; i < ODFS_CHARSET_MAP_SIZE; i++) {
+            if (map[i] == cp)
+                return ODFS_CHARSET_MAP_FIRST + i;
+        }
+        return 0;
+    }
+#else
+    (void)map;
+#endif
+    /* U+0080-U+009F are control codes, CSI among them */
+    return (cp >= 0xA0u && cp <= 0xFFu) ? cp : 0;
+}
+
+size_t odfs_utf8_to_8bit(char *s, const uint16_t *map)
 {
     const unsigned char *src = (const unsigned char *)s;
     unsigned char *dst = (unsigned char *)s;
@@ -235,15 +255,19 @@ size_t odfs_utf8_to_latin1(char *s)
                 src += more;
 #if ODFS_FEATURE_CHARSET_COMPOSE
                 if (cp - 0x300u < 0x28u && dst != (unsigned char *)s) {
+                    /* a Latin-1 code is the letter's code point too */
                     c = odfs_latin1_compose(dst[-1], cp - 0x300u);
+                    if (c != 0)
+                        c = odfs_8bit_code(c, map);
                     if (c != 0) {
                         dst[-1] = (unsigned char)c;
                         continue;
                     }
                 }
 #endif
-                /* U+0080-U+009F are control codes, CSI among them */
-                c = (cp >= 0xA0u && cp <= 0xFFu) ? cp : ODFS_CHAR_REPLACEMENT;
+                c = odfs_8bit_code(cp, map);
+                if (c == 0)
+                    c = ODFS_CHAR_REPLACEMENT;
             }
         }
         *dst++ = (unsigned char)c;
