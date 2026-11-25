@@ -8,6 +8,7 @@
 #define ODFS_CACHE_H
 
 #include "odfs/config.h"
+#include "odfs/charset.h"
 #include "odfs/error.h"
 #include "odfs/media.h"
 #include <stdint.h>
@@ -65,10 +66,10 @@ typedef struct odfs_cache {
                                          it still holds the same sector */
     uint8_t            *data_slab;   /* all sector buffers, or NULL when
                                         each entry has its own */
-    uint8_t              name_charset; /* ODFS_NAMES_xxx the mount asked
-                                          for; kept here because the
-                                          cache is what every backend
-                                          call is handed */
+    odfs_names_t         names;       /* character set the mount asked
+                                         for; kept here because the
+                                         cache is what every backend
+                                         call is handed */
 } odfs_cache_t;
 
 /* lifecycle */

@@ -445,7 +445,8 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     err = odfs_cache_init(&mnt->cache, &mnt->media, cache_size);
     if (err != ODFS_OK)
         return err;
-    mnt->cache.name_charset = (uint8_t)mnt->opts.name_charset;
+    mnt->cache.names.charset = (uint8_t)mnt->opts.name_charset;
+    mnt->cache.names.map = mnt->opts.name_map;
 
     ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
                "cache initialized: %" PRIu32 " blocks", cache_size);
@@ -507,7 +508,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
         mnt->backend_ops->get_volume_name(mnt->backend_ctx,
                                           mnt->volume_name,
                                           sizeof(mnt->volume_name));
-    odfs_name_to_charset(mnt->volume_name, mnt->cache.name_charset);
+    odfs_name_to_charset(mnt->volume_name, &mnt->cache.names);
     if (mnt->backend_ops->get_volume_size)
         mnt->total_blocks =
             mnt->backend_ops->get_volume_size(mnt->backend_ctx);
@@ -717,7 +718,7 @@ odfs_err_t odfs_readlink(odfs_mount_t *mnt,
                         buf, buf_size);
     /* the target names nodes, so it has to be spelled as they are */
     if (err == ODFS_OK)
-        odfs_name_to_charset(buf, mnt->cache.name_charset);
+        odfs_name_to_charset(buf, &mnt->cache.names);
     return err;
 }
 

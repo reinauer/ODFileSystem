@@ -9,12 +9,15 @@
 #include "odfs/node.h"
 #include "test_harness.h"
 
+static const odfs_names_t names_utf8 = { ODFS_NAMES_UTF8, NULL };
+static const odfs_names_t names_latin1 = { ODFS_NAMES_LATIN1, NULL };
+
 TEST(namefix_keeps_unique_name)
 {
     odfs_namefix_state_t state;
     char name[ODFS_NAME_MAX] = "README";
 
-    odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+    odfs_namefix_init(&state, &names_utf8);
     ASSERT_OK(odfs_namefix_apply(&state, name, sizeof(name)));
     ASSERT_STR_EQ(name, "README");
     odfs_namefix_destroy(&state);
@@ -26,7 +29,7 @@ TEST(namefix_suffixes_duplicate_name)
     char first[ODFS_NAME_MAX] = "README";
     char second[ODFS_NAME_MAX] = "README";
 
-    odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+    odfs_namefix_init(&state, &names_utf8);
     ASSERT_OK(odfs_namefix_apply(&state, first, sizeof(first)));
     ASSERT_OK(odfs_namefix_apply(&state, second, sizeof(second)));
     ASSERT_STR_EQ(first, "README");
@@ -41,7 +44,7 @@ TEST(namefix_handles_suffix_collisions)
     char second[ODFS_NAME_MAX] = "README";
     char third[ODFS_NAME_MAX] = "README~2";
 
-    odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+    odfs_namefix_init(&state, &names_utf8);
     ASSERT_OK(odfs_namefix_apply(&state, first, sizeof(first)));
     ASSERT_OK(odfs_namefix_apply(&state, second, sizeof(second)));
     ASSERT_OK(odfs_namefix_apply(&state, third, sizeof(third)));
@@ -56,7 +59,7 @@ TEST(namefix_is_case_insensitive)
     char first[ODFS_NAME_MAX] = "ReadMe";
     char second[ODFS_NAME_MAX] = "README";
 
-    odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+    odfs_namefix_init(&state, &names_utf8);
     ASSERT_OK(odfs_namefix_apply(&state, first, sizeof(first)));
     ASSERT_OK(odfs_namefix_apply(&state, second, sizeof(second)));
     ASSERT_STR_EQ(second, "README~2");
@@ -84,7 +87,7 @@ TEST(namefix_truncates_at_utf8_boundaries)
         strcpy(a, names[i]);
         memcpy(b, a, sizeof(b));
 
-        odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+        odfs_namefix_init(&state, &names_utf8);
         ASSERT_OK(odfs_namefix_apply(&state, a, sizes[i]));
         ASSERT_OK(odfs_namefix_apply(&state, b, sizes[i]));
         ASSERT_STR_EQ(b, want[i]);
@@ -99,7 +102,7 @@ TEST(namefix_converts_names_to_latin1)
     char name[ODFS_NAME_MAX] = "Gr\xC3\xBC\xC3\x9F" "e.txt";
     char ascii[ODFS_NAME_MAX] = "README";
 
-    odfs_namefix_init(&state, ODFS_NAMES_LATIN1);
+    odfs_namefix_init(&state, &names_latin1);
     ASSERT_OK(odfs_namefix_apply(&state, name, sizeof(name)));
     ASSERT_STR_EQ(name, "Gr\xFC\xDF" "e.txt");
     ASSERT_OK(odfs_namefix_apply(&state, ascii, sizeof(ascii)));
@@ -112,7 +115,7 @@ TEST(namefix_keeps_utf8_names_by_default)
     odfs_namefix_state_t state;
     char name[ODFS_NAME_MAX] = "Gr\xC3\xBC\xC3\x9F" "e.txt";
 
-    odfs_namefix_init(&state, ODFS_NAMES_UTF8);
+    odfs_namefix_init(&state, &names_utf8);
     ASSERT_OK(odfs_namefix_apply(&state, name, sizeof(name)));
     ASSERT_STR_EQ(name, "Gr\xC3\xBC\xC3\x9F" "e.txt");
     odfs_namefix_destroy(&state);
@@ -130,7 +133,7 @@ TEST(namefix_separates_names_that_convert_alike)
     char d[ODFS_NAME_MAX] = "caf\xC3\xA9";
     char e[ODFS_NAME_MAX] = "caf\xE9";
 
-    odfs_namefix_init(&state, ODFS_NAMES_LATIN1);
+    odfs_namefix_init(&state, &names_latin1);
     ASSERT_OK(odfs_namefix_apply(&state, a, sizeof(a)));
     ASSERT_OK(odfs_namefix_apply(&state, b, sizeof(b)));
     ASSERT_OK(odfs_namefix_apply(&state, c, sizeof(c)));
@@ -151,12 +154,38 @@ TEST(namefix_truncates_latin1_names_at_any_byte)
     char a[8] = "ab\xA9";
     char b[8] = "ab\xA9";
 
-    odfs_namefix_init(&state, ODFS_NAMES_LATIN1);
+    odfs_namefix_init(&state, &names_latin1);
     ASSERT_OK(odfs_namefix_apply(&state, a, 5));
     ASSERT_OK(odfs_namefix_apply(&state, b, 5));
     ASSERT_STR_EQ(a, "ab\xA9");
     ASSERT_STR_EQ(b, "ab~2");
     odfs_namefix_destroy(&state);
+}
+
+/* a mount can name its own 8-bit set */
+TEST(namefix_converts_names_through_a_map)
+{
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    /* U+0142 at 0xB3 and U+00F3 at 0xF3, as in ISO 8859-2 */
+    static uint16_t map[ODFS_CHARSET_MAP_SIZE];
+    const odfs_names_t names = { ODFS_NAMES_MAPPED, map };
+    odfs_namefix_state_t state;
+    /* "L" U+00F3 "d" U+017A ".txt" and "l" U+00F3 "d_.txt" */
+    char a[ODFS_NAME_MAX] = "\xC5\x81\xC3\xB3" "d\xC5\xBA.txt";
+    char b[ODFS_NAME_MAX] = "\xC5\x82\xC3\xB3" "d_.txt";
+
+    map[0xA3 - ODFS_CHARSET_MAP_FIRST] = 0x0141;
+    map[0xB3 - ODFS_CHARSET_MAP_FIRST] = 0x0142;
+    map[0xF3 - ODFS_CHARSET_MAP_FIRST] = 0x00F3;
+
+    odfs_namefix_init(&state, &names);
+    ASSERT_OK(odfs_namefix_apply(&state, a, sizeof(a)));
+    ASSERT_STR_EQ(a, "\xA3\xF3" "d_.txt");
+    /* the same name but for the case of its first letter */
+    ASSERT_OK(odfs_namefix_apply(&state, b, sizeof(b)));
+    ASSERT_STR_EQ(b, "\xB3\xF3" "d_.txt");
+    odfs_namefix_destroy(&state);
+#endif
 }
 
 TEST_MAIN()

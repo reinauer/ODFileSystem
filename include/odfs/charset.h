@@ -97,16 +97,24 @@ size_t odfs_utf8_to_8bit(char *s, const uint16_t *map);
  */
 #define ODFS_NAMES_UTF8   0u
 #define ODFS_NAMES_LATIN1 1u  /* ISO 8859-1 */
+#define ODFS_NAMES_MAPPED 2u  /* the 8-bit set of odfs_names_t.map */
 
-/* convert a UTF-8 name in place to character set charset */
-static inline void odfs_name_to_charset(char *name, unsigned int charset)
+typedef struct odfs_names {
+    uint8_t         charset;  /* ODFS_NAMES_xxx */
+    const uint16_t *map;      /* for ODFS_NAMES_MAPPED; the mount's
+                                 owner keeps it while mounted */
+} odfs_names_t;
+
+/* convert a UTF-8 name in place to the character set of names */
+static inline void odfs_name_to_charset(char *name, const odfs_names_t *names)
 {
 #if ODFS_FEATURE_CHARSET_BUILTIN
-    if (charset == ODFS_NAMES_LATIN1)
-        odfs_utf8_to_8bit(name, NULL);
+    if (names->charset != ODFS_NAMES_UTF8)
+        odfs_utf8_to_8bit(name, names->charset == ODFS_NAMES_MAPPED ?
+                                names->map : NULL);
 #else
     (void)name;
-    (void)charset;
+    (void)names;
 #endif
 }
 

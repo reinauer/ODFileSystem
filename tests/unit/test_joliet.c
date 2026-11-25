@@ -297,7 +297,7 @@ TEST(joliet_names_in_latin1)
     ASSERT_STR_EQ(collect.nodes[0].name, "Gr\xC3\xBC\xC3\x9F" "e");
     ASSERT_STR_EQ(collect.nodes[1].name, "\xE6\x97\xA5\xE6\x9C\xAC");
 
-    cache.name_charset = ODFS_NAMES_LATIN1;
+    cache.names.charset = ODFS_NAMES_LATIN1;
     memset(&collect, 0, sizeof(collect));
     ASSERT_OK(joliet_backend_ops.readdir(ctx, &cache, &log, &root,
                                          joliet_collect_cb, &collect, NULL));
