@@ -358,6 +358,31 @@ TEST(readlink_follows_the_mount_charset)
                ODFS_ERR_NOT_FOUND);
 
     odfs_unmount(&mnt);
+
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    {
+        /* a set of its own: U+00DC, U+00E4, U+00FC and U+65E5 */
+        static uint16_t map[ODFS_CHARSET_MAP_SIZE] = {
+            0x00DC, 0x00E4, 0x00FC, 0x65E5
+        };
+
+        opts.name_charset = ODFS_NAMES_MAPPED;
+        opts.name_map = map;
+        ASSERT_OK(odfs_mount(&m, &opts, NULL, &mnt));
+        ASSERT_STR_EQ(mnt.volume_name, "SL\xA0TEST");
+
+        memset(&collect, 0, sizeof(collect));
+        ASSERT_OK(odfs_readdir(&mnt, &mnt.root, sl_collect_cb, &collect,
+                               NULL));
+        ASSERT_EQ(collect.count, 4);
+        ASSERT_STR_EQ(collect.entries[3].name, "L\xA1nk");
+
+        ASSERT_OK(odfs_readlink(&mnt, &mnt.root, "L\xA1nk",
+                                target, sizeof(target)));
+        ASSERT_STR_EQ(target, "z\xA2l/\xA3");
+        odfs_unmount(&mnt);
+    }
+#endif
 }
 
 TEST(posix_to_amiga_conversion)

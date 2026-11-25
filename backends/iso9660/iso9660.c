@@ -524,7 +524,7 @@ odfs_err_t odfs_iso_readdir(void *backend_ctx,
 
     ODFS_TRACE(log, ODFS_SUB_ISO,
                 "readdir: LBA %" PRIu32 ", size %" PRIu32, dir_lba, dir_size);
-    odfs_namefix_init(&namefix, cache->name_charset);
+    odfs_namefix_init(&namefix, &cache->names);
 
     while (offset < dir_size) {
         uint32_t entry_start = offset;
@@ -854,7 +854,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         }
 
         /* name is the node's, which readdir converted */
-        odfs_name_to_charset(node.name, cache->name_charset);
+        odfs_name_to_charset(node.name, &cache->names);
         if (odfs_strcasecmp(node.name, name) != 0)
             continue;
 

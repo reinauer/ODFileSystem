@@ -1256,7 +1256,7 @@ static odfs_err_t udf_walk_dir_entries(udf_context_t *ctx,
     walk.dir = dir;
     walk.callback = callback;
     walk.arg = arg;
-    odfs_namefix_init(&walk.namefix, cache->name_charset);
+    odfs_namefix_init(&walk.namefix, &cache->names);
     err = udf_walk_fids(ctx, cache, dir, udf_decode_dir_entry, &walk,
                         dir_size_out);
     odfs_namefix_destroy(&walk.namefix);

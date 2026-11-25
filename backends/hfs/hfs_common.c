@@ -444,7 +444,7 @@ odfs_err_t odfs_hfs_readdir(void *backend_ctx,
     rc.skip_to = (resume_offset && *resume_offset) ? *resume_offset : 0;
     rc.resume_offset = resume_offset;
     rc.last_err = ODFS_OK;
-    odfs_namefix_init(&rc.namefix, cache->name_charset);
+    odfs_namefix_init(&rc.namefix, &cache->names);
 
     /* dir->extent.lba stores the directory's CNID */
     err = odfs_hfs_walk_catalog(vol, cache, dir->extent.lba,

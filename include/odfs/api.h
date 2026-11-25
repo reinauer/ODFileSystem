@@ -27,6 +27,8 @@ typedef struct odfs_mount_opts {
     int      lowercase_iso;      /* lowercase plain ISO names */
     int      prefer_aiff;        /* expose CDDA tracks as AIFF instead of WAV */
     int      name_charset;       /* ODFS_NAMES_xxx: character set of names */
+    const uint16_t *name_map;    /* ODFS_NAMES_MAPPED: its map, which must
+                                    stay valid while mounted */
     uint32_t cache_blocks;       /* block cache size (0 = use default) */
     uint32_t meta_cache_kib;     /* parsed-dir cache budget in KiB
                                     (default from config.h; 0 disables) */

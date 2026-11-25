@@ -1758,7 +1758,7 @@ TEST(udf_cs0_8bit_name_decodes_latin1_to_utf8)
     ASSERT_STR_EQ(out.name, "caf\xC3\xA9");
 
     /* a mount that names nodes in Latin-1 gets the bytes on the disc */
-    cache.name_charset = ODFS_NAMES_LATIN1;
+    cache.names.charset = ODFS_NAMES_LATIN1;
     ASSERT_OK(udf_backend_ops.lookup(&ctx, &cache, &log, &dir,
                                      "caf\xE9", &out));
     ASSERT_STR_EQ(out.name, "caf\xE9");

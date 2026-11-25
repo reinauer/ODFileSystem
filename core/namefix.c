@@ -16,13 +16,14 @@
 
 #define ODFS_NAMEFIX_CHUNK_SIZE 4096u
 
-void odfs_namefix_init(odfs_namefix_state_t *state, unsigned int charset)
+void odfs_namefix_init(odfs_namefix_state_t *state,
+                       const odfs_names_t *names)
 {
     memset(state->buckets, 0, sizeof(state->buckets));
     state->chunks = NULL;
     state->free = (unsigned char *)state->inline_buf;
     state->avail = sizeof(state->inline_buf);
-    state->charset = (unsigned char)charset;
+    state->names = names;
 }
 
 void odfs_namefix_destroy(odfs_namefix_state_t *state)
@@ -35,7 +36,7 @@ void odfs_namefix_destroy(odfs_namefix_state_t *state)
         chunk = next;
     }
 
-    odfs_namefix_init(state, state->charset);
+    odfs_namefix_init(state, state->names);
 }
 
 static void *odfs_namefix_alloc(odfs_namefix_state_t *state, size_t size)
@@ -142,7 +143,7 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
          * Convert before looking for duplicates, so that two names
          * which come out the same are told apart like any others.
          */
-        odfs_name_to_charset(name, state->charset);
+        odfs_name_to_charset(name, state->names);
         hash = odfs_namefix_hash(name, &len);
     } else {
         hash ^= hash >> 16;
@@ -182,7 +183,7 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
         if (keep + (size_t)suffix_len >= name_size) {
             keep = name_size - (size_t)suffix_len - 1;
             /* cut before a character, not inside its UTF-8 sequence */
-            while (state->charset == ODFS_NAMES_UTF8 && keep > 0 &&
+            while (state->names->charset == ODFS_NAMES_UTF8 && keep > 0 &&
                    ((unsigned char)base[keep] & 0xC0u) == 0x80u)
                 keep--;
         }

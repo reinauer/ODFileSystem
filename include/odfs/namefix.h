@@ -7,6 +7,7 @@
 #ifndef ODFS_NAMEFIX_H
 #define ODFS_NAMEFIX_H
 
+#include "odfs/charset.h"
 #include "odfs/error.h"
 #include <stddef.h>
 
@@ -31,12 +32,13 @@ typedef struct odfs_namefix_state {
     odfs_namefix_chunk_t *chunks;
     unsigned char        *free;    /* next unused byte */
     size_t                avail;   /* bytes left at free */
-    unsigned char         charset; /* ODFS_NAMES_xxx of the fixed names */
+    const odfs_names_t   *names;   /* character set of the fixed names */
     void                 *inline_buf[ODFS_NAMEFIX_INLINE / sizeof(void *)];
 } odfs_namefix_state_t;
 
 /* charset is the ODFS_NAMES_xxx set the names are wanted in */
-void odfs_namefix_init(odfs_namefix_state_t *state, unsigned int charset);
+void odfs_namefix_init(odfs_namefix_state_t *state,
+                       const odfs_names_t *names);
 void odfs_namefix_destroy(odfs_namefix_state_t *state);
 
 /*
