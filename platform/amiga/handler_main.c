@@ -6150,6 +6150,13 @@ static void mount_volume(handler_global_t *g)
     odfs_mount_opts_default(&opts);
     /* AmigaDOS shows and compares names in an 8-bit character set */
     opts.name_charset = ODFS_NAMES_LATIN1;
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    (void)odfs_amiga_system_charset(g);
+    if (g->names_mapped) {
+        opts.name_charset = ODFS_NAMES_MAPPED;
+        opts.name_map = g->name_map;
+    }
+#endif
 
 #if !defined(ODFS_PROFILE_ROM) || !ODFS_PROFILE_ROM
     if (g->envec)
@@ -6274,6 +6281,16 @@ static void unmount_volume(handler_global_t *g)
     if (!g->mounted)
         return;
 
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    /*
+     * If it is time to ask, ask before the disc's memory is given
+     * back: loading the library would take it, and the caches of the
+     * mount that follows would end up somewhere slower. And if the
+     * answer changes nothing, this was no media change at all.
+     */
+    if (odfs_amiga_system_charset(g))
+        return;
+#endif
     cancel_volume_publish_retry(g);
     volume = g->current_volume;
 

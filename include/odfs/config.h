@@ -108,8 +108,9 @@
  * BUILTIN:  convert names from UTF-8 to Latin-1, see odfs/charset.h.
  * COMPOSE:  on the way, merge a letter and a combining accent that
  *           follows it. HFS+ stores every name decomposed like that.
- * EXTERNAL: convert to another 8-bit character set instead, given its
- *           map.
+ * EXTERNAL: convert to another 8-bit character set instead when the
+ *           mount hands in its map. The Amiga handler asks
+ *           codesets.library for the map of the system's set.
  */
 #ifdef ODFS_PROFILE_ROM
   #define ODFS_FEATURE_CHARSET_BUILTIN   1
@@ -118,7 +119,9 @@
 #else
   #define ODFS_FEATURE_CHARSET_BUILTIN   1
   #define ODFS_FEATURE_CHARSET_COMPOSE   1
-  #define ODFS_FEATURE_CHARSET_EXTERNAL  1
+  #ifndef ODFS_FEATURE_CHARSET_EXTERNAL
+    #define ODFS_FEATURE_CHARSET_EXTERNAL  1
+  #endif
 #endif
 
 /* ---------- cache sizing defaults ---------- */
