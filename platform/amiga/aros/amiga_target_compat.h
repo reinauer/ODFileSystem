@@ -17,6 +17,9 @@
 struct ExecBase;
 extern struct ExecBase *SysBase;
 
+/* the process that loads libraries and devices from disk */
+#define ODFS_AMIGA_LOADER_TASK "Lib & Dev Loader Daemon"
+
 #ifndef ACTION_SHUTDOWN
 #define ACTION_SHUTDOWN 3000
 #endif

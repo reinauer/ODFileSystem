@@ -209,6 +209,21 @@ typedef struct handler_global {
     struct MinList       fhlist;        /* active file handles */
     struct MinList       volumes;       /* current and stale volumes */
     ULONG                next_volume_id;/* next volume generation */
+
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+    /*
+     * The system's character set, see system_charset.c. Kept at the
+     * end so that it moves no field the packet path uses.
+     */
+    odfs_amiga_interrupt_t names_int;   /* runs for the first packet */
+    struct Task         *names_task;    /* the handler, for names_int */
+    const struct Node   *names_msg;     /* the packet it ran for */
+    ULONG                names_count;   /* change count when it ran */
+    uint8_t              names_counted; /* names_count is valid */
+    uint8_t              names_state;   /* how far asking has got */
+    uint8_t              names_mapped;  /* name_map is filled in */
+    uint16_t             name_map[ODFS_CHARSET_MAP_SIZE];
+#endif
 } handler_global_t;
 
 /* ---- volume tracking ---- */
@@ -512,6 +527,11 @@ LONG odfs_handler_inhibit(handler_global_t *g, LONG state);
 #endif
 
 /* handler entry point (called from startup.S) */
+#if ODFS_FEATURE_CHARSET_EXTERNAL
+/* see system_charset.c */
+int odfs_amiga_system_charset(handler_global_t *g);
+#endif
+
 void handler_main(void);
 void handler_main_startup(struct Message *startup_msg);
 

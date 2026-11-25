@@ -63,6 +63,8 @@ AMIGA_PLATFORM_INCLUDES = -I platform/amiga \
                           -I platform/amiga/$(AMIGA_OSDIR)
 AMIGA_INCLUDES = $(INCLUDES) $(AMIGA_PLATFORM_INCLUDES) \
                  $(if $(NDK_PATH),-I$(NDK_PATH))
+# codesets.library headers, after the system's own
+AMIGA_INCLUDES += -idirafter 3rdparty/libcodesets/include
 
 # ---- optional 3rdparty submodules ----
 
@@ -153,8 +155,11 @@ AMIGA_CPUFLAGS ?= -mcpu=powerpc
 # and the kickstart loader expects plain PT_LOAD program headers only.
 AMIGA_SYSFLAGS ?= -mcrt=$(AMIGA_CRT) -fno-asynchronous-unwind-tables
 AMIGA_WARNFLAGS =
+# No lookup of the system's character set: on AmigaOS 4 requests reach
+# the handler as calls, not as packets it could catch.
 AMIGA_DEFS     = -DAMIGA -D__USE_INLINE__ -D__USE_BASETYPE__ \
-                 -DODFS_FEATURE_CACHE_RETAIN=0
+                 -DODFS_FEATURE_CACHE_RETAIN=0 \
+                 -DODFS_FEATURE_CHARSET_EXTERNAL=0
 LDFLAGS        = $(AMIGA_SYSFLAGS) $(LTO)
 # Keep OS4 library/interface ownership explicit in os4/sys_compat.c.
 # Do not add -lauto to the handler link.
@@ -217,8 +222,12 @@ CORE_SRCS = $(ODFS_CORE_SRCS)
 # Host-only sources
 HOST_SRCS = platform/host/file_media.c
 
-# Amiga handler sources
-AMIGA_SRCS = platform/amiga/handler_main.c \
+# Amiga handler sources. The linker places handler_main.o and the
+# objects after it in front of the core, so that code added to them moves
+# every routine of the core. system_charset.c is listed first to end up
+# behind the core and the backends instead.
+AMIGA_SRCS = platform/amiga/system_charset.c \
+    platform/amiga/handler_main.c \
     platform/amiga/printf_local.c \
     platform/amiga/$(AMIGA_OSDIR)/sys_compat.c
 ifeq ($(AMIGA_TARGET),os4)

@@ -190,9 +190,16 @@ To prefer HFS or HFS+, use `Control = "HFSFIRST"`. Options can be combined, for 
 ### Character sets
 
 Names from Joliet, UDF, HFS and HFS+ volumes, and Rock Ridge names written in
-UTF-8, are converted to ISO 8859-1 (Latin-1), the character set of AmigaOS. A
-character that Latin-1 does not have is shown as `_`. Rock Ridge names that
-already are in an 8-bit character set are left as they are.
+UTF-8, are converted to the 8-bit character set of the system. A character
+that set does not have is shown as `_`. Rock Ridge names that already are in
+an 8-bit character set are left as they are.
+
+The character set is ISO 8859-1 (Latin-1), unless `codesets.library` is
+installed. On AmigaOS 3 and AROS the handler then asks it, the first time the
+drive is used, for the system's default character set: a system set up for
+Polish gets names in ISO 8859-2, for example. Names stay in Latin-1 in the ROM
+build, on AmigaOS 4, and when the system was booted from the disc in the
+drive.
 
 ### Name collisions
 

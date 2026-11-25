@@ -16,6 +16,9 @@
 struct ExecBase;
 #define SysBase (*(struct ExecBase **)4UL)
 
+/* the process that loads libraries and devices from disk */
+#define ODFS_AMIGA_LOADER_TASK "ramlib"
+
 /*
  * OS4 V51+ shutdown packet. OS3 DOS never sends it, but accepting it
  * unconditionally keeps the shared packet loop free of OS conditionals.
