@@ -75,7 +75,11 @@ def check(handler: Path, source: str) -> None:
         launcher = launch["launcher"]
         state = launch["state"]
         dn = DeviceNodeStruct(ctx.mem, launcher.boot["dn_addr"])
-        port = dn.dn_Task.val
+        try:
+            port = dn.dn_Task.val
+        except AttributeError:
+            # amitools 0.9 names the fields of a DosList entry dol_*
+            port = dn.dol_Task.aptr
         pkt, _ = launcher._build_std_packet(
             port, state.reply_port_addr, ACTION_IS_FILESYSTEM, []
         )

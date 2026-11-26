@@ -26,6 +26,7 @@ GitHub-hosted runners are not a good fit for that combination.
 - `AMIGAOS32_ISO` can be used as a convenient local fallback image
 - `ODFS_HANDLER` optionally overrides the handler path
 - `AMIFUSE` optionally overrides the `amifuse` executable path
+- `PYTHON` optionally names the Python interpreter AmiFUSE is installed for (default `python3`)
 - `AMIFUSE_PARTITION` optionally selects the partition name/index
 - `AMIFUSE_BLOCK_SIZE` optionally overrides AmiFUSE block size
 - `AMIFUSE_EXPECT_FILE` optionally overrides the default probe file
