@@ -283,6 +283,10 @@ typedef struct meta_build_ctx {
     int                too_big;    /* failed by outgrowing the budget */
 } meta_build_ctx_t;
 
+/*
+ * A larger copy of a build buffer. If there is no memory for it, the
+ * old buffer is left alone: it stays the caller's to free.
+ */
 static void *meta_grow(void *old, size_t old_bytes, size_t new_bytes)
 {
     void *p = odfs_malloc(new_bytes);
@@ -304,12 +308,14 @@ static uint32_t meta_pool_add_len(meta_build_ctx_t *bc, const char *s,
     len++;
     if (bc->pool_len + len > bc->pool_cap) {
         uint32_t new_cap = bc->pool_cap ? bc->pool_cap * 2u : 1024u;
+        char *grown;
 
         while (new_cap < bc->pool_len + len)
             new_cap *= 2u;
-        bc->pool = meta_grow(bc->pool, bc->pool_len, new_cap);
-        if (!bc->pool)
+        grown = meta_grow(bc->pool, bc->pool_len, new_cap);
+        if (!grown)
             return META_POOL_FAIL;
+        bc->pool = grown;
         bc->pool_cap = new_cap;
     }
     off = bc->pool_len;
@@ -351,12 +357,14 @@ static odfs_err_t meta_build_cb(const odfs_node_t *entry, void *ctx)
 
     if (bc->count >= bc->cap) {
         uint32_t new_cap = bc->cap ? bc->cap * 2u : 32u;
+        odfs_meta_entry_t *grown;
 
-        bc->entries = meta_grow(bc->entries,
-                                (size_t)bc->count * sizeof(*bc->entries),
-                                (size_t)new_cap * sizeof(*bc->entries));
-        if (!bc->entries)
+        grown = meta_grow(bc->entries,
+                          (size_t)bc->count * sizeof(*bc->entries),
+                          (size_t)new_cap * sizeof(*bc->entries));
+        if (!grown)
             goto fail;
+        bc->entries = grown;
         bc->cap = new_cap;
     }
 
