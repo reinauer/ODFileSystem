@@ -6,6 +6,8 @@
 set -eu
 
 AMIFUSE="${AMIFUSE:-amifuse}"
+# the interpreter AmiFUSE is installed for
+PYTHON="${PYTHON:-python3}"
 ODFS_HANDLER="${ODFS_HANDLER:-build/amiga/ODFileSystem}"
 IMAGE="${AMIFUSE_IMAGE:-${AMIGAOS32_ISO:-}}"
 PARTITION="${AMIFUSE_PARTITION:-}"
@@ -90,7 +92,9 @@ fi
 mkdir -p "$MOUNTPOINT"
 CREATED_MOUNTPOINT=1
 
-set -- "$AMIFUSE" mount "$IMAGE" --driver "$ODFS_HANDLER" --mountpoint "$MOUNTPOINT"
+# amifuse detaches after mounting unless told to stay; the wait below
+# watches this process
+set -- "$AMIFUSE" mount "$IMAGE" --driver "$ODFS_HANDLER" --mountpoint "$MOUNTPOINT" --interactive
 
 if [ -n "$PARTITION" ]; then
     set -- "$@" --partition "$PARTITION"
@@ -135,11 +139,17 @@ fi
 
 ls "$MOUNTPOINT" >/dev/null
 
-python3 tests/integration/check_assign_prefix.py "$IMAGE" "$ODFS_HANDLER"
-python3 tests/integration/check_fh_packets.py "$IMAGE" "$ODFS_HANDLER"
-python3 tests/integration/check_cdda_toc.py "$ODFS_HANDLER"
+# AmiFUSE 1.0 locks the image while it is mounted, and the checks below
+# open it themselves
+umount "$MOUNTPOINT"
+wait "$AMIFUSE_PID" >/dev/null 2>&1 || true
+AMIFUSE_PID=""
+
+"$PYTHON" tests/integration/check_assign_prefix.py "$IMAGE" "$ODFS_HANDLER"
+"$PYTHON" tests/integration/check_fh_packets.py "$IMAGE" "$ODFS_HANDLER"
+"$PYTHON" tests/integration/check_cdda_toc.py "$ODFS_HANDLER"
 for icon_source in ENV ENVARC missing; do
-    python3 tests/integration/check_cdda_icon.py "$ODFS_HANDLER" "$icon_source"
+    "$PYTHON" tests/integration/check_cdda_icon.py "$ODFS_HANDLER" "$icon_source"
 done
 
 echo "AmiFUSE integration test passed"
