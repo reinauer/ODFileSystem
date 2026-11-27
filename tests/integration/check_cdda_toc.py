@@ -11,6 +11,8 @@ from amifuse.fuse_fs import HandlerBridge
 from amifuse.rdb_inspect import detect_iso
 from amifuse.scsi_device import IORequestStruct, SCSICmdStruct, ScsiDevice
 
+from amifuse_compat import do_packet
+
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE = ROOT / "tests/images/test_plain.iso"
@@ -83,10 +85,8 @@ def check(handler: Path) -> None:
                     f"{name}: audio length does not match TOC LBAs"
                 assert int.from_bytes(header[4:8], "little") == data_bytes + 36, \
                     f"{name}: incorrect RIFF size"
-            packet, _ = bridge.launcher.send_packet(bridge.state, 5, [])  # ACTION_DIE
-            replies = bridge._run_until_replies(sleep_base=0.0)
-            assert any(pkt == packet and res1 == -1 and res2 == 0
-                       for _, pkt, res1, res2 in replies), \
+            # ACTION_DIE
+            assert do_packet(bridge, 5, []) == (-1, 0), \
                 "shutdown was not acknowledged"
             print("CDDA raw TOC passed: 804 bytes, 99 tracks, lead-out-derived length")
         finally:

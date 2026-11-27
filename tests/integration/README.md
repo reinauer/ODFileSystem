@@ -32,6 +32,16 @@ GitHub-hosted runners are not a good fit for that combination.
 - `AMIFUSE_EXPECT_FILE` optionally overrides the default probe file
 - `AMIFUSE_EXPECT_CONTENT` optionally overrides the default text probe
 
+## AmiFUSE Version
+
+The handler waits for its first packet on a message port that causes a
+software interrupt (`PA_SOFTINT`). AmiFUSE serves such a port, and has
+`Cause()`, when it runs on amitools 0.10 or later. With AmiFUSE 1.0.0 or
+older the mounted volume stays empty and the test stops with
+`FAIL: mount did not expose ...`.
+
+The script and its checks themselves run on AmiFUSE 0.6.0 and later.
+
 ## Default Probe Expectations
 
 By default the script expects:

@@ -8,6 +8,8 @@ import sys
 from amifuse.fuse_fs import HandlerBridge
 from amifuse.rdb_inspect import detect_iso
 
+from amifuse_compat import find_input
+
 
 def open_via_findinput(bridge: HandlerBridge, dir_path: str, name: str):
     dir_lock, _, locks = bridge.locate_path(dir_path)
@@ -17,14 +19,13 @@ def open_via_findinput(bridge: HandlerBridge, dir_path: str, name: str):
     try:
         _, name_bptr = bridge._alloc_bstr(name)
         fh_addr = bridge._alloc_fh()
-        bridge.launcher.send_findinput(bridge.state, name_bptr, dir_lock, fh_addr)
-        replies = bridge._run_until_replies(
-            max_iters=500, cycles=200_000, sleep_base=0.0
+        reply = find_input(
+            bridge, dir_lock, name_bptr, fh_addr, max_iters=500, cycles=200_000
         )
-        if not replies:
+        if reply is None:
             return False, "no-reply"
-        if replies[-1][2] == 0:
-            return False, replies[-1][3]
+        if reply[0] == 0:
+            return False, reply[1]
         bridge.close_file(fh_addr)
         return True, 0
     finally:
