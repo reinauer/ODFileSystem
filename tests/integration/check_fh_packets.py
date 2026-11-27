@@ -10,6 +10,8 @@ from amifuse.fuse_fs import FileHandleStruct, HandlerBridge
 from amifuse.rdb_inspect import detect_iso
 from amitools.vamos.libstructs.dos import FileInfoBlockStruct, FileLockStruct
 
+from amifuse_compat import do_packet, find_input
+
 
 ACTION_COPY_DIR_FH = 1030
 ACTION_PARENT_FH = 1031
@@ -31,13 +33,10 @@ def fib_name(bridge: HandlerBridge, fib_addr: int) -> str:
 
 
 def send_and_wait(bridge: HandlerBridge, pkt_type: int, args):
-    bridge.launcher.send_packet(bridge.state, pkt_type, args)
-    replies = bridge._run_until_replies(
-        max_iters=500, cycles=200_000, sleep_base=0.0
-    )
-    if not replies:
+    reply = do_packet(bridge, pkt_type, args, max_iters=500, cycles=200_000)
+    if reply is None:
         return None, "no-reply"
-    return replies[-1][2], replies[-1][3]
+    return reply
 
 
 def lock_examined_word(bridge: HandlerBridge, lock_bptr: int) -> int:
@@ -70,19 +69,16 @@ def check_candidate(
 
         _, name_bptr = bridge._alloc_bstr(leaf)
         fh_addr = bridge._alloc_fh()
-        bridge.launcher.send_findinput(
-            bridge.state, name_bptr, dir_lock, fh_addr
+        reply = find_input(
+            bridge, dir_lock, name_bptr, fh_addr, max_iters=500, cycles=200_000
         )
-        replies = bridge._run_until_replies(
-            max_iters=500, cycles=200_000, sleep_base=0.0
-        )
-        if not replies:
+        if reply is None:
             print(f"FAIL: FINDINPUT had no reply for {dir_path}/{leaf}")
             return 1
-        if replies[-1][2] == 0:
+        if reply[0] == 0:
             print(
                 f"FAIL: FINDINPUT failed for {dir_path}/{leaf} "
-                f"({replies[-1][3]})"
+                f"({reply[1]})"
             )
             return 1
         fh_opened = True

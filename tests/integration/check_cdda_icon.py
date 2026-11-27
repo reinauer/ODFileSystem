@@ -19,6 +19,9 @@ from amifuse.scsi_device import IORequestStruct, SCSICmdStruct, ScsiDevice
 from amifuse.startup_runner import HandlerLauncher
 from amitools.vamos.lib.DosLibrary import DosLibrary
 from amitools.vamos.lib.dos.FileHandle import FileHandle
+from amitools.vamos.libstructs.dos import DosPacketStruct, MessageStruct
+
+from amifuse_compat import do_packet
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +36,6 @@ def check(handler: Path, source: str) -> None:
     original_io = ScsiDevice.BeginIO
     original_open = DosLibrary.Open
     original_launch = HandlerLauncher.launch_with_startup
-    original_poll = HandlerLauncher.poll_replies
     pending = set()
     answered = set()
     lookups = []
@@ -43,6 +45,23 @@ def check(handler: Path, source: str) -> None:
     def launch_handler(self, *args, **kwargs):
         state = original_launch(self, *args, **kwargs)
         launch.update(launcher=self, state=state, process_port=state.port_addr)
+        # Who takes the replies depends on the AmiFUSE version: the launcher
+        # up to 1.0, amitools' DosPktHandler after it. Both take them from
+        # the reply port with the port manager's get_msg().
+        ports = self.exec_impl.port_mgr
+        take = ports.get_msg
+
+        def get_msg(port_addr):
+            msg = take(port_addr)
+            if msg and port_addr == state.reply_port_addr:
+                pkt = MessageStruct(self.mem, msg).node.name.aptr
+                if pkt in pending:
+                    reply = DosPacketStruct(self.mem, pkt)
+                    if reply.res1.val == -1 and reply.res2.val == 0:
+                        answered.add(pkt)
+            return msg
+
+        ports.get_msg = get_msg
         return state
 
     def audio_io(self, ctx, io_request):
@@ -95,15 +114,7 @@ def check(handler: Path, source: str) -> None:
         self.file_mgr._register_file(fh)
         return fh.b_addr
 
-    def poll(self, *args, **kwargs):
-        replies = original_poll(self, *args, **kwargs)
-        for _, pkt, res1, res2 in replies:
-            if pkt in pending and res1 == -1 and res2 == 0:
-                answered.add(pkt)
-        return replies
-
     with patch.object(HandlerLauncher, "launch_with_startup", launch_handler), \
-         patch.object(HandlerLauncher, "poll_replies", poll), \
          patch.object(ScsiDevice, "BeginIO", audio_io), \
          patch.object(DosLibrary, "Open", open_icon):
         bridge = HandlerBridge(IMAGE, handler, debug=False, iso_info=detect_iso(IMAGE))
@@ -121,9 +132,8 @@ def check(handler: Path, source: str) -> None:
                     answered.clear()
                     # Repeat loading after an inhibit/uninhibit cycle.
                     for state in (-1, 0):
-                        bridge.launcher.send_packet(bridge.state, ACTION_INHIBIT, [state])
-                        replies = bridge._run_until_replies(sleep_base=0.0)
-                        assert replies and replies[0][2] == -1, "inhibit cycle failed"
+                        reply = do_packet(bridge, ACTION_INHIBIT, [state])
+                        assert reply and reply[0] == -1, "inhibit cycle failed"
             expected = ["ENV:Sys/def_cdda.info"]
             if source != "ENV":
                 expected.append("ENVARC:Sys/def_cdda.info")
@@ -133,9 +143,8 @@ def check(handler: Path, source: str) -> None:
             messages = bridge.vh.slm.exec_impl.msg_func
             with patch.object(messages, "delete_msg_port",
                               wraps=messages.delete_msg_port) as delete:
-                bridge.launcher.send_packet(bridge.state, 5, [])  # ACTION_DIE
-                replies = bridge._run_until_replies(sleep_base=0.0)
-                assert replies and replies[0][2] == -1, "shutdown was not acknowledged"
+                reply = do_packet(bridge, 5, [])  # ACTION_DIE
+                assert reply and reply[0] == -1, "shutdown was not acknowledged"
                 freed = [call.args[0].addr for call in delete.call_args_list]
                 assert freed.count(bridge.state.port_addr) == 1, "request port leaked"
                 assert launch["process_port"] not in freed, "process port was deleted"
